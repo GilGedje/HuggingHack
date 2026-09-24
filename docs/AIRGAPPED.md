@@ -13,6 +13,7 @@ parameter counts, GGUF inspection, and every pull are served from your own stora
 - [4. Start, stop, and update](#4-start-stop-and-update)
 - [5. First sign-in](#5-first-sign-in)
 - [5a. Single sign-on with Authentik](#5a-single-sign-on-with-authentik)
+- [5b. Organizations](#5b-organizations)
 - [6. Add models](#6-add-models)
 - [6a. Browse models, history, and changes](#6a-browse-models-history-and-changes)
 - [6b. Storage locations and buckets](#6b-storage-locations-and-buckets)
@@ -118,6 +119,22 @@ Administrators open **Admin** in the top bar:
 
 Everyone has **Account** (the gear icon, or click your name): profile, password and active
 sessions, preferences (theme, default sort, default upload location), and **API tokens**.
+
+## 5b. Organizations
+
+To publish models under a company or team name such as `Nvidia/GLM-5.3-NVFP4`:
+
+1. **Admin → Organizations → New organization**: enter the name exactly as it should appear
+   in model names (for example `Nvidia`). You become its first admin. The name is permanent.
+2. Open the organization (`#/orgs/Nvidia`) → **Members** and add people with a role:
+   **Read** (see and pull private models), **Write** (upload and change models), or
+   **Admin** (manage members, visibility, and deletion).
+3. Members with **Write** choose `Nvidia/` as the owner on **Uploads**, or click
+   **Upload a model** on the organization page.
+
+Pull private organization models with a member's API token, exactly like private personal
+models. Folders already in the model directory under the same name (for example copied
+`Nvidia/...` repositories) appear on the organization page but stay administrator-managed.
 
 ## 5a. Single sign-on with Authentik
 

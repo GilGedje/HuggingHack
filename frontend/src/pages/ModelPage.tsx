@@ -529,7 +529,13 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
           <div className="model-title-row">
             <span className="model-avatar" aria-hidden="true">{initials(model.id)}</span>
             <h1>
-              <Link to={`/models?search=${encodeURIComponent(owner)}`} className="model-owner">{owner}</Link>
+              <Link
+                to={model.organization ? `/orgs/${model.organization.name}` : `/models?search=${encodeURIComponent(owner)}`}
+                className="model-owner"
+                title={model.organization ? model.organization.display_name : undefined}
+              >
+                {owner}
+              </Link>
               <span className="model-slash">/</span>
               <span className="model-name">{name}</span>
             </h1>

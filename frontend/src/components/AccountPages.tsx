@@ -34,11 +34,13 @@ import type {
   OwnedRepository,
   SavedModel,
   StorageOption,
+  UploadNamespace,
   User,
 } from '../types'
 import { formatBytes, relativeTime, taskLabel } from '../utils'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { relativeUploadPath, useUploads } from '../uploads'
+import { NamespacePicker } from './NamespacePicker'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -412,16 +414,21 @@ export function UploadsPage({
   const [message, setMessage] = useState('')
   const [creating, setCreating] = useState(false)
   const [storageOptions, setStorageOptions] = useState<StorageOption[]>([])
+  const [namespaces, setNamespaces] = useState<UploadNamespace[]>([])
+  const [searchParams] = useSearchParams()
+  const [namespace, setNamespace] = useState(searchParams.get('namespace') || user.username)
   const [storageTarget, setStorageTarget] = useState('')
   const { jobs, enqueue } = useUploads()
 
   const load = useCallback(async () => {
     try {
-      const [repos, runtime, targets] = await Promise.all([
+      const [repos, runtime, targets, spaces] = await Promise.all([
         api.uploadRepositories(),
         api.health(),
         api.storageOptions(),
+        api.uploadNamespaces(),
       ])
+      setNamespaces(spaces.items)
       setRepositories(repos.items)
       setHealth(runtime)
       setStorageOptions(targets.items)
@@ -464,6 +471,7 @@ export function UploadsPage({
         description,
         visibility,
         storage_target: storageTarget || undefined,
+        namespace,
       })
       setSlug('')
       setDescription('')
@@ -546,10 +554,31 @@ export function UploadsPage({
             <div><h2>New repository</h2><p>Private is the safest default.</p></div>
           </div>
           <form onSubmit={createRepository}>
-            <label>
-              Repository name
-              <span className="repo-name-input"><code>{user.username}/</code><input value={slug} onChange={(event) => setSlug(event.target.value)} required /></span>
-            </label>
+            <div className="repo-name-grid">
+              <label htmlFor="new-repo-owner">Owner</label>
+              <span aria-hidden="true" />
+              <label htmlFor="new-repo-name">Model name</label>
+              <NamespacePicker
+                id="new-repo-owner"
+                namespaces={
+                  namespaces.length
+                    ? namespaces
+                    : [{ name: user.username, kind: 'user', display_name: user.display_name }]
+                }
+                value={namespace}
+                onChange={setNamespace}
+              />
+              <span className="repo-name-slash" aria-hidden="true">/</span>
+              <input
+                id="new-repo-name"
+                value={slug}
+                onChange={(event) => setSlug(event.target.value)}
+                placeholder="GLM-5.3-NVFP4"
+                autoComplete="off"
+                spellCheck={false}
+                required
+              />
+            </div>
             <label>
               Description
               <textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={500} />
@@ -557,7 +586,9 @@ export function UploadsPage({
             <label>
               Visibility
               <select value={visibility} onChange={(event) => setVisibility(event.target.value as 'private' | 'shared')}>
-                <option value="private">Private — only me</option>
+                <option value="private">
+                  {namespace.toLowerCase() === user.username.toLowerCase() ? 'Private — only me' : `Private — ${namespace} members`}
+                </option>
                 <option value="shared">Shared — all local accounts</option>
               </select>
             </label>
@@ -589,7 +620,7 @@ export function UploadsPage({
             <select value={activeRepo} onChange={(event) => setActiveRepo(event.target.value)}>
               <option value="">Choose a repository</option>
               {repositories
-                .filter((item) => item.owner_id === user.id && item.status === 'uploading')
+                .filter((item) => (item.owner_id === user.id || item.organization_id) && item.status === 'uploading')
                 .map((item) => <option key={item.id} value={item.repo_id}>{item.repo_id}</option>)}
             </select>
           </label>

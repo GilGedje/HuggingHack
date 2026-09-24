@@ -456,6 +456,25 @@ repositories use the backend's `HF_TOKEN`; the token is never exposed to the bro
 
 Active downloads have a **Cancel download** action. Cancellation stops the isolated download worker, keeps already transferred files and Hugging Face local-directory metadata, and marks the job as cancelled in history. Starting the same repository again can reuse those partial files instead of discarding the completed work.
 
+## Organizations
+
+Organizations are shared namespaces for teams and companies, so a model can live at
+`Nvidia/GLM-5.3-NVFP4` without an `Nvidia` user account. Administrators create them under
+**Admin → Organizations**; each organization then has its own members:
+
+| Organization role | Can |
+| --- | --- |
+| **Read** | See and pull the organization's private repositories |
+| **Write** | Also create repositories in the organization and upload changes |
+| **Admin** | Also manage members and settings, change visibility, and delete repositories |
+
+Organization roles add to the server role: a server **Viewer** with organization **Write**
+access can read but still cannot upload. Private organization repositories are visible only to
+members, including through API tokens and `git clone`. Organization names and usernames share
+one namespace (case-insensitive), so a user cannot take an organization's name or the reverse.
+Repositories stay with the organization when the account that created them leaves or is deleted.
+Browse every organization at `#/orgs`; pick the owner when creating a repository on **Uploads**.
+
 ## Single sign-on (OpenID Connect)
 
 HuggingHack signs people in through any OpenID Connect provider (Authentik, Keycloak,

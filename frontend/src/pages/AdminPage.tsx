@@ -12,10 +12,10 @@ import {
   UserX,
   Wifi,
 } from 'lucide-react'
-import { NavLink, Navigate, useParams } from 'react-router-dom'
+import { Link, NavLink, Navigate, useParams } from 'react-router-dom'
 import { useAccess } from '../access'
 import { api } from '../api'
-import type { AdminUser, PermissionMatrix, Role, ServerSettings } from '../types'
+import type { AdminUser, Organization, PermissionMatrix, Role, ServerSettings } from '../types'
 import { relativeTime } from '../utils'
 import { RuntimesPage } from './RuntimesPage'
 import { StoragePage } from './StoragePage'
@@ -390,8 +390,102 @@ function ServerTab() {
   )
 }
 
+function OrganizationsTab({ onToast }: { onToast: ToastHandler }) {
+  const [items, setItems] = useState<Organization[]>([])
+  const [form, setForm] = useState({ name: '', display_name: '', description: '' })
+  const [saving, setSaving] = useState(false)
+
+  const load = useCallback(() => {
+    api.organizations().then((payload) => setItems(payload.items)).catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  async function create(event: FormEvent) {
+    event.preventDefault()
+    setSaving(true)
+    try {
+      await api.createOrganization(form)
+      onToast(`${form.name} was created. You are its first admin.`)
+      setForm({ name: '', display_name: '', description: '' })
+      load()
+    } catch (reason) {
+      onToast(errorMessage(reason, 'Could not create the organization.'), 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function remove(organization: Organization) {
+    if (window.prompt(`Type ${organization.name} to delete this organization. It must have no repositories.`) !== organization.name) return
+    try {
+      await api.deleteOrganization(organization.name)
+      onToast(`${organization.name} was deleted.`)
+      load()
+    } catch (reason) {
+      onToast(errorMessage(reason, 'Could not delete the organization.'), 'error')
+    }
+  }
+
+  return (
+    <>
+      <section className="settings-section">
+        <div className="section-heading-line">
+          <div>
+            <span className="eyebrow">{items.length} organization{items.length === 1 ? '' : 's'}</span>
+            <h2>Organizations</h2>
+          </div>
+        </div>
+        <div className="admin-user-table" role="table" aria-label="Organizations">
+          <div className="admin-user-row org-row header" role="row">
+            <span>Organization</span><span>Repositories</span><span>Members</span><span>Your role</span><span />
+          </div>
+          {items.map((organization) => (
+            <div className="admin-user-row org-row" role="row" key={organization.id}>
+              <span className="admin-user-name">
+                <Link to={`/orgs/${organization.name}`}><strong>{organization.display_name}</strong></Link>
+                <small>@{organization.name}{organization.description ? ` · ${organization.description}` : ''}</small>
+              </span>
+              <span className="admin-user-muted">{organization.repository_count || 0}</span>
+              <span className="admin-user-muted">{organization.member_count || 0}</span>
+              <span className="admin-user-muted">{organization.my_role || '—'}</span>
+              <span className="admin-user-actions">
+                <Link to={`/orgs/${organization.name}/members`} className="secondary-button compact">Members</Link>
+                <button type="button" className="danger-text" aria-label={`Delete ${organization.name}`} title="Delete organization" onClick={() => remove(organization)}>
+                  <Trash2 size={15} />
+                </button>
+              </span>
+            </div>
+          ))}
+          {items.length === 0 && <div className="empty-compact">No organizations yet.</div>}
+        </div>
+      </section>
+      <section className="settings-section">
+        <div className="settings-section-title">
+          <Plus size={20} />
+          <div>
+            <h2>New organization</h2>
+            <p>Its name becomes a namespace like <code>Nvidia/GLM-5.3-NVFP4</code>. It cannot be renamed later.</p>
+          </div>
+        </div>
+        <form className="admin-create-user" onSubmit={create}>
+          <label>Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Nvidia" required /></label>
+          <label>Display name<input value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} placeholder="NVIDIA" /></label>
+          <label>Description <small>optional</small><input value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label>
+          <button className="download-button" disabled={saving}>
+            {saving ? <LoaderCircle size={16} className="spin" /> : <Plus size={16} />} Create organization
+          </button>
+        </form>
+      </section>
+    </>
+  )
+}
+
 const TABS = [
   { id: 'users', label: 'Users', capability: 'users.manage' },
+  { id: 'organizations', label: 'Organizations', capability: 'orgs.manage' },
   { id: 'roles', label: 'Roles & permissions', capability: 'users.manage' },
   { id: 'storage', label: 'Storage', capability: 'storage.view' },
   { id: 'runtimes', label: 'Runtimes', capability: 'runtimes.use' },
@@ -426,6 +520,7 @@ export function AdminPage({ onToast }: { onToast: ToastHandler }) {
       <div className="section-body admin-content">
         {active.id === 'users' && <UsersTab onToast={onToast} />}
         {active.id === 'roles' && <RolesTab />}
+        {active.id === 'organizations' && <OrganizationsTab onToast={onToast} />}
         {active.id === 'storage' && <StoragePage onToast={onToast} />}
         {active.id === 'runtimes' && <RuntimesPage />}
         {active.id === 'server' && <ServerTab />}

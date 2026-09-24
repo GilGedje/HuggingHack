@@ -118,6 +118,16 @@ function ProfileTab({ overview, onToast, onSaved }: { overview: AccountOverview;
           <div><dt>Last sign-in</dt><dd>{overview.user.last_login_at ? relativeTime(overview.user.last_login_at) : 'Never'}</dd></div>
           <div><dt>Saved models</dt><dd><Link to="/saved">{overview.saved_count}</Link></dd></div>
           <div>
+            <dt>Organizations</dt>
+            <dd>
+              {overview.organizations.length === 0 ? <Link to="/orgs">None</Link> : overview.organizations.map((organization) => (
+                <Link key={organization.id} to={`/orgs/${organization.name}`} className="account-repo-link">
+                  {organization.display_name} · {organization.role}
+                </Link>
+              ))}
+            </dd>
+          </div>
+          <div>
             <dt>Your repositories</dt>
             <dd>
               {overview.repositories.length === 0 ? 'None yet' : overview.repositories.map((repo) => (

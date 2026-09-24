@@ -3,6 +3,9 @@ import type {
   AccountSession,
   AdminUser,
   ApiToken,
+  Organization,
+  OrganizationDetails,
+  UploadNamespace,
   PermissionMatrix,
   ServerSettings,
   UserPreferences,
@@ -132,6 +135,29 @@ export const api = {
     request<{ status: string }>(`/api/admin/users/${encodeURIComponent(userId)}`, {
       method: 'DELETE',
     }),
+  organizations: () => request<{ items: Organization[] }>('/api/organizations'),
+  organization: (name: string) =>
+    request<OrganizationDetails>(`/api/organizations/${encodeURIComponent(name)}`),
+  createOrganization: (payload: { name: string; display_name?: string; description?: string }) =>
+    request<OrganizationDetails>('/api/organizations', { method: 'POST', body: JSON.stringify(payload) }),
+  updateOrganization: (name: string, payload: { display_name?: string; description?: string }) =>
+    request<OrganizationDetails>(`/api/organizations/${encodeURIComponent(name)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  deleteOrganization: (name: string) =>
+    request<{ status: string }>(`/api/organizations/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  setOrganizationMember: (name: string, username: string, role: string) =>
+    request<OrganizationDetails>(
+      `/api/organizations/${encodeURIComponent(name)}/members/${encodeURIComponent(username)}`,
+      { method: 'PUT', body: JSON.stringify({ role }) },
+    ),
+  removeOrganizationMember: (name: string, username: string) =>
+    request<OrganizationDetails>(
+      `/api/organizations/${encodeURIComponent(name)}/members/${encodeURIComponent(username)}`,
+      { method: 'DELETE' },
+    ),
+  uploadNamespaces: () => request<{ items: UploadNamespace[] }>('/api/uploads/namespaces'),
   permissions: () => request<PermissionMatrix>('/api/admin/permissions'),
   serverSettings: () => request<ServerSettings>('/api/admin/server'),
   changePassword: (payload: { current_password: string; new_password: string }) =>
@@ -245,6 +271,7 @@ export const api = {
     description?: string
     visibility?: 'private' | 'shared'
     storage_target?: string
+    namespace?: string
   }) =>
     request<OwnedRepository>('/api/uploads/repositories', {
       method: 'POST',

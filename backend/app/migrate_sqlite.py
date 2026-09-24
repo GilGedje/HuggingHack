@@ -32,6 +32,8 @@ TABLES = (
     "collections",
     "saved_models",
     "collection_items",
+    "organizations",
+    "organization_members",
     "owned_repositories",
     "downloads",
     "runtime_jobs",

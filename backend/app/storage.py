@@ -634,6 +634,7 @@ class S3ModelStorage(FilesystemModelStorage):
                     "source_url": manifest.get("source_url"),
                     "source": manifest.get("source"),
                     "owner_id": manifest.get("owner_id"),
+                    "organization_id": manifest.get("organization_id"),
                     "managed": True,
                     "storage_backend": "s3",
                     "storage_target": self.id,

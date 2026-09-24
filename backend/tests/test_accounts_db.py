@@ -167,6 +167,14 @@ def test_sqlite_installation_copies_into_postgresql(tmp_path: Path, fresh_postgr
         }
     )
     source.put_text_blob("a" * 64, "hello")
+    organization = source.create_organization(
+        {"id": "org1", "name": "Nvidia", "display_name": "NVIDIA", "description": "", "created_at": "now", "updated_at": "now"}
+    )
+    source.set_organization_member(organization["id"], "u1", "admin", "now")
+    source.create_owned_repository(
+        {"id": "r2", "owner_id": "u1", "repo_id": "Nvidia/GLM", "description": "", "visibility": "private",
+         "status": "ready", "created_at": "now", "updated_at": "now", "organization_id": "org1"}
+    )
 
     copied = migrate(source_path, fresh_postgres)
 
@@ -176,6 +184,9 @@ def test_sqlite_installation_copies_into_postgresql(tmp_path: Path, fresh_postgr
     assert target.get_owned_repository("owner/model")["owner_id"] == "u1"
     assert target.latest_commit("owner/model")["message"] == "Initial import"
     assert target.get_text_blob("a" * 64) == "hello"
+    assert copied["organizations"] == 1 and copied["organization_members"] == 1
+    assert target.get_organization("nvidia")["display_name"] == "NVIDIA"
+    assert target.get_owned_repository("Nvidia/GLM")["organization_name"] == "Nvidia"
     with pytest.raises(ValueError):
         migrate(source_path, fresh_postgres)
 

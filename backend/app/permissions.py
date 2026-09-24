@@ -19,6 +19,7 @@ CAPABILITIES: dict[str, str] = {
     "runtimes.use": "Send models to Ollama or vLLM runtimes",
     "storage.view": "View every storage location and its models",
     "users.manage": "Manage accounts, roles, and access",
+    "orgs.manage": "Create and delete organizations and manage any organization",
     "settings.view": "View server configuration",
 }
 

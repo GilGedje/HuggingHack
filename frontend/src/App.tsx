@@ -31,6 +31,7 @@ import { AccessProvider, useAccess } from './access'
 import { AccountPage } from './pages/AccountPage'
 import { AdminPage } from './pages/AdminPage'
 import { ModelPage } from './pages/ModelPage'
+import { OrganizationPage, OrganizationsIndex } from './pages/OrganizationPage'
 import { UploadProvider } from './uploads'
 import Shell from './components/Shell'
 import type {
@@ -657,6 +658,9 @@ function Application({
             )
           }
         />
+        <Route path="/orgs" element={<OrganizationsIndex />} />
+        <Route path="/orgs/:name" element={<OrganizationPage onToast={showToast} />} />
+        <Route path="/orgs/:name/:tab" element={<OrganizationPage onToast={showToast} />} />
         <Route path="/account" element={<AccountPage onToast={showToast} />} />
         <Route path="/account/:tab" element={<AccountPage onToast={showToast} />} />
         <Route path="/admin" element={<AdminPage onToast={showToast} />} />

@@ -6,6 +6,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+ORGANIZATION_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?$")
+# Names that would collide with server paths such as /api/models/... or /assets/...
+RESERVED_NAMESPACES = frozenset({"api", "assets", "static"})
+
+
+def validate_namespace(name: str) -> str:
+    value = name.strip()
+    if not ORGANIZATION_PATTERN.fullmatch(value) or len(value) < 2:
+        raise ValueError(
+            "Names use 2-64 letters, numbers, dots, underscores, or hyphens, "
+            "and start and end with a letter or number."
+        )
+    if value.lower() in RESERVED_NAMESPACES:
+        raise ValueError(f"{value!r} is reserved.")
+    return value
+
+
 REPO_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
