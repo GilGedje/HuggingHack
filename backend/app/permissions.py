@@ -38,7 +38,7 @@ ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
 }
 ROLE_DESCRIPTIONS = {
     "admin": "Full control of the server, storage, runtimes, and accounts.",
-    "member": "Uploads and maintains their own models, and downloads from Hugging Face.",
+    "member": "Uploads and maintains their own models.",
     "viewer": "Read-only: browses, saves, and pulls models, including shared uploads.",
 }
 ROLES = tuple(ROLE_CAPABILITIES)
@@ -59,18 +59,20 @@ def can(user: dict[str, Any] | None, capability: str) -> bool:
     return capability in capabilities_for(user)
 
 
-def permission_matrix() -> dict[str, Any]:
+def permission_matrix(hidden: frozenset[str] = frozenset()) -> dict[str, Any]:
+    """The role table, leaving out capabilities for features this server has off."""
     return {
         "roles": [
             {
                 "id": role,
                 "description": ROLE_DESCRIPTIONS[role],
-                "capabilities": sorted(ROLE_CAPABILITIES[role]),
+                "capabilities": sorted(ROLE_CAPABILITIES[role] - hidden),
             }
             for role in ROLES
         ],
         "capabilities": [
             {"id": capability, "description": description}
             for capability, description in CAPABILITIES.items()
+            if capability not in hidden
         ],
     }

@@ -48,11 +48,9 @@
 ## Features
 
 - Familiar Hub-style model catalog with visual, metadata-driven model cards plus task, format, local-app, parameter, and sort filters
-- Live Hugging Face metadata, repository file lists, richly rendered model cards, gated status, likes, and download counts
+- Richly rendered model cards, repository file lists, and commit history from your own library
 - On-demand GGUF metadata and tensor inspection with shard position, names, shapes, data types, and parameter totals
-- Full repository, SafeTensors, single-GGUF, metadata-only, and custom-pattern download modes
-- Background downloads with revision selection, byte progress, speed, cancellation, and history
-- Restart recovery: interrupted jobs resume through Hugging Face's local-dir metadata
+- Optional server-side Hugging Face downloads (API only), off by default so an air-gapped server never tries to reach the internet; see [File filtering](#file-filtering)
 - Automatic local-library indexing with model size, file count, config metadata, and unsafe serialization warnings
 - Built-in local accounts with a first-run owner, HTTP-only sessions, and administrator-created member accounts
 - Per-account saved models, private notes, and project or rig collections
@@ -189,7 +187,7 @@ Every account has one of three roles:
 | Role | Can |
 | --- | --- |
 | **Viewer** | Browse, save, and pull models, and create personal API tokens. |
-| **Member** | Everything a viewer can, plus upload repositories, change their own repositories, rescan storage, manage the S3 cache, and download from Hugging Face. |
+| **Member** | Everything a viewer can, plus upload repositories, change their own repositories, rescan storage, and manage the S3 cache. |
 | **Administrator** | Everything, including other people's repositories, storage, runtimes, server settings, and accounts. |
 
 The server enforces these roles for the web interface, API tokens, and pulls alike; the full
@@ -426,7 +424,10 @@ The token is read only by the backend container. It is never returned by the API
 
 ## File filtering
 
-The model drawer offers five download modes:
+Server-side downloads from Hugging Face are off by default (`HF_DOWNLOADS_ENABLED=false`),
+because an air-gapped server cannot reach Hugging Face; models arrive by upload instead. On a
+server with internet access, set `HF_DOWNLOADS_ENABLED=true` and start downloads with
+`POST /api/downloads` (members and admins, or a write-scope API token). The `mode` field takes:
 
 - **Full repository** downloads every file in the selected revision.
 - **SafeTensors** selects safe weights plus configuration and tokenizer files.
@@ -444,7 +445,7 @@ Patterns use Hugging Face's official `snapshot_download` filtering.
 
 ## GGUF metadata and tensors
 
-Repositories containing GGUF files get a **GGUF** tab in the model drawer. Select a file or
+Repositories containing GGUF files get a **GGUF** tab on the model page. Select a file or
 shard to inspect its metadata, tensor names, shapes, data types, quantization breakdown, and
 parameter count without downloading the model weights.
 

@@ -1,17 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   AlertCircle,
-  ArrowDownToLine,
-  Ban,
   Box,
   Check,
   ChevronDown,
   CircleX,
-  Clock3,
   Filter,
   ListFilter,
   LoaderCircle,
-  PackageCheck,
   RefreshCw,
   Search,
   SlidersHorizontal,
@@ -36,12 +32,11 @@ import { UploadProvider } from './uploads'
 import Shell from './components/Shell'
 import type {
   AuthStatus,
-  DownloadJob,
   LibraryFacets,
   LibraryModel,
   User,
 } from './types'
-import { formatBytes, relativeTime } from './utils'
+import { formatBytes } from './utils'
 
 type ToastTone = 'success' | 'error'
 type ToastHandler = (message: string, tone?: ToastTone) => void
@@ -378,191 +373,6 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
   )
 }
 
-const activeDownloadStatuses = ['queued', 'preparing', 'downloading']
-
-const downloadModeLabels = {
-  full: 'Full repository',
-  safetensors: 'SafeTensors',
-  gguf: 'GGUF selection',
-  metadata: 'Metadata only',
-  custom: 'Custom selection',
-}
-
-function DownloadStatus({
-  job,
-  onCancel,
-  cancelling,
-}: {
-  job: DownloadJob
-  onCancel?: (job: DownloadJob) => void
-  cancelling?: boolean
-}) {
-  const isActive = activeDownloadStatuses.includes(job.status)
-  const remaining = Math.max(0, job.total_bytes - job.downloaded_bytes)
-  const eta = job.speed_bps > 0 ? Math.round(remaining / job.speed_bps) : 0
-  const etaLabel = eta
-    ? eta > 3600
-      ? `${Math.round(eta / 3600)}h remaining`
-      : eta > 60
-        ? `${Math.round(eta / 60)}m remaining`
-        : `${eta}s remaining`
-    : ''
-  const modeLabel = downloadModeLabels[job.payload.mode || 'full']
-
-  return (
-    <article className="download-row">
-      <div className={`download-state-icon ${job.status}`}>
-        {job.status === 'complete' ? (
-          <PackageCheck size={19} />
-        ) : job.status === 'failed' ? (
-          <AlertCircle size={18} />
-        ) : job.status === 'cancelled' ? (
-          <Ban size={18} />
-        ) : (
-          <ArrowDownToLine size={18} />
-        )}
-      </div>
-      <div className="download-main">
-        <div className="download-title">
-          <div>
-            <h3>{job.repo_id}</h3>
-            <span>{modeLabel} · revision {job.revision}</span>
-          </div>
-          <div className="download-title-actions">
-            <strong className={`job-status ${job.status}`}>{job.status}</strong>
-            {isActive && onCancel && (
-              <button
-                type="button"
-                className="cancel-download-button"
-                onClick={() => onCancel(job)}
-                disabled={cancelling}
-              >
-                {cancelling ? <LoaderCircle size={14} className="spin" /> : <Ban size={14} />}
-                {cancelling ? 'Cancelling…' : 'Cancel'}
-              </button>
-            )}
-          </div>
-        </div>
-        {isActive && (
-          <>
-            <div className="job-progress" aria-label={`${job.progress.toFixed(0)} percent downloaded`}>
-              <span style={{ width: `${Math.max(job.progress, job.status === 'preparing' ? 2 : 0)}%` }} />
-            </div>
-            <div className="download-stats">
-              <span>
-                {formatBytes(job.downloaded_bytes)}
-                {job.total_bytes > 0 && ` of ${formatBytes(job.total_bytes)}`}
-              </span>
-              <span>{job.speed_bps > 0 ? `${formatBytes(job.speed_bps)}/s` : 'Preparing repository…'}</span>
-              {etaLabel && <span>{etaLabel}</span>}
-              {typeof job.metadata.file_count === 'number' && <span>{job.metadata.file_count} repository files</span>}
-            </div>
-          </>
-        )}
-        {job.status === 'complete' && (
-          <div className="download-stats">
-            <span>{formatBytes(job.downloaded_bytes)} stored</span>
-            <span>Completed {relativeTime(job.completed_at)}</span>
-            <code>{job.target_path}</code>
-          </div>
-        )}
-        {job.status === 'cancelled' && (
-          <div className="download-stats cancelled-copy">
-            <span>{formatBytes(job.downloaded_bytes)} retained</span>
-            <span>Partial files stay in place so a future download can resume.</span>
-          </div>
-        )}
-        {job.status === 'failed' && (
-          <div className="download-error">
-            <AlertCircle size={15} />
-            <span>{job.error}</span>
-          </div>
-        )}
-      </div>
-    </article>
-  )
-}
-
-function DownloadsPage({
-  jobs,
-  onToast,
-  refreshDownloads,
-}: {
-  jobs: DownloadJob[]
-  onToast: ToastHandler
-  refreshDownloads: () => void
-}) {
-  const [cancelling, setCancelling] = useState<string | null>(null)
-  const active = jobs.filter((job) => activeDownloadStatuses.includes(job.status))
-  const finished = jobs.filter((job) => !active.includes(job))
-  const totalSpeed = active.reduce((total, job) => total + job.speed_bps, 0)
-  const remainingBytes = active.reduce(
-    (total, job) => total + Math.max(0, job.total_bytes - job.downloaded_bytes),
-    0,
-  )
-  const completedCount = jobs.filter((job) => job.status === 'complete').length
-
-  async function cancel(job: DownloadJob) {
-    setCancelling(job.id)
-    try {
-      await api.cancelDownload(job.id)
-      onToast(`${job.repo_id} was cancelled. Partial files were kept for resume.`)
-      refreshDownloads()
-    } catch (reason) {
-      onToast(reason instanceof Error ? reason.message : 'Unable to cancel download', 'error')
-    } finally {
-      setCancelling(null)
-    }
-  }
-
-  return (
-    <div className="standard-page downloads-page">
-      <div className="page-heading">
-        <div>
-          <span className="eyebrow">Persistent background transfers</span>
-          <h1>Downloads</h1>
-          <p>Monitor precise transfer activity, stop work safely, and keep partial files ready to resume.</p>
-        </div>
-      </div>
-
-      <section className="transfer-overview" aria-label="Download activity summary">
-        <div><span>Active transfers</span><strong>{active.length}</strong><small>queued or downloading</small></div>
-        <div><span>Combined speed</span><strong>{totalSpeed > 0 ? `${formatBytes(totalSpeed)}/s` : '—'}</strong><small>across active jobs</small></div>
-        <div><span>Remaining</span><strong>{remainingBytes > 0 ? formatBytes(remainingBytes) : '—'}</strong><small>known repository data</small></div>
-        <div><span>Completed</span><strong>{completedCount}</strong><small>stored in the library</small></div>
-      </section>
-
-      <section className="download-section">
-        <h2>Active</h2>
-        <div className="download-list">
-          {active.map((job) => (
-            <DownloadStatus
-              key={job.id}
-              job={job}
-              onCancel={cancel}
-              cancelling={cancelling === job.id}
-            />
-          ))}
-          {active.length === 0 && (
-            <div className="empty-compact">
-              <Clock3 size={18} /> No active downloads.
-            </div>
-          )}
-        </div>
-      </section>
-      <section className="download-section">
-        <h2>History</h2>
-        <div className="download-list">
-          {finished.map((job) => (
-            <DownloadStatus key={job.id} job={job} />
-          ))}
-          {finished.length === 0 && <div className="empty-compact">Completed, cancelled, and failed jobs appear here.</div>}
-        </div>
-      </section>
-    </div>
-  )
-}
-
 function Application({
   authStatus,
   onAuthChange,
@@ -570,7 +380,6 @@ function Application({
   authStatus: AuthStatus
   onAuthChange: (status: AuthStatus) => void
 }) {
-  const [jobs, setJobs] = useState<DownloadJob[]>([])
   const [toast, setToast] = useState<{ message: string; tone: ToastTone } | null>(null)
 
   const showToast = useCallback((message: string, tone: ToastTone = 'success') => {
@@ -579,22 +388,6 @@ function Application({
 
   const capabilities = authStatus.capabilities || []
   const can = useCallback((capability: string) => capabilities.includes(capability), [capabilities])
-  const canDownload = can('hub.download')
-
-  const refreshDownloads = useCallback(() => {
-    if (!canDownload) return
-    api
-      .downloads()
-      .then((payload) => setJobs(payload.items))
-      .catch(() => undefined)
-  }, [canDownload])
-
-  useEffect(() => {
-    if (!canDownload) return
-    refreshDownloads()
-    const timer = window.setInterval(refreshDownloads, 1800)
-    return () => window.clearInterval(timer)
-  }, [canDownload, refreshDownloads])
 
   const refreshAccess = useCallback(() => {
     api.authStatus().then(onAuthChange).catch(() => undefined)
@@ -605,11 +398,6 @@ function Application({
     const timer = window.setTimeout(() => setToast(null), 4500)
     return () => window.clearTimeout(timer)
   }, [toast])
-
-  const activeDownloads = useMemo(
-    () => jobs.filter((job) => ['queued', 'preparing', 'downloading'].includes(job.status)).length,
-    [jobs],
-  )
 
   const user = authStatus.user as User
 
@@ -624,7 +412,7 @@ function Application({
   return (
     <AccessProvider user={user} capabilities={capabilities} refresh={refreshAccess}>
     <UploadProvider onToast={showToast}>
-    <Shell activeDownloads={activeDownloads} user={user} onLogout={logout}>
+    <Shell user={user} onLogout={logout}>
       <Routes>
         <Route path="/" element={<Navigate to="/models" replace />} />
         <Route
@@ -644,20 +432,7 @@ function Application({
           path="/uploads"
           element={can('repos.create') ? <UploadsPage user={user} onToast={showToast} /> : <Navigate to="/models" replace />}
         />
-        <Route
-          path="/downloads"
-          element={
-            canDownload ? (
-              <DownloadsPage
-                jobs={jobs}
-                onToast={showToast}
-                refreshDownloads={refreshDownloads}
-              />
-            ) : (
-              <Navigate to="/models" replace />
-            )
-          }
-        />
+        <Route path="/downloads" element={<Navigate to="/models" replace />} />
         <Route path="/orgs" element={<OrganizationsIndex />} />
         <Route path="/orgs/:name" element={<OrganizationPage onToast={showToast} />} />
         <Route path="/orgs/:name/:tab" element={<OrganizationPage onToast={showToast} />} />

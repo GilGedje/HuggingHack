@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import {
   Bookmark,
   Box,
-  Download,
   LogOut,
   Menu,
   Moon,
@@ -21,7 +20,6 @@ import type { User } from '../types'
 
 interface ShellProps {
   children: ReactNode
-  activeDownloads: number
   user: User
   onLogout: () => void
 }
@@ -30,7 +28,6 @@ const links = [
   { to: '/models', label: 'Models', icon: Box, capability: 'models.browse' },
   { to: '/saved', label: 'Saved', icon: Bookmark, capability: 'models.save' },
   { to: '/uploads', label: 'Uploads', icon: UploadCloud, capability: 'repos.create' },
-  { to: '/downloads', label: 'Downloads', icon: Download, capability: 'hub.download' },
 ]
 
 type Theme = 'light' | 'dark'
@@ -48,7 +45,7 @@ function storedTheme(): Theme | null {
   }
 }
 
-export default function Shell({ children, activeDownloads, user, onLogout }: ShellProps) {
+export default function Shell({ children, user, onLogout }: ShellProps) {
   const navigate = useNavigate()
   const searchInput = useRef<HTMLInputElement>(null)
   const [query, setQuery] = useState('')
@@ -135,9 +132,6 @@ export default function Shell({ children, activeDownloads, user, onLogout }: She
               <NavLink key={to} to={to} className={({ isActive }) => (isActive ? 'active' : '')}>
                 <Icon size={16} aria-hidden="true" />
                 <span>{label}</span>
-                {to === '/downloads' && activeDownloads > 0 && (
-                  <span className="nav-count">{activeDownloads}</span>
-                )}
               </NavLink>
             ))}
             {isAdmin && (
@@ -197,9 +191,6 @@ export default function Shell({ children, activeDownloads, user, onLogout }: She
               <NavLink key={to} to={to} onClick={() => setMobileOpen(false)}>
                 <Icon size={18} />
                 {label}
-                {to === '/downloads' && activeDownloads > 0 && (
-                  <span className="nav-count">{activeDownloads}</span>
-                )}
               </NavLink>
             ))}
             {isAdmin && (

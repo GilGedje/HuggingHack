@@ -153,6 +153,7 @@ export interface ServerSettings {
     redirect_url?: string | null
   }
   hugging_face: {
+    downloads_enabled: boolean
     endpoint: string
     token_configured: boolean
     max_concurrent_downloads: number

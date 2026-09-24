@@ -690,9 +690,17 @@ function ServerTab() {
         <section className="settings-section">
           <h2>Hugging Face</h2>
           <dl className="settings-list">
-            <Fact label="Endpoint" value={server.hugging_face.endpoint} />
-            <Fact label="Access token" value={server.hugging_face.token_configured ? 'Configured' : 'Not set'} good={server.hugging_face.token_configured} />
-            <Fact label="Parallel downloads" value={`${server.hugging_face.max_concurrent_downloads} × ${server.hugging_face.workers_per_download} workers`} />
+            <Fact
+              label="Server downloads"
+              value={server.hugging_face.downloads_enabled ? 'On (API only)' : 'Off · models arrive by upload'}
+            />
+            {server.hugging_face.downloads_enabled && (
+              <>
+                <Fact label="Endpoint" value={server.hugging_face.endpoint} />
+                <Fact label="Access token" value={server.hugging_face.token_configured ? 'Configured' : 'Not set'} good={server.hugging_face.token_configured} />
+                <Fact label="Parallel downloads" value={`${server.hugging_face.max_concurrent_downloads} × ${server.hugging_face.workers_per_download} workers`} />
+              </>
+            )}
           </dl>
         </section>
         <section className="settings-section">

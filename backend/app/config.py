@@ -80,6 +80,9 @@ class Settings:
     storage_targets_json: str = os.getenv("STORAGE_TARGETS_JSON", "[]")
     default_storage_target: str | None = (os.getenv("DEFAULT_STORAGE_TARGET") or "").strip() or None
     hub_api_enabled: bool = _boolean("HUB_API_ENABLED", True)
+    # Downloading models from Hugging Face needs internet access, so air-gapped
+    # servers leave it off; turn it on only where HF_ENDPOINT is reachable.
+    hf_downloads_enabled: bool = _boolean("HF_DOWNLOADS_ENABLED", False)
     oidc_issuer: str | None = (os.getenv("OIDC_ISSUER") or "").strip() or None
     oidc_client_id: str | None = (os.getenv("OIDC_CLIENT_ID") or "").strip() or None
     oidc_client_secret: str | None = field(

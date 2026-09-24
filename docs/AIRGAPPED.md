@@ -108,12 +108,15 @@ password of at least 12 characters). Accounts are stored only in the local datab
 
 Administrators open **Admin** in the top bar:
 
-- **Users**: add accounts, pick each one's role, disable or enable them, reset passwords,
-  sign people out everywhere, and delete accounts that own no repositories.
+- **Users**: search by name, username, or email; filter by role or status; sort; and page
+  through the list (10 to 100 per page). **Add user** (top right) opens a dialog to create an
+  account, pick its role, and optionally put it straight into organizations with a role in each.
+  From the list: change roles, disable or enable accounts, reset passwords, sign people out
+  everywhere, and delete accounts that own no repositories.
 - **Roles & permissions**: exactly what each role can do.
   - **Viewer**: browse, save, and pull models; personal API tokens.
-  - **Member**: a viewer who can also upload and change their own repositories, rescan
-    storage, and download from Hugging Face.
+  - **Member**: a viewer who can also upload and change their own repositories, and rescan
+    storage.
   - **Administrator**: everything, including storage, runtimes, and accounts.
 - **Storage**, **Runtimes**, and **Server** (the `.env` configuration, secrets hidden).
 
