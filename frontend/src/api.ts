@@ -1,6 +1,8 @@
 import type {
   AccountOverview,
   AccountSession,
+  AdminOrganizationPage,
+  AdminOrganizationQuery,
   AdminUserPage,
   AdminUserQuery,
   ApiToken,
@@ -141,6 +143,12 @@ export const api = {
       method: 'DELETE',
     }),
   organizations: () => request<{ items: Organization[] }>('/api/organizations'),
+  adminOrganizations: (query: AdminOrganizationQuery) => {
+    const params = new URLSearchParams({ page: String(query.page), per_page: String(query.per_page), sort: query.sort })
+    if (query.q.trim()) params.set('q', query.q.trim())
+    if (query.filter) params.set('filter', query.filter)
+    return request<AdminOrganizationPage>(`/api/admin/organizations?${params.toString()}`)
+  },
   organization: (name: string) =>
     request<OrganizationDetails>(`/api/organizations/${encodeURIComponent(name)}`),
   createOrganization: (payload: { name: string; display_name?: string; description?: string }) =>

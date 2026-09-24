@@ -276,3 +276,34 @@ def test_upload_permission_needs_both_server_and_organization_roles(org):
         headers={"Upload-Offset": "0", "Upload-Length": "2"},
         content=b"{}",
     ).status_code == 404
+
+
+def test_admin_organization_list_is_paged_and_filtered(org):
+    admin, _ = login("admin")
+    for index in range(30):
+        created = admin.post("/api/organizations", json={"name": f"Lab{index:02d}", "display_name": f"Research Lab {index:02d}", "description": "gpu_team" if index % 5 == 0 else ""})
+        assert created.status_code == 201, created.text
+    member, _ = login("member")
+    assert member.get("/api/admin/organizations").status_code == 403
+
+    first = admin.get("/api/admin/organizations").json()
+    assert (first["total"], first["pages"], len(first["items"])) == (31, 2, 25)
+    assert first["counts"] == {"all": 31, "with_repositories": 0, "empty": 31, "mine": 31}
+    assert first["items"][0]["name"] == "Lab00" and first["items"][0]["my_role"] == "admin"
+    last = admin.get("/api/admin/organizations", params={"page": 9}).json()
+    assert last["page"] == 2 and len(last["items"]) == 6
+
+    writer, _ = login("writer")
+    repo_id = writer.post("/api/uploads/repositories", json={"slug": "m", "namespace": "Nvidia"}).json()["repo_id"]
+    assert repo_id
+    with_repos = admin.get("/api/admin/organizations", params={"filter": "with_repositories"}).json()
+    assert [item["name"] for item in with_repos["items"]] == ["Nvidia"]
+    by_members = admin.get("/api/admin/organizations", params={"sort": "members", "per_page": 1}).json()
+    assert by_members["items"][0]["name"] == "Nvidia" and by_members["items"][0]["member_count"] == 3
+
+    searched = admin.get("/api/admin/organizations", params={"q": "research lab 1"}).json()
+    assert searched["total"] == 10 and searched["counts"]["all"] == 10
+    assert admin.get("/api/admin/organizations", params={"q": "GPU_TEAM"}).json()["total"] == 6
+    assert admin.get("/api/admin/organizations", params={"q": "_"}).json()["total"] == 6  # the literal underscore
+    assert admin.get("/api/admin/organizations", params={"q": "%"}).json()["total"] == 0
+    assert admin.get("/api/admin/organizations", params={"filter": "nope"}).status_code == 422

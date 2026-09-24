@@ -1,10 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   Building2,
   Check,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   CircleX,
   KeyRound,
   LoaderCircle,
@@ -21,11 +19,11 @@ import {
   Wifi,
   X,
 } from 'lucide-react'
-import { Link, NavLink, Navigate, useParams, useSearchParams } from 'react-router-dom'
+import { Link, NavLink, Navigate, useParams } from 'react-router-dom'
 import { useAccess } from '../access'
 import { api } from '../api'
-import type { AdminUser, AdminUserPage, AdminUserQuery, AdminUserSort, Organization, OrganizationRole, PermissionMatrix, Role, ServerSettings } from '../types'
-import { pageList } from '../pagination'
+import type { AdminOrganizationFilter, AdminOrganizationPage, AdminOrganizationQuery, AdminOrganizationSort, AdminUser, AdminUserPage, AdminUserQuery, AdminUserSort, Organization, OrganizationRole, PermissionMatrix, Role, ServerSettings } from '../types'
+import { ListPager, useListQuery } from '../components/ListPager'
 import { relativeTime } from '../utils'
 import { ORG_ROLE_LABELS } from './OrganizationPage'
 import { RuntimesPage } from './RuntimesPage'
@@ -39,8 +37,6 @@ function errorMessage(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback
 }
 
-const PAGE_SIZES = [10, 25, 50, 100]
-const PAGE_SIZE_KEY = 'hugginghack.admin.users.per-page'
 const SORT_LABELS: Record<AdminUserSort, string> = {
   role: 'Role',
   name: 'Name',
@@ -54,28 +50,11 @@ const ROLE_FILTERS: Array<{ id: '' | Role; label: string }> = [
   { id: 'viewer', label: 'Viewers' },
 ]
 
-function storedPageSize(): number {
-  try {
-    const value = Number(window.localStorage.getItem(PAGE_SIZE_KEY))
-    return PAGE_SIZES.includes(value) ? value : 25
-  } catch {
-    return 25
-  }
-}
-
-function readUserQuery(params: URLSearchParams): AdminUserQuery {
-  const role = params.get('role') || ''
-  const status = params.get('status') || ''
-  const sort = params.get('sort') || ''
-  const perPage = Number(params.get('per_page'))
-  return {
-    q: params.get('q') || '',
-    role: role in ROLE_LABELS ? (role as Role) : '',
-    status: status === 'active' || status === 'disabled' ? status : '',
-    sort: sort in SORT_LABELS ? (sort as AdminUserSort) : 'role',
-    page: Math.max(1, Math.floor(Number(params.get('page'))) || 1),
-    per_page: PAGE_SIZES.includes(perPage) ? perPage : storedPageSize(),
-  }
+const USER_QUERY_DEFAULTS = { q: '', role: '', status: '', sort: 'role' }
+const USER_QUERY_CHOICES = {
+  role: ['admin', 'member', 'viewer'],
+  status: ['active', 'disabled'],
+  sort: Object.keys(SORT_LABELS),
 }
 
 const EMPTY_ACCOUNT = { username: '', display_name: '', email: '', password: '', role: 'member' as Role }
@@ -236,9 +215,12 @@ function AddUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
 
 function UsersTab({ onToast }: { onToast: ToastHandler }) {
   const { user: me } = useAccess()
-  const [params, setParams] = useSearchParams()
-  const query = useMemo(() => readUserQuery(params), [params])
-  const [search, setSearch] = useState(query.q)
+  const { query: listQuery, update, search, setSearch, changePageSize } = useListQuery(
+    USER_QUERY_DEFAULTS,
+    'hugginghack.admin.users.per-page',
+    USER_QUERY_CHOICES,
+  )
+  const query = listQuery as AdminUserQuery
   const [result, setResult] = useState<AdminUserPage | null>(null)
   const [loading, setLoading] = useState(true)
   const [accountsEnabled, setAccountsEnabled] = useState(true)
@@ -246,21 +228,6 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
   const [adding, setAdding] = useState(false)
   const latest = useRef(0)
   const users = result?.items || []
-
-  const update = useCallback(
-    (changes: Partial<AdminUserQuery>, replace = false) => {
-      const next = { ...query, page: 1, ...changes }
-      const values = new URLSearchParams()
-      if (next.q.trim()) values.set('q', next.q.trim())
-      if (next.role) values.set('role', next.role)
-      if (next.status) values.set('status', next.status)
-      if (next.sort !== 'role') values.set('sort', next.sort)
-      if (next.page > 1) values.set('page', String(next.page))
-      if (next.per_page !== 25) values.set('per_page', String(next.per_page))
-      setParams(values, { replace })
-    },
-    [query, setParams],
-  )
 
   const load = useCallback(() => {
     const request = ++latest.current
@@ -285,29 +252,6 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
   useEffect(() => {
     load()
   }, [load])
-
-  // The address is the source of truth: Back, Forward, or the Users tab link
-  // replace the search box text instead of the box re-applying an old search.
-  useEffect(() => {
-    setSearch((current) => (current.trim() === query.q ? current : query.q))
-  }, [query.q])
-
-  useEffect(() => {
-    if (search.trim() === query.q) return
-    const timer = window.setTimeout(() => update({ q: search }, true), 250)
-    return () => window.clearTimeout(timer)
-  }, [search, query.q, update])
-
-  function changePageSize(value: number) {
-    try {
-      window.localStorage.setItem(PAGE_SIZE_KEY, String(value))
-    } catch {
-      // Remembering the page size is a convenience only.
-    }
-    // Keep the first account on screen in view after the page size changes.
-    const firstIndex = (query.page - 1) * query.per_page
-    update({ per_page: value, page: Math.floor(firstIndex / value) + 1 })
-  }
 
   function clearFilters() {
     setSearch('')
@@ -494,46 +438,16 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
             )
           })}
         </div>
-        {result && result.total > 0 && (
-          <div className="admin-user-pager">
-            <span className="admin-user-muted">
-              Showing {(result.page - 1) * result.per_page + 1}–{Math.min(result.page * result.per_page, result.total)} of {result.total}
-            </span>
-            <label className="pager-size">
-              Rows per page
-              <span className="sort-control compact">
-                <select value={query.per_page} onChange={(event) => changePageSize(Number(event.target.value))} aria-label="Rows per page">
-                  {PAGE_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}
-                </select>
-                <ChevronDown size={14} />
-              </span>
-            </label>
-            {result.pages > 1 && (
-              <nav className="pager" aria-label="Account pages">
-                <button type="button" disabled={result.page <= 1} onClick={() => update({ page: result.page - 1 })} aria-label="Previous page">
-                  <ChevronLeft size={15} />
-                </button>
-                {pageList(result.page, result.pages).map((page, index) =>
-                  page === null ? (
-                    <span key={`gap-${index}`} className="pager-gap">…</span>
-                  ) : (
-                    <button
-                      key={page}
-                      type="button"
-                      className={page === result.page ? 'current' : undefined}
-                      aria-current={page === result.page ? 'page' : undefined}
-                      onClick={() => update({ page })}
-                    >
-                      {page}
-                    </button>
-                  ),
-                )}
-                <button type="button" disabled={result.page >= result.pages} onClick={() => update({ page: result.page + 1 })} aria-label="Next page">
-                  <ChevronRight size={15} />
-                </button>
-              </nav>
-            )}
-          </div>
+        {result && (
+          <ListPager
+            page={result.page}
+            pages={result.pages}
+            perPage={result.per_page}
+            total={result.total}
+            label="Account pages"
+            onPage={(page) => update({ page })}
+            onPageSize={changePageSize}
+          />
         )}
       </section>
       {adding && (
@@ -745,32 +659,142 @@ function ServerTab() {
   )
 }
 
-function OrganizationsTab({ onToast }: { onToast: ToastHandler }) {
-  const [items, setItems] = useState<Organization[]>([])
+const ORG_SORT_LABELS: Record<AdminOrganizationSort, string> = {
+  name: 'Name',
+  newest: 'Newest',
+  repositories: 'Most repositories',
+  members: 'Most members',
+}
+const ORG_FILTERS: Array<{ id: AdminOrganizationFilter; label: string }> = [
+  { id: '', label: 'All' },
+  { id: 'with_repositories', label: 'With repositories' },
+  { id: 'empty', label: 'No repositories' },
+  { id: 'mine', label: 'You belong to' },
+]
+const ORG_QUERY_DEFAULTS = { q: '', filter: '', sort: 'name' }
+const ORG_QUERY_CHOICES = {
+  filter: ['with_repositories', 'empty', 'mine'],
+  sort: Object.keys(ORG_SORT_LABELS),
+}
+
+function NewOrganizationDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (name: string) => void }) {
   const [form, setForm] = useState({ name: '', display_name: '', description: '' })
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const firstField = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    firstField.current?.focus()
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', escape)
+    return () => window.removeEventListener('keydown', escape)
+  }, [onClose])
+
+  async function create(event: FormEvent) {
+    event.preventDefault()
+    setSaving(true)
+    setError('')
+    try {
+      const created = await api.createOrganization(form)
+      onCreated(created.name)
+    } catch (reason) {
+      setError(errorMessage(reason, 'Could not create the organization.'))
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="use-model-backdrop" role="presentation" onMouseDown={onClose}>
+      <form
+        className="use-model-dialog add-user-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-org-title"
+        onMouseDown={(event) => event.stopPropagation()}
+        onSubmit={create}
+      >
+        <header className="use-model-header">
+          <div>
+            <span className="eyebrow">New organization</span>
+            <h2 id="new-org-title">Create an organization</h2>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">
+            <X size={20} />
+          </button>
+        </header>
+        <div className="use-model-body">
+          <div className="admin-create-user">
+            <label>
+              <span>Name</span>
+              <input ref={firstField} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Nvidia" autoComplete="off" required />
+            </label>
+            <label>
+              <span>Display name <small>optional</small></span>
+              <input value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} placeholder="NVIDIA" />
+            </label>
+            <label className="wide">
+              <span>Description <small>optional</small></span>
+              <input value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
+            </label>
+          </div>
+          <p className="add-user-org-note new-org-hint">
+            The name becomes a namespace, as in <code>{form.name.trim() || 'Nvidia'}/GLM-5.3-NVFP4</code>, and cannot be
+            changed later. You become its first admin.
+          </p>
+          {error && <div className="inline-error add-user-error">{error}</div>}
+          <div className="add-user-footer">
+            <span>Add members from the organization page afterwards.</span>
+            <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
+            <button type="submit" className="download-button" disabled={saving}>
+              {saving ? <LoaderCircle size={16} className="spin" /> : <Building2 size={16} />} Create organization
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+function OrganizationsTab({ onToast }: { onToast: ToastHandler }) {
+  const { query: listQuery, update, search, setSearch, changePageSize } = useListQuery(
+    ORG_QUERY_DEFAULTS,
+    'hugginghack.admin.organizations.per-page',
+    ORG_QUERY_CHOICES,
+  )
+  const query = listQuery as AdminOrganizationQuery
+  const [result, setResult] = useState<AdminOrganizationPage | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [creating, setCreating] = useState(false)
+  const latest = useRef(0)
+  const items = result?.items || []
 
   const load = useCallback(() => {
-    api.organizations().then((payload) => setItems(payload.items)).catch(() => undefined)
-  }, [])
+    const request = ++latest.current
+    setLoading(true)
+    api
+      .adminOrganizations(query)
+      .then((payload) => {
+        if (request !== latest.current) return
+        setResult(payload)
+        if (payload.page !== query.page) update({ page: payload.page }, true)
+      })
+      .catch((reason) => {
+        if (request === latest.current) onToast(errorMessage(reason, 'Could not load organizations.'), 'error')
+      })
+      .finally(() => {
+        if (request === latest.current) setLoading(false)
+      })
+  }, [query, onToast, update])
 
   useEffect(() => {
     load()
   }, [load])
 
-  async function create(event: FormEvent) {
-    event.preventDefault()
-    setSaving(true)
-    try {
-      await api.createOrganization(form)
-      onToast(`${form.name} was created. You are its first admin.`)
-      setForm({ name: '', display_name: '', description: '' })
-      load()
-    } catch (reason) {
-      onToast(errorMessage(reason, 'Could not create the organization.'), 'error')
-    } finally {
-      setSaving(false)
-    }
+  function clearFilters() {
+    setSearch('')
+    update({ q: '', filter: '' })
   }
 
   async function remove(organization: Organization) {
@@ -786,17 +810,83 @@ function OrganizationsTab({ onToast }: { onToast: ToastHandler }) {
 
   return (
     <>
-      <section className="settings-section">
+      <section className="settings-section admin-users">
         <div className="section-heading-line">
           <div>
-            <span className="eyebrow">{items.length} organization{items.length === 1 ? '' : 's'}</span>
+            <span className="eyebrow">
+              {result ? `${result.counts.all} organization${result.counts.all === 1 ? '' : 's'}${query.q ? ' match' : ''}` : 'Organizations'}
+            </span>
             <h2>Organizations</h2>
           </div>
+          <button type="button" className="download-button compact" onClick={() => setCreating(true)}>
+            <Plus size={15} /> New organization
+          </button>
         </div>
-        <div className="admin-user-table" role="table" aria-label="Organizations">
+        <div className="admin-user-toolbar">
+          <div className="catalog-search compact">
+            <Search size={16} />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search name or description"
+              aria-label="Search organizations"
+            />
+            {search && (
+              <button type="button" onClick={() => setSearch('')} aria-label="Clear search">
+                <CircleX size={15} />
+              </button>
+            )}
+          </div>
+          <label className="sort-control compact">
+            <SlidersHorizontal size={14} />
+            <select
+              value={query.sort}
+              onChange={(event) => update({ sort: event.target.value as AdminOrganizationSort })}
+              aria-label="Sort organizations"
+            >
+              {Object.entries(ORG_SORT_LABELS).map(([id, label]) => <option key={id} value={id}>Sort: {label}</option>)}
+            </select>
+            <ChevronDown size={14} />
+          </label>
+        </div>
+        <div className="role-filter" role="group" aria-label="Filter organizations">
+          {ORG_FILTERS.map((filter) => (
+            <button
+              key={filter.id || 'all'}
+              type="button"
+              className={query.filter === filter.id ? 'selected' : undefined}
+              aria-pressed={query.filter === filter.id}
+              onClick={() => update({ filter: filter.id })}
+            >
+              {filter.label}
+              {result && <span>{result.counts[filter.id || 'all']}</span>}
+            </button>
+          ))}
+        </div>
+        <div className={loading && result ? 'admin-user-table refreshing' : 'admin-user-table'} role="table" aria-label="Organizations" aria-busy={loading}>
           <div className="admin-user-row org-row header" role="row">
             <span>Organization</span><span>Repositories</span><span>Members</span><span>Your role</span><span />
           </div>
+          {!result && loading && (
+            <div className="admin-user-empty"><LoaderCircle size={20} className="spin" /></div>
+          )}
+          {result && items.length === 0 && (
+            <div className="admin-user-empty">
+              {result.counts.all === 0 && !query.q ? (
+                <>
+                  <strong>No organizations yet.</strong>
+                  <button type="button" className="secondary-button compact" onClick={() => setCreating(true)}>
+                    <Plus size={14} /> New organization
+                  </button>
+                </>
+              ) : (
+                <>
+                  <strong>No organizations match these filters.</strong>
+                  <button type="button" className="secondary-button compact" onClick={clearFilters}>Clear filters</button>
+                </>
+              )}
+            </div>
+          )}
           {items.map((organization) => (
             <div className="admin-user-row org-row" role="row" key={organization.id}>
               <span className="admin-user-name">
@@ -805,7 +895,7 @@ function OrganizationsTab({ onToast }: { onToast: ToastHandler }) {
               </span>
               <span className="admin-user-muted">{organization.repository_count || 0}</span>
               <span className="admin-user-muted">{organization.member_count || 0}</span>
-              <span className="admin-user-muted">{organization.my_role || '—'}</span>
+              <span className="admin-user-muted">{organization.my_role ? ORG_ROLE_LABELS[organization.my_role] : '—'}</span>
               <span className="admin-user-actions">
                 <Link to={`/orgs/${organization.name}/members`} className="secondary-button compact">Members</Link>
                 <button type="button" className="danger-text" aria-label={`Delete ${organization.name}`} title="Delete organization" onClick={() => remove(organization)}>
@@ -814,26 +904,29 @@ function OrganizationsTab({ onToast }: { onToast: ToastHandler }) {
               </span>
             </div>
           ))}
-          {items.length === 0 && <div className="empty-compact">No organizations yet.</div>}
         </div>
+        {result && (
+          <ListPager
+            page={result.page}
+            pages={result.pages}
+            perPage={result.per_page}
+            total={result.total}
+            label="Organization pages"
+            onPage={(page) => update({ page })}
+            onPageSize={changePageSize}
+          />
+        )}
       </section>
-      <section className="settings-section">
-        <div className="settings-section-title">
-          <Plus size={20} />
-          <div>
-            <h2>New organization</h2>
-            <p>Its name becomes a namespace like <code>Nvidia/GLM-5.3-NVFP4</code>. It cannot be renamed later.</p>
-          </div>
-        </div>
-        <form className="admin-create-user" onSubmit={create}>
-          <label>Name<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Nvidia" required /></label>
-          <label>Display name<input value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} placeholder="NVIDIA" /></label>
-          <label>Description <small>optional</small><input value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label>
-          <button className="download-button" disabled={saving}>
-            {saving ? <LoaderCircle size={16} className="spin" /> : <Plus size={16} />} Create organization
-          </button>
-        </form>
-      </section>
+      {creating && (
+        <NewOrganizationDialog
+          onClose={() => setCreating(false)}
+          onCreated={(name) => {
+            setCreating(false)
+            onToast(`${name} was created. You are its first admin.`)
+            load()
+          }}
+        />
+      )}
     </>
   )
 }

@@ -1938,6 +1938,28 @@ def list_organizations(user: Browser) -> dict:
     return {"items": database.list_organizations(user["id"])}
 
 
+@app.get("/api/admin/organizations")
+def admin_list_organizations(
+    user: OrgCreator,
+    q: Annotated[str, Query(max_length=200)] = "",
+    filter: Literal["", "with_repositories", "empty", "mine"] = "",
+    sort: Literal["name", "newest", "repositories", "members"] = "name",
+    page: Annotated[int, Query(ge=1)] = 1,
+    per_page: Annotated[int, Query(ge=1, le=max(USER_PAGE_SIZES))] = 25,
+) -> dict:
+    options = {"query": q, "filter": filter or None, "sort": sort}
+    items, total, counts = database.search_organizations(
+        user["id"], **options, limit=per_page, offset=(page - 1) * per_page
+    )
+    pages = max(1, -(-total // per_page))
+    if page > pages:
+        page = pages
+        items, total, counts = database.search_organizations(
+            user["id"], **options, limit=per_page, offset=(page - 1) * per_page
+        )
+    return {"items": items, "total": total, "page": page, "per_page": per_page, "pages": pages, "counts": counts}
+
+
 @app.post("/api/organizations", status_code=201)
 def create_organization(payload: OrganizationRequest, user: OrgCreator) -> dict:
     try:

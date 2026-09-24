@@ -1718,6 +1718,85 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    ORGANIZATION_SORTS = {
+        "name": "LOWER(name)",
+        "newest": "created_at DESC, LOWER(name)",
+        "repositories": "repository_count DESC, LOWER(name)",
+        "members": "member_count DESC, LOWER(name)",
+    }
+    ORGANIZATION_FILTERS = {
+        "with_repositories": "repository_count > 0",
+        "empty": "repository_count = 0",
+        "mine": "my_role IS NOT NULL",
+    }
+
+    def search_organizations(
+        self,
+        user_id: str,
+        *,
+        query: str = "",
+        filter: str | None = None,
+        sort: str = "name",
+        limit: int = 25,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int, dict[str, int]]:
+        """One page of organizations for the admin list, the total that matched,
+        and counts per filter for the search text alone."""
+        base = """
+            SELECT organizations.*,
+                (SELECT COUNT(*) FROM organization_members
+                    WHERE organization_id = organizations.id) AS member_count,
+                (SELECT COUNT(*) FROM owned_repositories
+                    WHERE organization_id = organizations.id) AS repository_count,
+                (SELECT role FROM organization_members
+                    WHERE organization_id = organizations.id AND user_id = ?) AS my_role
+            FROM organizations
+        """
+        search_clauses: list[str] = []
+        search_params: list[Any] = [user_id]
+        text = query.strip().lower()
+        if text:
+            # '!' escapes LIKE wildcards; the pattern travels as a parameter.
+            escaped = text.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+            pattern = f"%{escaped}%"
+            search_clauses.append(
+                "(LOWER(name) LIKE ? ESCAPE '!' OR LOWER(display_name) LIKE ? ESCAPE '!' "
+                "OR LOWER(description) LIKE ? ESCAPE '!')"
+            )
+            search_params += [pattern, pattern, pattern]
+        clauses = list(search_clauses)
+        if filter in self.ORGANIZATION_FILTERS:
+            clauses.append(self.ORGANIZATION_FILTERS[filter])
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        search_where = f"WHERE {' AND '.join(search_clauses)}" if search_clauses else ""
+        order = self.ORGANIZATION_SORTS.get(sort, self.ORGANIZATION_SORTS["name"])
+        with self.connect() as connection:
+            total = int(
+                connection.execute(
+                    f"SELECT COUNT(*) AS count FROM ({base}) AS orgs {where}", search_params
+                ).fetchone()["count"]
+            )
+            rows = connection.execute(
+                f"SELECT * FROM ({base}) AS orgs {where} ORDER BY {order} LIMIT ? OFFSET ?",
+                [*search_params, limit, offset],
+            ).fetchall()
+            row = connection.execute(
+                f"""
+                SELECT COUNT(*) AS all_count,
+                    COALESCE(SUM(CASE WHEN repository_count > 0 THEN 1 ELSE 0 END), 0) AS with_repositories,
+                    COALESCE(SUM(CASE WHEN my_role IS NOT NULL THEN 1 ELSE 0 END), 0) AS mine
+                FROM ({base}) AS orgs {search_where}
+                """,
+                search_params,
+            ).fetchone()
+        counts = {
+            "all": int(row["all_count"]),
+            "with_repositories": int(row["with_repositories"]),
+            "empty": int(row["all_count"]) - int(row["with_repositories"]),
+            "mine": int(row["mine"]),
+        }
+        return [dict(item) for item in rows], total, counts
+
     def update_organization(self, organization_id: str, **changes: Any) -> None:
         allowed = {
             key: value
