@@ -208,9 +208,15 @@ class SetupRequest(CredentialsRequest):
     display_name: str = Field(default="", max_length=80)
 
 
+class InitialMembership(BaseModel):
+    organization: str = Field(min_length=1, max_length=100)
+    role: Literal["admin", "write", "read"] = "read"
+
+
 class CreateUserRequest(SetupRequest):
     role: Literal["admin", "member", "viewer"] = "member"
     email: str | None = Field(default=None, max_length=254)
+    organizations: list[InitialMembership] = Field(default_factory=list, max_length=50)
 
 
 class PasswordChangeRequest(BaseModel):
@@ -675,14 +681,24 @@ def list_users(user: UserManager) -> dict:
 
 
 @app.post("/api/users", status_code=201)
-def create_user(payload: CreateUserRequest, _: UserAdmin) -> dict:
+def create_user(payload: CreateUserRequest, user: UserAdmin) -> dict:
+    # Check every organization before creating anything, so a bad entry leaves
+    # no half-set-up account behind.
+    memberships: list[tuple[dict[str, Any], str]] = []
+    for item in payload.organizations:
+        organization = organization_or_404(item.organization)
+        if any(chosen["id"] == organization["id"] for chosen, _ in memberships):
+            raise HTTPException(
+                status_code=400, detail=f"{organization['name']} is listed more than once."
+            )
+        require_org_admin(organization, user)
+        memberships.append((organization, item.role))
     try:
         created = auth.create_user(
             payload.username, payload.display_name, payload.password, role=payload.role
         )
         if payload.email:
             created = database.update_user(created["id"], email=clean_email(payload.email))
-        return created
     except (ValueError, *INTEGRITY_ERRORS) as error:
         detail = (
             "That username is already in use."
@@ -690,6 +706,9 @@ def create_user(payload: CreateUserRequest, _: UserAdmin) -> dict:
             else str(error)
         )
         raise HTTPException(status_code=400, detail=detail) from error
+    for organization, role in memberships:
+        database.set_organization_member(organization["id"], created["id"], role, utc_iso())
+    return {**created, "organizations": database.user_organizations(created["id"])}
 
 
 @app.patch("/api/account/password")

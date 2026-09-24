@@ -211,3 +211,31 @@ def test_organization_members_pull_private_repositories_with_tokens(live_org, tm
     )
     assert clone.returncode == 0, clone.stderr
     assert (tmp_path / "clone" / "model.safetensors").read_bytes() == WEIGHTS
+
+
+def test_new_accounts_can_start_in_organizations(org):
+    admin, _ = login("admin")
+    admin.post("/api/organizations", json={"name": "Meta"})
+    account = {"username": "newhire", "display_name": "New Hire", "password": "a long enough passphrase", "role": "member"}
+
+    # Any bad entry is rejected before the account exists.
+    missing = admin.post("/api/users", json={**account, "organizations": [{"organization": "Nvidia", "role": "write"}, {"organization": "Nope", "role": "read"}]})
+    assert missing.status_code == 404
+    twice = admin.post("/api/users", json={**account, "organizations": [{"organization": "nvidia"}, {"organization": "NVIDIA", "role": "admin"}]})
+    assert twice.status_code == 400 and "more than once" in twice.json()["detail"]
+    bad_role = admin.post("/api/users", json={**account, "organizations": [{"organization": "Nvidia", "role": "owner"}]})
+    assert bad_role.status_code == 422
+    assert main.database.get_user_by_username("newhire") is None
+
+    created = admin.post("/api/users", json={**account, "organizations": [{"organization": "nvidia", "role": "write"}, {"organization": "Meta"}]})
+    assert created.status_code == 201, created.text
+    assert [(item["name"], item["role"]) for item in created.json()["organizations"]] == [("Meta", "read"), ("Nvidia", "write")]
+    members = {item["username"]: item["role"] for item in admin.get("/api/organizations/Nvidia").json()["members"]}
+    assert members["newhire"] == "write"
+
+    # A plain account creation is unchanged.
+    plain = admin.post("/api/users", json={**account, "username": "plain"})
+    assert plain.status_code == 201 and plain.json()["organizations"] == []
+
+    member, _ = login("member")
+    assert member.post("/api/users", json={**account, "username": "sneaky", "organizations": [{"organization": "Nvidia", "role": "admin"}]}).status_code == 403
