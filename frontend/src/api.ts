@@ -2,6 +2,8 @@ import type {
   AccountOverview,
   AccountSession,
   AdminUser,
+  AdminUserPage,
+  AdminUserQuery,
   ApiToken,
   Organization,
   OrganizationDetails,
@@ -112,7 +114,13 @@ export const api = {
     request<{ status: string }>(`/api/account/tokens/${encodeURIComponent(tokenId)}`, {
       method: 'DELETE',
     }),
-  adminUsers: () => request<{ items: AdminUser[]; accounts_enabled: boolean }>('/api/admin/users'),
+  adminUsers: (query: AdminUserQuery) => {
+    const params = new URLSearchParams({ page: String(query.page), per_page: String(query.per_page), sort: query.sort })
+    if (query.q.trim()) params.set('q', query.q.trim())
+    if (query.role) params.set('role', query.role)
+    if (query.status) params.set('status', query.status)
+    return request<AdminUserPage>(`/api/admin/users?${params.toString()}`)
+  },
   adminUpdateUser: (
     userId: string,
     payload: { role?: string; disabled?: boolean; display_name?: string; email?: string | null },

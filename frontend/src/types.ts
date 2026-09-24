@@ -102,6 +102,27 @@ export interface AdminUser extends User {
   repositories: number
 }
 
+export type AdminUserSort = 'role' | 'name' | 'last_login' | 'newest'
+
+export interface AdminUserQuery {
+  q: string
+  role: '' | Role
+  status: '' | 'active' | 'disabled'
+  sort: AdminUserSort
+  page: number
+  per_page: number
+}
+
+export interface AdminUserPage {
+  items: AdminUser[]
+  total: number
+  page: number
+  per_page: number
+  pages: number
+  counts: Record<'all' | Role | 'active' | 'disabled', number>
+  accounts_enabled: boolean
+}
+
 export interface PermissionMatrix {
   roles: Array<{ id: Role; description: string; capabilities: string[] }>
   capabilities: Array<{ id: string; description: string }>
