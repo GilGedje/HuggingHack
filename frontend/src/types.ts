@@ -399,6 +399,8 @@ export interface OwnedRepository {
   modified_at?: string | null
   created_at: string
   updated_at: string
+  /** Your role on it: admins manage visibility and deletion, writers upload. */
+  my_role: 'admin' | 'write'
 }
 
 export interface StorageModel {

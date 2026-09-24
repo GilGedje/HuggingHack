@@ -413,6 +413,7 @@ Saver = requires("models.save", write=True)
 HubReader = requires("hub.download")
 HubWriter = requires("hub.download", write=True)
 Uploader = requires("repos.create", write=True)
+UploadLister = requires("repos.create")
 Editor = requires("repos.edit_own", write=True)
 Scanner = requires("library.scan", write=True)
 CacheManager = requires("library.cache", write=True)
@@ -2030,8 +2031,15 @@ def upload_namespaces(user: Browser) -> dict:
 
 
 @app.get("/api/uploads/repositories")
-def list_upload_repositories(user: Browser) -> dict:
-    return {"items": database.list_owned_repositories(user["id"])}
+def list_upload_repositories(user: UploadLister) -> dict:
+    """Repositories this user can upload to (their own and writable organizations'),
+    each with the role that decides which actions the Uploads page offers."""
+    items = []
+    for repository in database.list_owned_repositories(user["id"]):
+        role = uploads.access(repository, user["id"])
+        if role in {"admin", "write"}:
+            items.append({**repository, "my_role": role})
+    return {"items": items}
 
 
 @app.post("/api/uploads/repositories", status_code=201)

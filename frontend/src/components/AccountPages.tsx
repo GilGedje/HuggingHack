@@ -438,7 +438,7 @@ export function UploadsPage({
           current
           || (preferred && targets.items.some((item) => item.id === preferred) ? preferred : targets.default),
       )
-      setActiveRepo((current) => current || repos.items.find((item) => item.owner_id === user.id && item.status === 'uploading')?.repo_id || '')
+      setActiveRepo((current) => current || repos.items.find((item) => item.status === 'uploading')?.repo_id || '')
     } catch (reason) {
       onToast(reason instanceof Error ? reason.message : 'Unable to load repositories', 'error')
     }
@@ -620,7 +620,7 @@ export function UploadsPage({
             <select value={activeRepo} onChange={(event) => setActiveRepo(event.target.value)}>
               <option value="">Choose a repository</option>
               {repositories
-                .filter((item) => (item.owner_id === user.id || item.organization_id) && item.status === 'uploading')
+                .filter((item) => item.status === 'uploading')
                 .map((item) => <option key={item.id} value={item.repo_id}>{item.repo_id}</option>)}
             </select>
           </label>
@@ -656,7 +656,7 @@ export function UploadsPage({
       </div>
       <section className="repository-section">
         <div className="section-heading">
-          <div><span className="eyebrow">Owned and shared locally</span><h2>Account repositories</h2></div>
+          <div><span className="eyebrow">Yours and your organizations'</span><h2>Repositories you can upload to</h2></div>
           <span>{repositories.length} total</span>
         </div>
         <div className="repository-grid">
@@ -681,25 +681,27 @@ export function UploadsPage({
                   {repository.file_count != null && <span>{repository.file_count} files</span>}
                 </div>
               </div>
-              {repository.owner_id === user.id && (
-                <div className="repository-actions">
-                  {repository.status === 'ready' && (
-                    <Link to={`/models/${repository.repo_id}?upload=1`}>
-                      <UploadCloud size={14} /> Upload changes
-                    </Link>
-                  )}
-                  <button onClick={() => toggleVisibility(repository)}>
-                    {repository.visibility === 'private' ? <Users size={14} /> : <LockKeyhole size={14} />}
-                    {repository.visibility === 'private' ? 'Share locally' : 'Make private'}
-                  </button>
-                  <button className="danger-text" onClick={() => deleteRepository(repository)}>
-                    <Trash2 size={14} /> Delete
-                  </button>
-                </div>
-              )}
+              <div className="repository-actions">
+                {repository.status === 'ready' && (
+                  <Link to={`/models/${repository.repo_id}?upload=1`}>
+                    <UploadCloud size={14} /> Upload changes
+                  </Link>
+                )}
+                {repository.my_role === 'admin' && (
+                  <>
+                    <button onClick={() => toggleVisibility(repository)}>
+                      {repository.visibility === 'private' ? <Users size={14} /> : <LockKeyhole size={14} />}
+                      {repository.visibility === 'private' ? 'Share locally' : 'Make private'}
+                    </button>
+                    <button className="danger-text" onClick={() => deleteRepository(repository)}>
+                      <Trash2 size={14} /> Delete
+                    </button>
+                  </>
+                )}
+              </div>
             </article>
           ))}
-          {repositories.length === 0 && <div className="empty-compact">No account-owned repositories yet.</div>}
+          {repositories.length === 0 && <div className="empty-compact">No repositories you can upload to yet.</div>}
         </div>
       </section>
     </div>
