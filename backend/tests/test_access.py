@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import os
 import shutil
@@ -121,7 +122,6 @@ def test_roles_follow_the_capability_table(server):
     assert "models.browse" in status["capabilities"]
     assert viewer.post("/api/uploads/repositories", json={"slug": "nope"}).status_code == 403
     assert viewer.post("/api/local-models/scan").status_code == 403
-    assert viewer.post("/api/downloads", json={"repo_id": "acme/x"}).status_code == 403
     assert viewer.post("/api/repos/changes", json={"repo_id": "acme/open"}).status_code == 403
     assert viewer.get("/api/storage/targets").status_code == 403
     assert viewer.get("/api/admin/users").status_code == 403
@@ -370,3 +370,20 @@ def test_private_repositories_clone_with_a_token(live, tmp_path: Path):
     assert ok.returncode == 0, ok.stderr
     assert (tmp_path / "clone" / "model.safetensors").read_bytes() == WEIGHTS
     assert os.path.getsize(tmp_path / "clone" / "config.json") == 8
+
+
+def test_hugging_face_downloads_are_off_unless_enabled(server, monkeypatch):
+    admin, status = login("admin")
+    assert "hub.download" not in status["capabilities"]
+    assert "hub.download" not in [item["id"] for item in admin.get("/api/admin/permissions").json()["capabilities"]]
+    for method, path in (("get", "/api/downloads"), ("get", "/api/hub/models"), ("post", "/api/downloads")):
+        response = getattr(admin, method)(path, **({"json": {"repo_id": "acme/x"}} if method == "post" else {}))
+        assert response.status_code == 404, path
+        assert "HF_DOWNLOADS_ENABLED" in response.json()["detail"]
+
+    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, hf_downloads_enabled=True))
+    admin, status = login("admin")
+    assert "hub.download" in status["capabilities"]
+    assert admin.get("/api/downloads").status_code == 200
+    viewer, _ = login("viewer")
+    assert viewer.post("/api/downloads", json={"repo_id": "acme/x"}).status_code == 403

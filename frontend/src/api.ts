@@ -1,7 +1,6 @@
 import type {
   AccountOverview,
   AccountSession,
-  AdminUser,
   AdminUserPage,
   AdminUserQuery,
   ApiToken,
@@ -17,11 +16,7 @@ import type {
   CommitDetail,
   CommitSummary,
   Collection,
-  DownloadJob,
-  DownloadMode,
   Health,
-  HubModel,
-  HubModelDetails,
   LibraryModelDetails,
   LibrarySearchResult,
   LocalModel,
@@ -176,30 +171,10 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   health: () => request<Health>('/api/health'),
-  searchModels: (params: URLSearchParams) =>
-    request<{ items: HubModel[]; count: number }>(`/api/hub/models?${params.toString()}`),
-  modelDetails: (repoId: string) =>
-    request<HubModelDetails>(`/api/hub/models/${repoPath(repoId)}`),
   libraryModels: (params: URLSearchParams) =>
     request<LibrarySearchResult>(`/api/library/models?${params.toString()}`),
   libraryModelDetails: (repoId: string) =>
     request<LibraryModelDetails>(`/api/library/models/${repoPath(repoId)}`),
-  downloads: () => request<{ items: DownloadJob[]; active: number }>('/api/downloads'),
-  startDownload: (payload: {
-    repo_id: string
-    revision?: string
-    allow_patterns?: string[]
-    ignore_patterns?: string[]
-    mode?: DownloadMode
-  }) =>
-    request<DownloadJob>('/api/downloads', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
-  cancelDownload: (downloadId: string) =>
-    request<DownloadJob>(`/api/downloads/${encodeURIComponent(downloadId)}/cancel`, {
-      method: 'POST',
-    }),
   localModels: (query = '') =>
     request<{ items: LocalModel[]; count: number; total_bytes: number }>(
       `/api/local-models?query=${encodeURIComponent(query)}`,

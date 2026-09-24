@@ -155,7 +155,8 @@ async def lifespan(_: FastAPI):
     # bucket is offline or a large library records its first history.
     startup_scan = asyncio.create_task(run_in_threadpool(refresh_model_index))
     startup_scan.add_done_callback(log_startup_scan)
-    downloads.resume_unfinished()
+    if settings.hf_downloads_enabled:
+        downloads.resume_unfinished()
     yield
     downloads.shutdown()
     runtimes.shutdown()
@@ -359,12 +360,26 @@ def require_session(request: Request) -> None:
         )
 
 
+def disabled_capabilities() -> frozenset[str]:
+    """Capabilities for features this server has turned off."""
+    return frozenset() if settings.hf_downloads_enabled else frozenset({"hub.download"})
+
+
+def user_capabilities(user: dict[str, Any] | None) -> frozenset[str]:
+    return capabilities_for(user) - disabled_capabilities()
+
+
 def requires(capability: str, *, write: bool = False, session_only: bool = False) -> Any:
     """A dependency that allows only users whose role grants `capability`."""
     base = require_write_user if write else require_user
 
     # A default-value Depends, because string annotations cannot see `base`.
     def dependency(request: Request, user: dict = Depends(base)) -> dict[str, Any]:  # noqa: B008
+        if capability in disabled_capabilities():
+            raise HTTPException(
+                status_code=404,
+                detail="Downloading from Hugging Face is turned off on this server (HF_DOWNLOADS_ENABLED).",
+            )
         if session_only:
             require_session(request)
         if not can(user, capability):
@@ -432,7 +447,7 @@ def auth_payload(session: dict[str, Any] | None = None) -> dict[str, Any]:
         "oidc": {"enabled": settings.oidc_enabled, "name": settings.oidc_provider_name},
         "setup_required": auth.setup_required(),
         "user": user,
-        "capabilities": sorted(capabilities_for(user)),
+        "capabilities": sorted(user_capabilities(user)),
         "csrf_token": session.get("csrf_token") if session else None,
     }
 
@@ -803,7 +818,7 @@ def account_overview(user: SessionUser) -> dict:
         "user": user,
         "capabilities": [
             {"id": capability, "description": CAPABILITIES[capability]}
-            for capability in sorted(capabilities_for(user))
+            for capability in sorted(user_capabilities(user))
         ],
         "accounts_enabled": settings.accounts_enabled,
         "local_password": user.get("auth_provider", "local") == "local" and settings.accounts_enabled,
@@ -1026,7 +1041,7 @@ def admin_delete_user(user_id: str, admin: UserAdmin) -> dict:
 
 @app.get("/api/admin/permissions")
 def admin_permissions(_: UserManager) -> dict:
-    return permission_matrix()
+    return permission_matrix(disabled_capabilities())
 
 
 def public_database_target() -> str:
@@ -1084,6 +1099,7 @@ def admin_server(_: SettingsViewer) -> dict:
             or (f"{settings.public_url}/api/auth/oidc/callback" if settings.public_url else None),
         },
         "hugging_face": {
+            "downloads_enabled": settings.hf_downloads_enabled,
             "endpoint": settings.hf_endpoint,
             "token_configured": bool(settings.hf_token),
             "max_concurrent_downloads": settings.max_concurrent_downloads,
