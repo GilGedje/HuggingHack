@@ -7,6 +7,7 @@ import type {
   ApiToken,
   Organization,
   OrganizationDetails,
+  OrganizationRole,
   UploadNamespace,
   PermissionMatrix,
   ServerSettings,
@@ -91,6 +92,7 @@ export const api = {
     password: string
     role?: 'admin' | 'member' | 'viewer'
     email?: string
+    organizations?: Array<{ organization: string; role: OrganizationRole }>
   }) => request<User>('/api/users', { method: 'POST', body: JSON.stringify(payload) }),
   account: () => request<AccountOverview>('/api/account'),
   updateProfile: (payload: { display_name: string; email?: string | null }) =>

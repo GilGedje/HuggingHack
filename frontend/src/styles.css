@@ -2080,6 +2080,17 @@ button.file-browser-name:hover { text-decoration: underline; text-underline-offs
 .admin-create-user input, .admin-create-user select { font-weight: 400; }
 .add-user-dialog { width: min(560px, 100%); }
 .add-user-error { margin-top: 14px; }
+.add-user-orgs { margin: 18px 0 0; padding: 16px 0 0; display: grid; gap: 8px; border: 0; border-top: 1px solid var(--border); }
+.add-user-orgs legend { float: left; margin-bottom: 2px; padding: 0; color: var(--text-secondary); font-size: 11px; font-weight: 600; }
+.add-user-orgs legend small { color: var(--text-muted); font-weight: 400; }
+.add-user-org-row { display: grid; grid-template-columns: minmax(0, 1fr) 120px 34px; align-items: center; gap: 8px; }
+.add-user-org-row select {
+  width: 100%; height: 37px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 6px;
+  outline: 0; background: var(--canvas); color: var(--text); font-size: 12px;
+}
+.add-user-org-row select:focus { border-color: var(--brand-warm); }
+.add-user-org-add { justify-self: start; }
+.add-user-org-note { color: var(--text-muted); font-size: 12px; }
 .add-user-footer {
   margin-top: 20px; padding-top: 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   border-top: 1px solid var(--border);

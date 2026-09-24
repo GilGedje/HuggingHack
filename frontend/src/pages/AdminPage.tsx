@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
+  Building2,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -23,9 +24,10 @@ import {
 import { Link, NavLink, Navigate, useParams, useSearchParams } from 'react-router-dom'
 import { useAccess } from '../access'
 import { api } from '../api'
-import type { AdminUser, AdminUserPage, AdminUserQuery, AdminUserSort, Organization, PermissionMatrix, Role, ServerSettings } from '../types'
+import type { AdminUser, AdminUserPage, AdminUserQuery, AdminUserSort, Organization, OrganizationRole, PermissionMatrix, Role, ServerSettings } from '../types'
 import { pageList } from '../pagination'
 import { relativeTime } from '../utils'
+import { ORG_ROLE_LABELS } from './OrganizationPage'
 import { RuntimesPage } from './RuntimesPage'
 import { StoragePage } from './StoragePage'
 
@@ -78,11 +80,28 @@ function readUserQuery(params: URLSearchParams): AdminUserQuery {
 
 const EMPTY_ACCOUNT = { username: '', display_name: '', email: '', password: '', role: 'member' as Role }
 
-function AddUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (username: string) => void }) {
+type Membership = { organization: string; role: OrganizationRole }
+
+function AddUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (username: string, organizations: number) => void }) {
+  const { can } = useAccess()
   const [form, setForm] = useState(EMPTY_ACCOUNT)
+  const [memberships, setMemberships] = useState<Membership[]>([])
+  const [organizations, setOrganizations] = useState<Organization[]>([])
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
   const firstField = useRef<HTMLInputElement>(null)
+  // Only organizations this admin may add members to.
+  const choices = organizations.filter((item) => can('orgs.manage') || item.my_role === 'admin')
+  const unused = choices.filter((item) => !memberships.some((chosen) => chosen.organization === item.name))
+  const limitedByRole = form.role === 'viewer' && memberships.some((item) => item.role !== 'read')
+
+  useEffect(() => {
+    api.organizations().then((payload) => setOrganizations(payload.items)).catch(() => undefined)
+  }, [])
+
+  function changeMembership(index: number, changes: Partial<Membership>) {
+    setMemberships((current) => current.map((item, position) => (position === index ? { ...item, ...changes } : item)))
+  }
 
   useEffect(() => {
     firstField.current?.focus()
@@ -98,8 +117,8 @@ function AddUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
     setCreating(true)
     setError('')
     try {
-      await api.createUser({ ...form, email: form.email.trim() || undefined })
-      onCreated(form.username)
+      await api.createUser({ ...form, email: form.email.trim() || undefined, organizations: memberships })
+      onCreated(form.username, memberships.length)
     } catch (reason) {
       setError(errorMessage(reason, 'Could not create the account.'))
       setCreating(false)
@@ -150,6 +169,57 @@ function AddUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
               <input type="password" autoComplete="new-password" minLength={12} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} required />
             </label>
           </div>
+          {choices.length > 0 && (
+            <fieldset className="add-user-orgs">
+              <legend>Organizations <small>optional</small></legend>
+              {memberships.map((item, index) => (
+                <div className="add-user-org-row" key={index}>
+                  <select
+                    value={item.organization}
+                    onChange={(event) => changeMembership(index, { organization: event.target.value })}
+                    aria-label={`Organization ${index + 1}`}
+                  >
+                    {choices
+                      .filter((choice) => choice.name === item.organization || !memberships.some((chosen) => chosen.organization === choice.name))
+                      .map((choice) => (
+                        <option key={choice.id} value={choice.name}>
+                          {choice.display_name && choice.display_name !== choice.name ? `${choice.display_name} (${choice.name})` : choice.name}
+                        </option>
+                      ))}
+                  </select>
+                  <select
+                    value={item.role}
+                    onChange={(event) => changeMembership(index, { role: event.target.value as OrganizationRole })}
+                    aria-label={`Role in ${item.organization}`}
+                  >
+                    {(Object.keys(ORG_ROLE_LABELS) as OrganizationRole[]).map((role) => (
+                      <option key={role} value={role}>{ORG_ROLE_LABELS[role]}</option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    onClick={() => setMemberships((current) => current.filter((_, position) => position !== index))}
+                    aria-label={`Remove ${item.organization}`}
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              ))}
+              {unused.length > 0 && (
+                <button
+                  type="button"
+                  className="secondary-button compact add-user-org-add"
+                  onClick={() => setMemberships((current) => [...current, { organization: unused[0].name, role: 'read' }])}
+                >
+                  <Building2 size={15} /> Add to an organization
+                </button>
+              )}
+              {limitedByRole && (
+                <p className="add-user-org-note">Viewers can only read, whatever their organization role.</p>
+              )}
+            </fieldset>
+          )}
           {error && <div className="inline-error add-user-error">{error}</div>}
           <div className="add-user-footer">
             <span>They can change the password after signing in.</span>
@@ -469,9 +539,13 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
       {adding && (
         <AddUserDialog
           onClose={() => setAdding(false)}
-          onCreated={(username) => {
+          onCreated={(username, organizations) => {
             setAdding(false)
-            onToast(`${username} can now sign in.`)
+            onToast(
+              organizations
+                ? `${username} can now sign in and is in ${organizations} organization${organizations === 1 ? '' : 's'}.`
+                : `${username} can now sign in.`,
+            )
             load()
           }}
         />
