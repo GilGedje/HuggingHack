@@ -81,6 +81,20 @@ def manifest_target(manifest: dict[str, Any]) -> str:
     return LEGACY_S3_TARGET_ID if manifest.get("storage_backend") == "s3" else LOCAL_TARGET_ID
 
 
+def upload_is_registered(database: Database, repo_id: str, manifest: dict[str, Any]) -> bool:
+    """A user upload is indexed only when the database knows who owns it.
+
+    Organization repositories are checked against their organization, since the
+    account that created one can leave or be deleted.
+    """
+    repository = database.get_owned_repository(repo_id)
+    if not repository:
+        return False
+    if repository.get("organization_id") or manifest.get("organization_id"):
+        return manifest.get("organization_id") == repository.get("organization_id")
+    return bool(manifest.get("owner_id")) and manifest.get("owner_id") == repository["owner_id"]
+
+
 def model_formats(relative_paths: Iterable[str]) -> list[str]:
     formats = {
         FORMAT_EXTENSIONS[suffix]
@@ -338,15 +352,12 @@ class LocalModelIndexer:
         repo_id = manifest.get("repo_id") or (
             relative if "/" in relative else f"local/{relative}"
         )
-        if manifest.get("source") == "user-upload":
-            owner_id = manifest.get("owner_id")
-            if (
-                not owner_id
-                or not self.database.get_owned_repository(repo_id, owner_id)
-            ):
-                raise PermissionError(
-                    "User-uploaded repositories require matching ownership metadata."
-                )
+        if manifest.get("source") == "user-upload" and not upload_is_registered(
+            self.database, repo_id, manifest
+        ):
+            raise PermissionError(
+                "User-uploaded repositories require matching ownership metadata."
+            )
         size, file_count, latest = directory_stats(resolved)
         facts = repository_facts(resolved)
         card = readme_metadata(resolved / "README.md")

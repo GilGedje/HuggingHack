@@ -126,7 +126,10 @@ def _matches(
     library: str,
     app: str,
     parameter_range: tuple[int | None, int | None],
+    owner: str = "",
 ) -> bool:
+    if owner and (item.get("author") or "").lower() != owner.lower():
+        return False
     if search:
         haystack = " ".join(
             [item["id"], item.get("pipeline_tag") or "", item.get("library_name") or ""]
@@ -190,13 +193,14 @@ def search_catalog(
     library: str = "",
     app: str = "",
     parameters: str = "",
+    owner: str = "",
 ) -> dict[str, Any]:
     parameter_range = parse_parameter_range(parameters)
     items = [catalog_item(model, saved_ids) for model in models]
     matched = [
         item
         for item in items
-        if _matches(item, search.strip(), task, library, app, parameter_range)
+        if _matches(item, search.strip(), task, library, app, parameter_range, owner)
     ]
     matched.sort(key=_sort_key(sort), reverse=sort == "updated")
     return {

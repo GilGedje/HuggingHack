@@ -32,7 +32,7 @@ from .auth import (
     validate_password,
 )
 from .catalog import LocalCatalog, search_catalog
-from .config import settings, validate_repo_id
+from .config import settings, validate_namespace, validate_repo_id
 from .database import INTEGRITY_ERRORS, Database
 from .downloads import DownloadManager
 from .git_mirror import GitMirrors
@@ -48,7 +48,7 @@ from .hub_api import (
     remote_entries,
 )
 from .hub_service import HubService
-from .indexer import LocalModelIndexer
+from .indexer import LocalModelIndexer, upload_is_registered
 from .runtimes import RuntimeManager
 from .storage import create_storage_registry
 from .uploads import UploadManager
@@ -104,10 +104,10 @@ def refresh_model_index() -> dict[str, Any]:
         found: set[str] = set()
         for model in discovered:
             repo_id = model["repo_id"]
-            if model.get("source") == "user-upload":
-                owner_id = model.get("owner_id")
-                if not owner_id or not database.get_owned_repository(repo_id, owner_id):
-                    continue
+            if model.get("source") == "user-upload" and not upload_is_registered(
+                database, repo_id, model
+            ):
+                continue
             owner = owners.get(repo_id)
             if owner is not None and owner != storage.id:
                 conflicts.append(
@@ -266,6 +266,7 @@ class RepositoryRequest(BaseModel):
     description: str = Field(default="", max_length=500)
     visibility: Literal["private", "shared"] = "private"
     storage_target: str | None = Field(default=None, max_length=40)
+    namespace: str | None = Field(default=None, max_length=64)
 
 
 class RepositoryUpdateRequest(BaseModel):
@@ -398,6 +399,8 @@ StorageViewer = requires("storage.view")
 UserManager = requires("users.manage", session_only=True)
 UserAdmin = requires("users.manage", write=True, session_only=True)
 SettingsViewer = requires("settings.view", session_only=True)
+OrgCreator = requires("orgs.manage", write=True, session_only=True)
+OrgEditor = requires("models.browse", write=True, session_only=True)
 TokenOwner = requires("tokens.manage", session_only=True)
 TokenWriter = requires("tokens.manage", write=True, session_only=True)
 SessionUser = personal()
@@ -786,6 +789,7 @@ def account_overview(user: SessionUser) -> dict:
         "accounts_enabled": settings.accounts_enabled,
         "local_password": user.get("auth_provider", "local") == "local" and settings.accounts_enabled,
         "repositories": owned,
+        "organizations": database.user_organizations(user["id"]),
         "saved_count": len(database.saved_repo_ids(user["id"])),
     }
 
@@ -955,6 +959,8 @@ def admin_delete_user(user_id: str, admin: UserAdmin) -> dict:
     admin_target(user_id)
     if user_id == admin["id"]:
         raise HTTPException(status_code=409, detail="You cannot delete your own account.")
+    # Organization repositories stay with the organization; the admin becomes their creator.
+    database.reassign_organization_repositories(user_id, admin["id"])
     owned = database.owned_repository_ids(user_id)
     if owned:
         raise HTTPException(
@@ -1137,6 +1143,7 @@ def search_library_models(
     library: Annotated[str, Query(max_length=100)] = "",
     app_filter: Annotated[str, Query(alias="app", max_length=100)] = "",
     parameters: Annotated[str, Query(max_length=100)] = "",
+    owner: Annotated[str, Query(max_length=64)] = "",
 ) -> dict:
     try:
         return search_catalog(
@@ -1148,6 +1155,7 @@ def search_library_models(
             library,
             app_filter,
             parameters,
+            owner,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -1405,6 +1413,12 @@ async def library_model(repo_id: str, user: Browser) -> dict:
     owned = database.get_owned_repository(model["repo_id"])
     details["visibility"] = owned["visibility"] if owned else "public"
     details["description"] = owned["description"] if owned else ""
+    organization = database.get_organization(model["repo_id"].split("/", 1)[0])
+    details["organization"] = (
+        {"name": organization["name"], "display_name": organization["display_name"]}
+        if organization
+        else None
+    )
     return details
 
 
@@ -1813,6 +1827,145 @@ def unsave_model(repo_id: str, user: Saver) -> dict:
     return {"status": "removed"}
 
 
+class OrganizationRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=64)
+    display_name: str = Field(default="", max_length=80)
+    description: str = Field(default="", max_length=500)
+
+
+class OrganizationUpdate(BaseModel):
+    display_name: str | None = Field(default=None, min_length=1, max_length=80)
+    description: str | None = Field(default=None, max_length=500)
+
+
+class MemberRequest(BaseModel):
+    role: Literal["admin", "write", "read"]
+
+
+def organization_or_404(name: str) -> dict[str, Any]:
+    organization = database.get_organization(name)
+    if not organization:
+        raise HTTPException(status_code=404, detail="Organization not found.")
+    return organization
+
+
+def require_org_admin(organization: dict[str, Any], user: dict[str, Any]) -> bool:
+    """True for server-wide organization managers, who may bypass org safeguards."""
+    if can(user, "orgs.manage"):
+        return True
+    if database.organization_role(organization["id"], user["id"]) != "admin":
+        raise HTTPException(status_code=403, detail="Only this organization's admins can do that.")
+    return False
+
+
+def organization_payload(organization: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
+    role = database.organization_role(organization["id"], user["id"])
+    return {
+        **organization,
+        "my_role": role,
+        "can_manage": can(user, "orgs.manage") or role == "admin",
+        "can_upload": can(user, "repos.create") and role in {"admin", "write"},
+        "members": database.organization_members(organization["id"]),
+    }
+
+
+@app.get("/api/organizations")
+def list_organizations(user: Browser) -> dict:
+    return {"items": database.list_organizations(user["id"])}
+
+
+@app.post("/api/organizations", status_code=201)
+def create_organization(payload: OrganizationRequest, user: OrgCreator) -> dict:
+    try:
+        name = validate_namespace(payload.name)
+        timestamp = utc_iso()
+        organization = database.create_organization(
+            {
+                "id": uuid.uuid4().hex,
+                "name": name,
+                "display_name": payload.display_name.strip() or name,
+                "description": payload.description.strip(),
+                "created_at": timestamp,
+                "updated_at": timestamp,
+            }
+        )
+    except (ValueError, *INTEGRITY_ERRORS) as error:
+        detail = (
+            "That name is already used by a user or organization."
+            if isinstance(error, INTEGRITY_ERRORS)
+            else str(error)
+        )
+        raise HTTPException(status_code=409, detail=detail) from error
+    database.set_organization_member(organization["id"], user["id"], "admin", timestamp)
+    return organization_payload(organization, user)
+
+
+@app.get("/api/organizations/{name}")
+def get_organization(name: str, user: Browser) -> dict:
+    return organization_payload(organization_or_404(name), user)
+
+
+@app.patch("/api/organizations/{name}")
+def update_organization(name: str, payload: OrganizationUpdate, user: OrgEditor) -> dict:
+    organization = organization_or_404(name)
+    require_org_admin(organization, user)
+    changes = payload.model_dump(exclude_unset=True)
+    if "display_name" in changes:
+        changes["display_name"] = changes["display_name"].strip()
+    if "description" in changes:
+        changes["description"] = (changes["description"] or "").strip()
+    database.update_organization(organization["id"], **changes, updated_at=utc_iso())
+    return organization_payload(organization_or_404(name), user)
+
+
+@app.delete("/api/organizations/{name}")
+def delete_organization(name: str, _: OrgCreator) -> dict:
+    organization = organization_or_404(name)
+    try:
+        database.delete_organization(organization["id"])
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {"status": "deleted"}
+
+
+@app.put("/api/organizations/{name}/members/{username}")
+def set_organization_member(name: str, username: str, payload: MemberRequest, user: OrgEditor) -> dict:
+    organization = organization_or_404(name)
+    force = require_org_admin(organization, user)
+    member = database.get_user_by_username(username)
+    if not member:
+        raise HTTPException(status_code=404, detail="User not found.")
+    try:
+        database.set_organization_member(
+            organization["id"], member["id"], payload.role, utc_iso(), force=force
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return organization_payload(organization, user)
+
+
+@app.delete("/api/organizations/{name}/members/{username}")
+def remove_organization_member(name: str, username: str, user: OrgEditor) -> dict:
+    organization = organization_or_404(name)
+    member = database.get_user_by_username(username)
+    if not member:
+        raise HTTPException(status_code=404, detail="User not found.")
+    # Anyone may leave; removing someone else takes an organization admin.
+    force = False if member["id"] == user["id"] else require_org_admin(organization, user)
+    try:
+        removed = database.remove_organization_member(organization["id"], member["id"], force=force)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if not removed:
+        raise HTTPException(status_code=404, detail="That user is not a member.")
+    return organization_payload(organization, user)
+
+
+@app.get("/api/uploads/namespaces")
+def upload_namespaces(user: Browser) -> dict:
+    return {"items": uploads.namespaces(user) if can(user, "repos.create") else []}
+
+
 @app.get("/api/uploads/repositories")
 def list_upload_repositories(user: Browser) -> dict:
     return {"items": database.list_owned_repositories(user["id"])}
@@ -1827,7 +1980,10 @@ def create_upload_repository(payload: RepositoryRequest, user: Uploader) -> dict
             payload.description,
             payload.visibility,
             payload.storage_target,
+            payload.namespace,
         )
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
     except (ValueError, FileExistsError, *INTEGRITY_ERRORS) as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 

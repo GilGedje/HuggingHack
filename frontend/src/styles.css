@@ -807,12 +807,12 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
   display: grid; gap: 7px; color: var(--text-secondary); font-size: 11px; font-weight: 600;
 }
 .auth-card input, .create-repository input, .create-repository textarea,
-.create-repository select, .upload-drop select, .member-form input {
+.create-repository select, .upload-drop select, .upload-drop > label > input, .member-form input {
   width: 100%; min-height: 43px; padding: 9px 11px; border: 1px solid var(--border-strong);
   border-radius: 7px; outline: 0; background: var(--canvas); color: var(--text);
 }
 .auth-card input:focus, .create-repository input:focus, .create-repository textarea:focus,
-.create-repository select:focus, .upload-drop select:focus, .member-form input:focus {
+.create-repository select:focus, .upload-drop select:focus, .upload-drop > label > input:focus, .member-form input:focus {
   border-color: var(--brand-warm); box-shadow: 0 0 0 3px color-mix(in oklch, var(--brand-primary) 18%, transparent);
 }
 .auth-card label small { color: var(--text-muted); font-size: 9px; font-weight: 400; }
@@ -920,9 +920,6 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
 .create-repository textarea {
   min-height: 80px; resize: vertical;
 }
-.repo-name-input { display: flex; align-items: center; border: 1px solid var(--border-strong); border-radius: 7px; overflow: hidden; }
-.repo-name-input code { padding-left: 10px; color: var(--text-muted); font-size: 10px; }
-.repo-name-input input { border: 0; box-shadow: none !important; }
 .upload-drop { display: flex; flex-direction: column; gap: 15px; }
 .folder-picker {
   min-height: 155px; padding: 22px; display: grid !important; place-content: center;
@@ -2081,3 +2078,96 @@ button.file-browser-name:hover { text-decoration: underline; text-underline-offs
 .sso-button { justify-content: center; text-decoration: none; }
 .auth-divider { display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 11px; }
 .auth-divider::before, .auth-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+/* Organizations */
+.org-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.org-card {
+  padding: 16px; display: flex; gap: 14px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--canvas); color: inherit;
+}
+.org-card:hover { border-color: var(--border-strong); background: var(--canvas-subtle); }
+.org-card strong { display: block; font-size: 15px; }
+.org-card small { color: var(--text-muted); font-size: 11px; }
+.org-card p { margin-top: 6px; color: var(--text-secondary); font-size: 12px; }
+.org-card-meta { display: block; margin-top: 8px; color: var(--text-muted); font-size: 11px; }
+.org-avatar {
+  width: 42px; height: 42px; display: grid; place-items: center; flex: none; border-radius: 9px;
+  background: color-mix(in oklch, var(--brand-warm) 25%, var(--canvas)); color: var(--text);
+  font-family: 'IBM Plex Mono', monospace; font-size: 13px; font-weight: 700;
+}
+.org-avatar-large { border-radius: 12px; }
+.org-description { margin-top: 6px; max-width: 700px; color: var(--text-secondary); font-size: 13px; }
+.section-hero .eyebrow { display: inline-flex; align-items: center; gap: 5px; }
+.org-role-help { margin: 12px 0 0; padding: 0; display: grid; gap: 4px; list-style: none; color: var(--text-muted); font-size: 12px; }
+.org-role-help strong { display: inline-block; min-width: 52px; color: var(--text-secondary); }
+.org-member-actions { display: flex; align-items: center; gap: 6px; }
+.org-member-actions select {
+  height: 32px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 6px;
+  background: var(--canvas); color: var(--text); font-size: 12px;
+}
+.admin-user-actions-button {
+  width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--canvas); cursor: pointer;
+}
+.org-add-member { margin-top: 16px; display: grid; grid-template-columns: minmax(0, 1fr) 160px auto; align-items: end; gap: 12px; }
+.org-add-member label { display: grid; gap: 5px; color: var(--text-secondary); font-size: 11px; font-weight: 600; }
+.org-add-member input, .org-add-member select {
+  height: 37px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 6px;
+  background: var(--canvas); color: var(--text); font-size: 12px;
+}
+.admin-user-row.org-row { min-width: 720px; grid-template-columns: minmax(240px, 1fr) 100px 90px 100px 150px; }
+.admin-user-name a:hover strong { text-decoration: underline; text-underline-offset: 3px; }
+
+@media (max-width: 780px) {
+  .org-add-member { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* New repository owner and name, laid out like the Hub's "owner / name" */
+.repo-name-grid {
+  display: grid; grid-template-columns: minmax(0, 0.95fr) auto minmax(0, 1.25fr);
+  align-items: center; gap: 7px 8px;
+}
+.repo-name-grid > label { color: var(--text-secondary); font-size: 11px; font-weight: 600; }
+.repo-name-slash { color: var(--text-muted); font-family: 'IBM Plex Mono', monospace; font-size: 18px; }
+.namespace-picker { position: relative; min-width: 0; }
+.namespace-trigger {
+  width: 100%; min-height: 43px; padding: 0 11px 0 7px; display: flex; align-items: center; gap: 9px;
+  border: 1px solid var(--border-strong); border-radius: 7px; background: var(--canvas);
+  color: var(--text); cursor: pointer; font: inherit; text-align: left;
+}
+.namespace-trigger:hover:not(:disabled) { border-color: color-mix(in oklch, var(--brand-warm) 45%, var(--border-strong)); }
+.namespace-trigger:focus-visible, .namespace-trigger[aria-expanded='true'] {
+  outline: 0; border-color: var(--brand-warm);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--brand-primary) 18%, transparent);
+}
+.namespace-trigger:disabled { cursor: default; opacity: 1; background: var(--canvas-subtle); }
+.namespace-name { min-width: 0; flex: 1; overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.namespace-chevron { flex: none; color: var(--text-muted); transition: transform 150ms ease; }
+.namespace-trigger[aria-expanded='true'] .namespace-chevron { transform: rotate(180deg); }
+.namespace-avatar {
+  width: 27px; height: 27px; display: grid; place-items: center; flex: none; border-radius: 50%;
+  background: var(--brand-primary); color: #111827;
+  font-family: 'IBM Plex Mono', monospace; font-size: 10px; font-weight: 700;
+}
+.namespace-avatar.organization { border-radius: 7px; background: color-mix(in oklch, var(--brand-warm) 25%, var(--canvas)); color: var(--text); }
+.namespace-menu {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 30; width: max(100%, 260px);
+  max-height: 280px; margin: 0; padding: 5px; overflow-y: auto; list-style: none;
+  border: 1px solid var(--border); border-radius: 9px; background: var(--canvas); box-shadow: var(--shadow);
+  animation: toast-in 140ms ease-out;
+}
+.namespace-menu li {
+  padding: 7px 8px; display: flex; align-items: center; gap: 10px; border-radius: 6px; cursor: pointer;
+}
+.namespace-menu li.active { background: var(--canvas-subtle); }
+.namespace-option-text { min-width: 0; flex: 1; display: grid; gap: 1px; }
+.namespace-option-text strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.namespace-option-text small { display: flex; align-items: center; gap: 4px; color: var(--text-muted); font-size: 11px; }
+.namespace-check { flex: none; color: var(--brand-warm); }
+@media (max-width: 480px) {
+  .repo-name-grid { grid-template-columns: minmax(0, 1fr); }
+  .repo-name-grid > span[aria-hidden='true'], .repo-name-slash { display: none; }
+  .repo-name-grid > label[for='new-repo-name'] { order: 3; margin-top: 6px; }
+  .repo-name-grid > .namespace-picker { order: 2; }
+  .repo-name-grid > #new-repo-name { order: 4; }
+}

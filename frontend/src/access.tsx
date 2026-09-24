@@ -36,4 +36,4 @@ export function useAccess(): Access {
   return value
 }
 
-export const ADMIN_CAPABILITIES = ['users.manage', 'storage.view', 'settings.view', 'runtimes.use']
+export const ADMIN_CAPABILITIES = ['users.manage', 'orgs.manage', 'storage.view', 'settings.view', 'runtimes.use']

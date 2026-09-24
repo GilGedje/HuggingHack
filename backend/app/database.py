@@ -304,6 +304,29 @@ class Database:
                     PRIMARY KEY(collection_id, saved_model_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS organizations (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    display_name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_organizations_name_nocase
+                    ON organizations(LOWER(name));
+
+                CREATE TABLE IF NOT EXISTS organization_members (
+                    organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    role TEXT NOT NULL CHECK (role IN ('admin', 'write', 'read')),
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (organization_id, user_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_organization_members_user
+                    ON organization_members(user_id);
+
                 CREATE TABLE IF NOT EXISTS owned_repositories (
                     id TEXT PRIMARY KEY,
                     owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
@@ -314,7 +337,8 @@ class Database:
                     status TEXT NOT NULL DEFAULT 'uploading'
                         CHECK (status IN ('uploading', 'ready')),
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    organization_id TEXT REFERENCES organizations(id) ON DELETE RESTRICT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_owned_repositories_owner
@@ -394,6 +418,11 @@ class Database:
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_external_subject "
                 "ON users(auth_provider, external_subject) WHERE external_subject IS NOT NULL"
             )
+            if "organization_id" not in self._column_names(connection, "owned_repositories"):
+                connection.execute(
+                    "ALTER TABLE owned_repositories ADD COLUMN organization_id TEXT "
+                    "REFERENCES organizations(id) ON DELETE RESTRICT"
+                )
             session_columns = self._column_names(connection, "sessions")
             for column in ("id", "user_agent", "ip", "last_seen_at"):
                 if column not in session_columns:
@@ -538,6 +567,17 @@ class Database:
             row = connection.execute("SELECT COUNT(*) AS count FROM users").fetchone()
             return int(row["count"])
 
+    def namespace_taken(self, name: str) -> bool:
+        """True when a user or organization already uses this name, ignoring case."""
+        with self.connect() as connection:
+            for table, column in (("users", "username"), ("organizations", "name")):
+                row = connection.execute(
+                    f"SELECT 1 FROM {table} WHERE LOWER({column}) = LOWER(?)", (name,)
+                ).fetchone()
+                if row:
+                    return True
+        return False
+
     def create_user(self, record: dict[str, Any]) -> dict[str, Any]:
         record = {
             "email": None,
@@ -546,6 +586,10 @@ class Database:
             **record,
         }
         with self._write_lock, self.connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM organizations WHERE LOWER(name) = LOWER(?)", (record["username"],)
+            ).fetchone():
+                raise ValueError("That name belongs to an organization.")
             connection.execute(
                 """
                 INSERT INTO users (
@@ -806,9 +850,11 @@ class Database:
         return activity
 
     def owned_repository_ids(self, owner_id: str) -> list[str]:
+        """Personal repositories created by a user (organization ones are not theirs)."""
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT repo_id FROM owned_repositories WHERE owner_id = ? ORDER BY repo_id",
+                "SELECT repo_id FROM owned_repositories "
+                "WHERE owner_id = ? AND organization_id IS NULL ORDER BY repo_id",
                 (owner_id,),
             ).fetchall()
         return [row["repo_id"] for row in rows]
@@ -1114,7 +1160,7 @@ class Database:
     def list_visible_local_models(
         self, user_id: str, query: str = ""
     ) -> list[dict[str, Any]]:
-        parameters: list[Any] = [user_id]
+        parameters: list[Any] = [user_id, user_id]
         query_clause = ""
         if query:
             query_clause = (
@@ -1132,8 +1178,12 @@ class Database:
                     ON owned_repositories.repo_id = local_models.repo_id
                 WHERE (
                     owned_repositories.id IS NULL
-                    OR owned_repositories.owner_id = ?
+                    OR (owned_repositories.organization_id IS NULL
+                        AND owned_repositories.owner_id = ?)
                     OR owned_repositories.visibility = 'shared'
+                    OR owned_repositories.organization_id IN (
+                        SELECT organization_id FROM organization_members WHERE user_id = ?
+                    )
                 )
                 """
                 + query_clause
@@ -1155,11 +1205,15 @@ class Database:
                 WHERE local_models.repo_id = ?
                   AND (
                     owned_repositories.id IS NULL
-                    OR owned_repositories.owner_id = ?
+                    OR (owned_repositories.organization_id IS NULL
+                        AND owned_repositories.owner_id = ?)
                     OR owned_repositories.visibility = 'shared'
+                    OR owned_repositories.organization_id IN (
+                        SELECT organization_id FROM organization_members WHERE user_id = ?
+                    )
                   )
                 """,
-                (repo_id, user_id),
+                (repo_id, user_id, user_id),
             ).fetchone()
         return self._decode_row(row)
 
@@ -1462,13 +1516,13 @@ class Database:
                 """
                 INSERT INTO owned_repositories (
                     id, owner_id, repo_id, description, visibility, status,
-                    created_at, updated_at
+                    created_at, updated_at, organization_id
                 ) VALUES (
                     :id, :owner_id, :repo_id, :description, :visibility, :status,
-                    :created_at, :updated_at
+                    :created_at, :updated_at, :organization_id
                 )
                 """,
-                record,
+                {"organization_id": None, **record},
             )
         return self.get_owned_repository(record["repo_id"], record["owner_id"])
 
@@ -1480,9 +1534,12 @@ class Database:
                 row = connection.execute(
                     """
                     SELECT owned_repositories.*, users.username AS owner_username,
-                           users.display_name AS owner_display_name
+                           users.display_name AS owner_display_name,
+                           organizations.name AS organization_name
                     FROM owned_repositories
                     JOIN users ON users.id = owned_repositories.owner_id
+                    LEFT JOIN organizations
+                        ON organizations.id = owned_repositories.organization_id
                     WHERE repo_id = ? AND owner_id = ?
                     """,
                     (repo_id, owner_id),
@@ -1491,9 +1548,12 @@ class Database:
                 row = connection.execute(
                     """
                     SELECT owned_repositories.*, users.username AS owner_username,
-                           users.display_name AS owner_display_name
+                           users.display_name AS owner_display_name,
+                           organizations.name AS organization_name
                     FROM owned_repositories
                     JOIN users ON users.id = owned_repositories.owner_id
+                    LEFT JOIN organizations
+                        ON organizations.id = owned_repositories.organization_id
                     WHERE repo_id = ?
                     """,
                     (repo_id,),
@@ -1506,51 +1566,222 @@ class Database:
                 """
                 SELECT owned_repositories.*, users.username AS owner_username,
                        users.display_name AS owner_display_name,
+                       organizations.name AS organization_name,
                        local_models.size_bytes, local_models.file_count,
                        local_models.modified_at
                 FROM owned_repositories
                 JOIN users ON users.id = owned_repositories.owner_id
+                LEFT JOIN organizations
+                    ON organizations.id = owned_repositories.organization_id
                 LEFT JOIN local_models ON local_models.repo_id = owned_repositories.repo_id
-                WHERE owner_id = ? OR visibility = 'shared'
+                WHERE (owned_repositories.organization_id IS NULL AND owner_id = ?)
+                   OR visibility = 'shared'
+                   OR owned_repositories.organization_id IN (
+                       SELECT organization_id FROM organization_members WHERE user_id = ?
+                   )
                 ORDER BY owned_repositories.updated_at DESC
+                """,
+                (user_id, user_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_owned_repository(self, repo_id: str, **changes: Any) -> dict[str, Any] | None:
+        """Update an uploaded repository. Callers check who may change it first."""
+        allowed = {
+            key: value
+            for key, value in changes.items()
+            if key in {"description", "visibility", "status", "updated_at", "owner_id"}
+        }
+        if allowed:
+            assignments = ", ".join(f"{key} = :{key}" for key in allowed)
+            with self._write_lock, self.connect() as connection:
+                connection.execute(
+                    f"UPDATE owned_repositories SET {assignments} WHERE repo_id = :repo_id",
+                    {**allowed, "repo_id": repo_id},
+                )
+        return self.get_owned_repository(repo_id)
+
+    def delete_owned_repository(self, repo_id: str) -> bool:
+        with self._write_lock, self.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM owned_repositories WHERE repo_id = ?", (repo_id,)
+            )
+            connection.execute("DELETE FROM local_models WHERE repo_id = ?", (repo_id,))
+        return cursor.rowcount > 0
+
+    # Organizations share one namespace with usernames.
+
+    def create_organization(self, record: dict[str, Any]) -> dict[str, Any]:
+        with self._write_lock:
+            if self.namespace_taken(record["name"]):
+                raise ValueError("That name is already used by a user or organization.")
+            with self.connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO organizations (
+                        id, name, display_name, description, created_at, updated_at
+                    ) VALUES (
+                        :id, :name, :display_name, :description, :created_at, :updated_at
+                    )
+                    """,
+                    record,
+                )
+        return self.get_organization(record["name"])
+
+    def get_organization(self, name: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM organizations WHERE LOWER(name) = LOWER(?)", (name,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_organizations(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT organizations.*,
+                    (SELECT COUNT(*) FROM organization_members
+                        WHERE organization_id = organizations.id) AS member_count,
+                    (SELECT COUNT(*) FROM owned_repositories
+                        WHERE organization_id = organizations.id) AS repository_count,
+                    (SELECT role FROM organization_members
+                        WHERE organization_id = organizations.id AND user_id = ?) AS my_role
+                FROM organizations
+                ORDER BY LOWER(organizations.name)
                 """,
                 (user_id,),
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def update_owned_repository(
-        self, repo_id: str, owner_id: str, **changes: Any
-    ) -> dict[str, Any] | None:
+    def update_organization(self, organization_id: str, **changes: Any) -> None:
         allowed = {
             key: value
             for key, value in changes.items()
-            if key in {"description", "visibility", "status", "updated_at"}
+            if key in {"display_name", "description", "updated_at"}
         }
         if not allowed:
-            return self.get_owned_repository(repo_id, owner_id)
+            return
         assignments = ", ".join(f"{key} = :{key}" for key in allowed)
-        parameters = {**allowed, "repo_id": repo_id, "owner_id": owner_id}
         with self._write_lock, self.connect() as connection:
             connection.execute(
-                f"""
-                UPDATE owned_repositories SET {assignments}
-                WHERE repo_id = :repo_id AND owner_id = :owner_id
-                """,
-                parameters,
+                f"UPDATE organizations SET {assignments} WHERE id = :organization_id",
+                {**allowed, "organization_id": organization_id},
             )
-        return self.get_owned_repository(repo_id, owner_id)
 
-    def delete_owned_repository(self, repo_id: str, owner_id: str) -> bool:
+    def delete_organization(self, organization_id: str) -> None:
         with self._write_lock, self.connect() as connection:
-            owned = connection.execute(
-                "SELECT 1 FROM owned_repositories WHERE repo_id = ? AND owner_id = ?",
-                (repo_id, owner_id),
+            if connection.execute(
+                "SELECT 1 FROM owned_repositories WHERE organization_id = ?", (organization_id,)
+            ).fetchone():
+                raise ValueError("Delete or move this organization's repositories first.")
+            connection.execute("DELETE FROM organizations WHERE id = ?", (organization_id,))
+
+    def organization_members(self, organization_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT organization_members.role, organization_members.created_at AS joined_at,
+                       users.id, users.username, users.display_name, users.role AS server_role,
+                       users.disabled
+                FROM organization_members
+                JOIN users ON users.id = organization_members.user_id
+                WHERE organization_members.organization_id = ?
+                ORDER BY CASE organization_members.role
+                    WHEN 'admin' THEN 0 WHEN 'write' THEN 1 ELSE 2 END, users.username
+                """,
+                (organization_id,),
+            ).fetchall()
+        return [{**dict(row), "disabled": bool(dict(row)["disabled"])} for row in rows]
+
+    def organization_role(self, organization_id: str, user_id: str) -> str | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ?",
+                (organization_id, user_id),
             ).fetchone()
-            if not owned:
+        return row["role"] if row else None
+
+    def _organization_admins(self, connection: Any, organization_id: str) -> int:
+        row = connection.execute(
+            "SELECT COUNT(*) AS count FROM organization_members "
+            "WHERE organization_id = ? AND role = 'admin'",
+            (organization_id,),
+        ).fetchone()
+        return int(row["count"])
+
+    def set_organization_member(
+        self, organization_id: str, user_id: str, role: str, created_at: str, *, force: bool = False
+    ) -> None:
+        """Add or change a member; the last organization admin stays unless `force`."""
+        with self._write_lock, self.connect() as connection:
+            current = connection.execute(
+                "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ?",
+                (organization_id, user_id),
+            ).fetchone()
+            if (
+                current
+                and current["role"] == "admin"
+                and role != "admin"
+                and not force
+                and self._organization_admins(connection, organization_id) <= 1
+            ):
+                raise ValueError("An organization needs at least one admin.")
+            if current:
+                connection.execute(
+                    "UPDATE organization_members SET role = ? "
+                    "WHERE organization_id = ? AND user_id = ?",
+                    (role, organization_id, user_id),
+                )
+            else:
+                connection.execute(
+                    "INSERT INTO organization_members (organization_id, user_id, role, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (organization_id, user_id, role, created_at),
+                )
+
+    def remove_organization_member(
+        self, organization_id: str, user_id: str, *, force: bool = False
+    ) -> bool:
+        with self._write_lock, self.connect() as connection:
+            current = connection.execute(
+                "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ?",
+                (organization_id, user_id),
+            ).fetchone()
+            if not current:
                 return False
-            cursor = connection.execute(
-                "DELETE FROM owned_repositories WHERE repo_id = ? AND owner_id = ?",
-                (repo_id, owner_id),
+            if (
+                current["role"] == "admin"
+                and not force
+                and self._organization_admins(connection, organization_id) <= 1
+            ):
+                raise ValueError("An organization needs at least one admin.")
+            connection.execute(
+                "DELETE FROM organization_members WHERE organization_id = ? AND user_id = ?",
+                (organization_id, user_id),
             )
-            connection.execute("DELETE FROM local_models WHERE repo_id = ?", (repo_id,))
-        return cursor.rowcount > 0
+        return True
+
+    def user_organizations(self, user_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT organizations.id, organizations.name, organizations.display_name,
+                       organization_members.role
+                FROM organization_members
+                JOIN organizations ON organizations.id = organization_members.organization_id
+                WHERE organization_members.user_id = ?
+                ORDER BY LOWER(organizations.name)
+                """,
+                (user_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def reassign_organization_repositories(self, from_user: str, to_user: str) -> int:
+        """Keep an organization's repositories when the account that created them is deleted."""
+        with self._write_lock, self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE owned_repositories SET owner_id = ? "
+                "WHERE owner_id = ? AND organization_id IS NOT NULL",
+                (to_user, from_user),
+            )
+        return cursor.rowcount

@@ -71,6 +71,7 @@ export interface AccountOverview {
   accounts_enabled: boolean
   local_password: boolean
   repositories: string[]
+  organizations: Array<{ id: string; name: string; display_name: string; role: OrganizationRole }>
   saved_count: number
 }
 
@@ -233,6 +234,7 @@ export interface LibraryModelDetails extends LibraryModel {
   can_edit: boolean
   visibility: 'public' | 'shared' | 'private'
   description: string
+  organization?: { name: string; display_name: string } | null
   total_bytes: number
   truncated: boolean
   unsafe_file_count: number
@@ -362,6 +364,8 @@ export interface SavedModel {
 export interface OwnedRepository {
   id: string
   owner_id: string
+  organization_id?: string | null
+  organization_name?: string | null
   owner_username: string
   owner_display_name: string
   repo_id: string
@@ -463,4 +467,40 @@ export interface ChangeSession {
 
 export interface LibraryFile extends HubFile {
   last_commit?: { id: string; message: string; created_at: string } | null
+}
+
+export type OrganizationRole = 'admin' | 'write' | 'read'
+
+export interface Organization {
+  id: string
+  name: string
+  display_name: string
+  description: string
+  created_at: string
+  updated_at: string
+  member_count?: number
+  repository_count?: number
+  my_role?: OrganizationRole | null
+}
+
+export interface OrganizationMember {
+  id: string
+  username: string
+  display_name: string
+  role: OrganizationRole
+  server_role: Role
+  disabled: boolean
+  joined_at: string
+}
+
+export interface OrganizationDetails extends Organization {
+  can_manage: boolean
+  can_upload: boolean
+  members: OrganizationMember[]
+}
+
+export interface UploadNamespace {
+  name: string
+  kind: 'user' | 'organization'
+  display_name: string
 }

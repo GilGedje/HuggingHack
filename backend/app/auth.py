@@ -12,7 +12,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .config import Settings
+from .config import RESERVED_NAMESPACES, Settings
 from .database import Database
 
 
@@ -36,6 +36,7 @@ def utc_iso(value: datetime | None = None) -> str:
 
 
 def normalize_username(value: str) -> str:
+    """Lowercase account names; they also name the user's repository namespace."""
     username = value.strip().lower()
     if not USERNAME_PATTERN.fullmatch(username):
         raise ValueError(
@@ -131,6 +132,8 @@ class AuthService:
         role: str = "member",
     ) -> dict[str, Any]:
         normalized = normalize_username(username)
+        if normalized in RESERVED_NAMESPACES:
+            raise ValueError(f"{normalized!r} is reserved; choose another username.")
         name = display_name.strip() or normalized
         if len(name) > 80:
             raise ValueError("Display name must be 80 characters or fewer.")
@@ -182,7 +185,11 @@ class AuthService:
             cleaned = f"user-{cleaned}".strip("-_") if cleaned else "user"
         candidate = cleaned
         suffix = 2
-        while not USERNAME_PATTERN.fullmatch(candidate) or self.database.get_user_by_username(candidate):
+        while (
+            not USERNAME_PATTERN.fullmatch(candidate)
+            or candidate in RESERVED_NAMESPACES
+            or self.database.namespace_taken(candidate)
+        ):
             candidate = f"{cleaned[:28]}-{suffix}"
             suffix += 1
         return candidate

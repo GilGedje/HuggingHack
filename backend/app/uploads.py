@@ -92,11 +92,38 @@ class UploadManager:
             return None
         return manifest if isinstance(manifest, dict) else None
 
-    def _owned(self, repo_id: str, user_id: str) -> dict[str, Any]:
-        repository = self.database.get_owned_repository(repo_id, user_id)
-        if not repository:
+    def access(self, repository: dict[str, Any], user_id: str) -> str | None:
+        """How a user may treat an uploaded repository: admin, write, read, or None.
+
+        Personal repositories belong to their creator. Organization repositories
+        follow the organization's roles only, so leaving the organization removes
+        access even for the account that created them.
+        """
+        if repository.get("organization_id"):
+            return self.database.organization_role(repository["organization_id"], user_id)
+        return "admin" if repository["owner_id"] == user_id else None
+
+    def _owned(
+        self, repo_id: str, user_id: str, roles: frozenset[str] = frozenset({"admin", "write"})
+    ) -> dict[str, Any]:
+        repository = self.database.get_owned_repository(repo_id)
+        if not repository or self.access(repository, user_id) not in roles:
             raise FileNotFoundError("Uploaded repository not found.")
         return repository
+
+    def namespaces(self, user: dict[str, Any]) -> list[dict[str, Any]]:
+        """Where this user may create repositories: their own name and writable orgs."""
+        choices = [{"name": user["username"], "kind": "user", "display_name": user["display_name"]}]
+        for organization in self.database.user_organizations(user["id"]):
+            if organization["role"] in {"admin", "write"}:
+                choices.append(
+                    {
+                        "name": organization["name"],
+                        "kind": "organization",
+                        "display_name": organization["display_name"],
+                    }
+                )
+        return choices
 
     def _upload_target(self, repo_id: str, file_path: str) -> tuple[Path, Path, PurePosixPath]:
         relative = validate_upload_path(file_path)
@@ -117,15 +144,27 @@ class UploadManager:
         description: str,
         visibility: str,
         storage_target: str | None = None,
+        namespace: str | None = None,
     ) -> dict[str, Any]:
         name = validate_slug(slug)
+        organization = None
+        if namespace and namespace.lower() != user["username"].lower():
+            organization = self.database.get_organization(namespace)
+            role = (
+                self.database.organization_role(organization["id"], user["id"])
+                if organization
+                else None
+            )
+            if role not in {"admin", "write"}:
+                raise PermissionError("You cannot create repositories in that namespace.")
         target_storage = self.storages.get(storage_target)
         if visibility not in {"private", "shared"}:
             raise ValueError("Visibility must be private or shared.")
         detail = description.strip()
         if len(detail) > 500:
             raise ValueError("Description must be 500 characters or fewer.")
-        repo_id = validate_repo_id(f"{user['username']}/{name}")
+        owner_name = organization["name"] if organization else user["username"]
+        repo_id = validate_repo_id(f"{owner_name}/{name}")
         target = self._repository_root(repo_id)
         if target.exists() or self.database.get_owned_repository(repo_id):
             raise FileExistsError("That repository already exists.")
@@ -135,6 +174,7 @@ class UploadManager:
             "status": "uploading",
             "repo_id": repo_id,
             "owner_id": user["id"],
+            "organization_id": organization["id"] if organization else None,
             "source": "user-upload",
             "created_at": timestamp,
             "storage_target": target_storage.id,
@@ -153,6 +193,7 @@ class UploadManager:
                     "status": "uploading",
                     "created_at": timestamp,
                     "updated_at": timestamp,
+                    "organization_id": organization["id"] if organization else None,
                 }
             )
         except Exception:
@@ -187,9 +228,7 @@ class UploadManager:
         result = self._write_chunk(
             lambda: self._upload_target(repo_id, file_path), offset, total, payload
         )
-        self.database.update_owned_repository(
-            repo_id, user_id, updated_at=utc_now()
-        )
+        self.database.update_owned_repository(repo_id, updated_at=utc_now())
         return result
 
     def _check_chunk(self, offset: int, total: int, payload: bytes) -> None:
@@ -262,7 +301,8 @@ class UploadManager:
             manifest = {
                 "status": "complete",
                 "repo_id": repo_id,
-                "owner_id": user_id,
+                "owner_id": repository["owner_id"],
+                "organization_id": repository.get("organization_id"),
                 "source": "user-upload",
                 "uploaded_at": completed,
                 "total_bytes": size,
@@ -275,7 +315,7 @@ class UploadManager:
             target_storage.sync_repository(repo_id, root)
             model = self.indexer.index_path(root)
             updated = self.database.update_owned_repository(
-                repo_id, user_id, status="ready", updated_at=completed
+                repo_id, status="ready", updated_at=completed
             )
             if self.history and model:
                 self.history.record(
@@ -293,7 +333,7 @@ class UploadManager:
         description: str,
         visibility: str,
     ) -> dict[str, Any]:
-        self._owned(repo_id, user_id)
+        self._owned(repo_id, user_id, frozenset({"admin"}))
         if visibility not in {"private", "shared"}:
             raise ValueError("Visibility must be private or shared.")
         detail = description.strip()
@@ -301,14 +341,13 @@ class UploadManager:
             raise ValueError("Description must be 500 characters or fewer.")
         return self.database.update_owned_repository(
             repo_id,
-            user_id,
             description=detail,
             visibility=visibility,
             updated_at=utc_now(),
         )
 
     def delete_repository(self, repo_id: str, user_id: str, confirmation: str) -> None:
-        self._owned(repo_id, user_id)
+        repository = self._owned(repo_id, user_id, frozenset({"admin"}))
         if confirmation != repo_id:
             raise ValueError("Repository name confirmation does not match.")
         with self._write_lock:
@@ -325,15 +364,17 @@ class UploadManager:
                         break
             if not manifest:
                 raise ValueError("Repository manifest is missing or unreadable.")
-            if (
-                manifest.get("owner_id") != user_id
-                or manifest.get("source") != "user-upload"
-            ):
+            belongs = (
+                manifest.get("organization_id") == repository.get("organization_id")
+                if repository.get("organization_id")
+                else manifest.get("owner_id") == repository["owner_id"]
+            )
+            if not belongs or manifest.get("source") != "user-upload":
                 raise ValueError("Repository ownership could not be verified.")
             self.storages.get(manifest_target(manifest)).delete_repository(repo_id)
             if root.exists():
                 shutil.rmtree(root)
-            self.database.delete_owned_repository(repo_id, user_id)
+            self.database.delete_owned_repository(repo_id)
             self.database.delete_commits(repo_id)
             self.database.delete_file_digests(repo_id)
             # A repository created later with the same name must not inherit this
@@ -350,7 +391,11 @@ class UploadManager:
         if can(user, "repos.edit_any"):
             return True
         owned = self.database.get_owned_repository(repo_id)
-        return bool(owned) and owned["owner_id"] == user["id"] and can(user, "repos.edit_own")
+        return (
+            bool(owned)
+            and self.access(owned, user["id"]) in {"admin", "write"}
+            and can(user, "repos.edit_own")
+        )
 
     def _staging_root(self) -> Path:
         return self.settings.model_storage / STAGING_DIRECTORY
@@ -495,9 +540,7 @@ class UploadManager:
                 updated = self._reindex_remote(model, storage)
             self.abort_change(session_id, user)
         if self.database.get_owned_repository(repo_id):
-            self.database.update_owned_repository(
-                repo_id, self.database.get_owned_repository(repo_id)["owner_id"], updated_at=utc_now()
-            )
+            self.database.update_owned_repository(repo_id, updated_at=utc_now())
         commit = None
         if self.history and updated:
             commit = self.history.record(
