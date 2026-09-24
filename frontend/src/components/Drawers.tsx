@@ -547,6 +547,7 @@ interface ModelActionsProps {
   cached: boolean
   files: HubFile[]
   canManageRuntimes: boolean
+  canManageCache: boolean
   onCacheChanged: () => void
   onToast: (message: string, tone?: 'success' | 'error') => void
 }
@@ -557,6 +558,7 @@ export function ModelActions({
   cached,
   files,
   canManageRuntimes,
+  canManageCache,
   onCacheChanged,
   onToast,
 }: ModelActionsProps) {
@@ -670,7 +672,7 @@ export function ModelActions({
   return (
     <>
       {error && <div className="inline-error">{error}</div>}
-      {storageBackend === 's3' && (
+      {storageBackend === 's3' && canManageCache && (
         <div className="local-storage-actions">
           <button
             type="button"

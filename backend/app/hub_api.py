@@ -133,16 +133,31 @@ class HubRepositories:
         self.database = database
         self.storages = StorageRegistry.wrap(model_storage, settings)
 
-    def model(self, repo_id: str) -> dict[str, Any]:
-        if not self.settings.hub_api_enabled:
-            raise HubError("RepoNotFound", "Repository not found.")
+    def model(self, repo_id: str, user: dict[str, Any] | None = None) -> dict[str, Any]:
+        """A model the caller may pull.
+
+        Anonymous callers see models visible to every account (when anonymous
+        pulls are enabled); a personal API token also unlocks its owner's private
+        repositories. Unauthenticated misses answer 401 so clients like git know
+        to retry with credentials, without revealing whether a private repository
+        exists.
+        """
+        missing = HubError(
+            "RepoNotFound", "Repository not found.", status_code=404 if user else 401
+        )
+        if user is None and not self.settings.hub_api_enabled:
+            raise missing
         try:
             validated = validate_repo_id(repo_id)
         except ValueError as error:
-            raise HubError("RepoNotFound", "Repository not found.") from error
-        model = self.database.get_public_local_model(validated)
+            raise missing from error
+        model = (
+            self.database.get_visible_local_model(user["id"], validated)
+            if user
+            else self.database.get_public_local_model(validated)
+        )
         if not model:
-            raise HubError("RepoNotFound", "Repository not found.")
+            raise missing
         return model
 
     def _local_root(self, model: dict[str, Any]) -> Path | None:
@@ -154,8 +169,8 @@ class HubRepositories:
             return None
         return root if root.is_dir() else None
 
-    def snapshot(self, repo_id: str) -> RepoSnapshot:
-        return self.snapshot_for_model(self.model(repo_id))
+    def snapshot(self, repo_id: str, user: dict[str, Any] | None = None) -> RepoSnapshot:
+        return self.snapshot_for_model(self.model(repo_id, user))
 
     def snapshot_for_model(self, model: dict[str, Any]) -> RepoSnapshot:
         """Files of an indexed model, without the anonymous visibility check."""
@@ -179,9 +194,13 @@ class HubRepositories:
             raise HubError("RevisionNotFound", f"Revision {revision} was not found.")
 
     def model_info(
-        self, repo_id: str, revision: str = "main", blobs: bool = False
+        self,
+        repo_id: str,
+        revision: str = "main",
+        blobs: bool = False,
+        user: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        snapshot = self.snapshot(repo_id)
+        snapshot = self.snapshot(repo_id, user)
         self.check_revision(snapshot, revision)
         model = snapshot.model
         owner = snapshot.repo_id.split("/", 1)[0]
@@ -204,7 +223,7 @@ class HubRepositories:
             "sha": snapshot.sha,
             "lastModified": hub_date(model.get("modified_at")),
             "createdAt": hub_date(model.get("downloaded_at") or model.get("modified_at")),
-            "private": False,
+            "private": bool(user) and self.database.get_public_local_model(snapshot.repo_id) is None,
             "gated": False,
             "disabled": False,
             "downloads": 0,
@@ -218,9 +237,14 @@ class HubRepositories:
         }
 
     def tree(
-        self, repo_id: str, revision: str, path: str = "", recursive: bool = False
+        self,
+        repo_id: str,
+        revision: str,
+        path: str = "",
+        recursive: bool = False,
+        user: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        snapshot = self.snapshot(repo_id)
+        snapshot = self.snapshot(repo_id, user)
         self.check_revision(snapshot, revision)
         prefix = path.strip("/")
         if prefix and _hidden(prefix):
@@ -257,8 +281,10 @@ class HubRepositories:
         ]
         return folders + files
 
-    def resolve(self, repo_id: str, revision: str, path: str) -> tuple[RepoSnapshot, RepoEntry]:
-        snapshot = self.snapshot(repo_id)
+    def resolve(
+        self, repo_id: str, revision: str, path: str, user: dict[str, Any] | None = None
+    ) -> tuple[RepoSnapshot, RepoEntry]:
+        snapshot = self.snapshot(repo_id, user)
         self.check_revision(snapshot, revision)
         entry = None if _hidden(path) else snapshot.entry(path)
         if entry is None:

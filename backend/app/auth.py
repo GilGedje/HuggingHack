@@ -18,6 +18,10 @@ from .database import Database
 
 USERNAME_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{1,30}[a-z0-9])?$")
 PASSWORD_MIN_LENGTH = 12
+API_TOKEN_PREFIX = "hht_"
+TOKEN_SCOPES = ("read", "write")
+# Avoid a database write on every request (every upload chunk, for example).
+TOUCH_INTERVAL_SECONDS = 300
 SCRYPT_N = 2**14
 SCRYPT_R = 8
 SCRYPT_P = 1
@@ -98,6 +102,7 @@ class AuthService:
         self._attempts: dict[str, deque[float]] = defaultdict(deque)
         self._attempt_lock = threading.Lock()
         self._setup_lock = threading.Lock()
+        self._touched: dict[str, float] = {}
 
     def ensure_local_user(self) -> None:
         if self.settings.accounts_enabled:
@@ -129,8 +134,8 @@ class AuthService:
         name = display_name.strip() or normalized
         if len(name) > 80:
             raise ValueError("Display name must be 80 characters or fewer.")
-        if role not in {"admin", "member"}:
-            raise ValueError("Role must be admin or member.")
+        if role not in {"admin", "member", "viewer"}:
+            raise ValueError("Role must be admin, member, or viewer.")
         timestamp = utc_iso()
         return self.database.create_user(
             {
@@ -165,9 +170,20 @@ class AuthService:
             return None
         with self._attempt_lock:
             self._attempts.pop(client_key, None)
+        if user.get("disabled"):
+            raise PermissionError("This account is disabled. Ask an administrator to enable it.")
         return user
 
-    def create_session(self, user_id: str) -> tuple[str, str]:
+    def _due(self, key: str) -> bool:
+        now = utc_now().timestamp()
+        if now - self._touched.get(key, 0) < TOUCH_INTERVAL_SECONDS:
+            return False
+        self._touched[key] = now
+        return True
+
+    def create_session(
+        self, user_id: str, user_agent: str | None = None, ip: str | None = None
+    ) -> tuple[str, str]:
         raw_token = secrets.token_urlsafe(48)
         token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
         csrf_token = secrets.token_urlsafe(32)
@@ -181,8 +197,11 @@ class AuthService:
                 "expires_at": utc_iso(
                     created + timedelta(hours=self.settings.session_ttl_hours)
                 ),
+                "user_agent": (user_agent or "")[:300] or None,
+                "ip": (ip or "")[:64] or None,
             }
         )
+        self.database.update_user(user_id, last_login_at=utc_iso(created))
         return raw_token, csrf_token
 
     def session(self, raw_token: str | None) -> dict[str, Any] | None:
@@ -203,7 +222,64 @@ class AuthService:
         if expires <= utc_now():
             self.database.delete_session(token_hash)
             return None
+        if session["user"].get("disabled"):
+            return None
+        session["token_hash"] = token_hash
+        if self._due(f"session:{token_hash}"):
+            self.database.touch_session(token_hash, utc_iso())
         return session
+
+    def create_api_token(
+        self, user_id: str, name: str, scope: str, expires_in_days: int | None
+    ) -> tuple[str, dict[str, Any]]:
+        label = name.strip()
+        if not label or len(label) > 80:
+            raise ValueError("Token name must be 1-80 characters.")
+        if scope not in TOKEN_SCOPES:
+            raise ValueError("Token scope must be read or write.")
+        if expires_in_days is not None and not 1 <= expires_in_days <= 3650:
+            raise ValueError("Tokens expire after 1-3650 days, or never.")
+        raw_token = API_TOKEN_PREFIX + secrets.token_urlsafe(32)
+        created = utc_now()
+        record = self.database.create_api_token(
+            {
+                "id": uuid.uuid4().hex,
+                "user_id": user_id,
+                "name": label,
+                "token_hash": hashlib.sha256(raw_token.encode("utf-8")).hexdigest(),
+                "prefix": raw_token[: len(API_TOKEN_PREFIX) + 6],
+                "scope": scope,
+                "created_at": utc_iso(created),
+                "expires_at": (
+                    utc_iso(created + timedelta(days=expires_in_days))
+                    if expires_in_days
+                    else None
+                ),
+            }
+        )
+        return raw_token, record
+
+    def token_principal(self, raw_token: str) -> dict[str, Any] | None:
+        """The user and scope behind a personal API token, or None if it is invalid."""
+        if not self.settings.accounts_enabled or not raw_token.startswith(API_TOKEN_PREFIX):
+            return None
+        token = self.database.get_api_token_by_hash(
+            hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        )
+        if not token:
+            return None
+        if token.get("expires_at"):
+            try:
+                if datetime.fromisoformat(token["expires_at"]) <= utc_now():
+                    return None
+            except (TypeError, ValueError):
+                return None
+        user = self.database.get_user(token["user_id"], include_secret=False)
+        if not user or user.get("disabled"):
+            return None
+        if self._due(f"token:{token['id']}"):
+            self.database.touch_api_token(token["id"], utc_iso())
+        return {"user": user, "token": token}
 
     def revoke(self, raw_token: str | None) -> None:
         if raw_token:

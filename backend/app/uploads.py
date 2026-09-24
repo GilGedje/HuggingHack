@@ -18,6 +18,7 @@ from .indexer import (
     model_formats,
     utc_now,
 )
+from .permissions import can
 from .storage import FilesystemModelStorage, StorageRegistry
 
 if TYPE_CHECKING:
@@ -346,10 +347,10 @@ class UploadManager:
     # applied all at once on commit, so pulls never see a half-uploaded change.
 
     def can_edit(self, repo_id: str, user: dict[str, Any]) -> bool:
+        if can(user, "repos.edit_any"):
+            return True
         owned = self.database.get_owned_repository(repo_id)
-        if owned:
-            return owned["owner_id"] == user["id"] or user["role"] == "admin"
-        return user["role"] == "admin"
+        return bool(owned) and owned["owner_id"] == user["id"] and can(user, "repos.edit_own")
 
     def _staging_root(self) -> Path:
         return self.settings.model_storage / STAGING_DIRECTORY

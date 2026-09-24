@@ -78,8 +78,8 @@ Settings that matter for an air-gapped install:
 | `STORAGE_TARGETS_JSON` | `[]` | Optional extra S3-compatible buckets. See [6b](#6b-storage-locations-and-buckets). |
 | `DEFAULT_STORAGE_TARGET` | empty | Where new uploads go when there are several locations. |
 | `PUBLIC_URL` | `http://<server-LAN-IP>:7860` | **Set this.** It is the address shown in every copy-paste command. Without it, commands use the address in your browser, which is wrong when you browse via `localhost`. |
-| `HUB_API_ENABLED` | `true` (default) | Lets other machines pull models. Set `false` to disable pulling entirely. |
-| `ACCOUNTS_ENABLED` | `true` (default) | Web UI sign-in. `false` skips sign-in on a single-user trusted network. Pulling is anonymous either way. |
+| `HUB_API_ENABLED` | `true` (default) | Lets other machines pull without a token. Set `false` to require a personal API token for every pull. |
+| `ACCOUNTS_ENABLED` | `true` (default) | Web UI sign-in, roles, and API tokens. `false` skips sign-in on a single-user trusted network. |
 | `HF_TOKEN` | leave empty | Only used to download from the real Hugging Face Hub. |
 
 Find the server's LAN IP with `ipconfig getifaddr en0` (macOS), `hostname -I` (Linux), or
@@ -99,11 +99,24 @@ folders (`MODEL_STORAGE_PATH` and `./data`) and survive restarts and upgrades.
 To upgrade, repeat [section 2](#2-move-hugginghack-onto-the-offline-network) with the new
 version, then `docker compose up -d`. Hard-refresh the browser once if the UI looks stale.
 
-## 5. First sign-in
+## 5. First sign-in, roles, and accounts
 
-On the first visit HuggingHack asks you to create the **owner** account (password of at
-least 12 characters). The owner can add member accounts from **Settings**. Accounts are
-stored only in the local database.
+On the first visit HuggingHack asks you to create the **owner** account (an administrator,
+password of at least 12 characters). Accounts are stored only in the local database.
+
+Administrators open **Admin** in the top bar:
+
+- **Users**: add accounts, pick each one's role, disable or enable them, reset passwords,
+  sign people out everywhere, and delete accounts that own no repositories.
+- **Roles & permissions**: exactly what each role can do.
+  - **Viewer**: browse, save, and pull models; personal API tokens.
+  - **Member**: a viewer who can also upload and change their own repositories, rescan
+    storage, and download from Hugging Face.
+  - **Administrator**: everything, including storage, runtimes, and accounts.
+- **Storage**, **Runtimes**, and **Server** (the `.env` configuration, secrets hidden).
+
+Everyone has **Account** (the gear icon, or click your name): profile, password and active
+sessions, preferences (theme, default sort, default upload location), and **API tokens**.
 
 ## 6. Add models
 
@@ -212,6 +225,19 @@ shows ready-to-copy commands with your server address. Links are shareable:
 In the commands below, replace `SERVER` with your `PUBLIC_URL`, for example
 `http://192.168.1.50:7860`.
 
+### Private models and API tokens
+
+Pulls without a token can read every model that all accounts can see. To pull your
+**private** repositories, or when the administrator set `HUB_API_ENABLED=false`, create a
+token under **Account → API tokens** (read access is enough) and pass it along:
+
+```bash
+export HF_TOKEN=hht_your_token          # vLLM, Transformers, and the hf CLI
+git clone http://yourname:hht_your_token@SERVER_HOST:7860/owner/private-model
+```
+
+The token is shown once; revoke it from the same page when a machine no longer needs it.
+
 ### vLLM
 
 vLLM must already be installed on the GPU machine, from your internal PyPI mirror or
@@ -271,9 +297,12 @@ Set `HF_ENDPOINT` before Python starts; it is read at import time.
 ## 8. Network and security
 
 - Clients only need TCP port `7860` (or your `HUGGINGHACK_PORT`) on the HuggingHack server.
-- Pulling is **anonymous and read-only**: anyone who can reach the port can download every
-  model that all accounts can see. Private uploads are never served. Restrict the port
-  with a firewall, or set `HUB_API_ENABLED=false` to turn pulling off.
+- Pulling is **read-only**. Without a token, anyone who can reach the port can download
+  every model that all accounts can see; private uploads need their owner's API token.
+  Restrict the port with a firewall, or set `HUB_API_ENABLED=false` to require a token for
+  every pull.
+- Roles are enforced by the server for the web interface, API tokens, and pulls. API tokens
+  cannot manage accounts or tokens, and read tokens cannot change anything.
 - Nothing can be pushed or modified through the pull endpoints or git.
 - Model card images inside a model folder are shown; images hosted on the internet are
   skipped, so pages never try to reach outside the network.
@@ -288,7 +317,9 @@ Set `HF_ENDPOINT` before Python starts; it is read at import time.
 | Cloned weight files are ~130 bytes of text | `git-lfs` is missing on the client. Install it, run `git lfs install`, then `git lfs pull` in the clone. |
 | `git clone` sits silently at first | It is hashing the weights for the first time; wait, and later clones are fast. |
 | vLLM tries to reach huggingface.co | `HF_ENDPOINT` was not exported in the shell or container that runs vLLM. |
-| `Repository not found` when pulling | The model is a private upload, or it is missing from the library, or `HUB_API_ENABLED=false`. |
+| `Repository not found` when pulling | The model is private or missing, or `HUB_API_ENABLED=false`. Pass a personal API token as `HF_TOKEN` or as the git password. |
+| `The API token is invalid, expired, or revoked` | Create a new token under **Account → API tokens**; disabled accounts' tokens stop working. |
+| Uploads or Downloads are missing from the top bar | Your role is **Viewer**. Ask an administrator for the Member role. |
 | UI still shows an old version after upgrading | Hard-refresh the browser once. |
 | S3-only models | They can be pulled directly (streamed from S3). **Restore to local cache** is only needed for the built-in runtime dispatch. |
 | A bucket shows **Offline** on the Storage page | Check its `endpoint_url`, the credential variables it names, and the bucket permissions. Its models stay listed until it reconnects. |
@@ -299,7 +330,6 @@ Set `HF_ENDPOINT` before Python starts; it is read at import time.
 
 - `llama-server -hf …` (llama.cpp) and `ollama run hf.co/…` use different protocols and
   are not supported yet. Clone the GGUF repository and point them at the file instead.
-- Pull access has no tokens: it is all-or-nothing per server via `HUB_API_ENABLED`.
-- The **Downloads** page and **Settings → Hugging Face access** still refer to the real
+- The **Downloads** page and **Admin → Server → Hugging Face** refer to the real
   Hugging Face Hub and do not work offline. Everything else, including **Saved**, works offline.
 - Commit history keeps text files but not old weights; older versions cannot be downloaded.

@@ -114,7 +114,7 @@ hosted service.
 
 The first launch builds the container. Later launches reuse the image unless the project changes.
 On the first browser visit, HuggingHack asks you to create the owner account. Use a unique
-password of at least 12 characters. The owner can add local member accounts from **Settings**.
+password of at least 12 characters. The owner can add accounts and choose their roles from **Admin → Users**.
 
 Command-line equivalent:
 
@@ -157,14 +157,56 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up --build -
 
 The overlay stores PostgreSQL data in the `postgres-data` named volume and waits for the
 database health check before starting HuggingHack. Back it up separately from `./data`.
-Switching `DATABASE_URL` does not copy an existing SQLite installation into PostgreSQL.
+
+### Move an existing SQLite installation to PostgreSQL
+
+`python -m app.migrate_sqlite` copies accounts, sessions, tokens, saved models, repositories,
+commit history, and everything else into an empty PostgreSQL database. It works on a copy,
+so the SQLite file is never changed, and it refuses a target that already has accounts.
+
+```bash
+docker compose down
+cp data/hugginghack.sqlite3 data/hugginghack.sqlite3.backup
+# Add POSTGRES_PASSWORD to .env, then start only the database:
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d postgres
+# Copy the data before HuggingHack starts on PostgreSQL:
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml run --rm hugginghack \
+  python -m app.migrate_sqlite
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
+```
+
+Run the copy before anyone opens the web interface on PostgreSQL; otherwise the first-run
+setup creates an owner account and the copy refuses to overwrite it.
 
 ## Accounts, saved models, and uploads
 
 Accounts are local to this HuggingHack installation—there is no hosted identity service and
-no account data leaves the server. Each member gets a separate saved-model library, private
-notes, collections, and download history. Members can rotate their own password from
-**Settings**; doing so revokes their other active sessions.
+no account data leaves the server. Each account gets a separate saved-model library, private
+notes, collections, and download history.
+
+Every account has one of three roles:
+
+| Role | Can |
+| --- | --- |
+| **Viewer** | Browse, save, and pull models, and create personal API tokens. |
+| **Member** | Everything a viewer can, plus upload repositories, change their own repositories, rescan storage, manage the S3 cache, and download from Hugging Face. |
+| **Administrator** | Everything, including other people's repositories, storage, runtimes, server settings, and accounts. |
+
+The server enforces these roles for the web interface, API tokens, and pulls alike; the full
+matrix is under **Admin → Roles & permissions**.
+
+**Account** (the gear icon or your name) holds your profile, password and active sessions
+(sign out other browsers), preferences that follow you across browsers (theme, default sort,
+default upload location), and **API tokens**. A token acts as you from scripts and tools:
+use it as `HF_TOKEN` for vLLM, Transformers, and the `hf` CLI, as the git password, or as
+`Authorization: Bearer hht_…` for the REST API. Read tokens can only browse and pull; write
+tokens can also upload. Tokens can never manage accounts or other tokens.
+
+**Admin** (administrators only) lists every account with its role, status, last sign-in,
+sessions, tokens, and repositories. Change roles, disable or enable accounts (which signs
+them out immediately), reset passwords, sign people out everywhere, or delete accounts that
+own no repositories. The last active administrator can never be demoted, disabled, or
+deleted. The **Server** tab shows the configuration from `.env` without revealing secrets.
 
 Use the heart on a Hub model to save it without downloading. The **Saved** workspace can
 organize those models into multiple collections, such as a project shortlist or a target rig.
@@ -477,9 +519,9 @@ git clone http://NAS-IP:7860/owner/model-name
   clone of a large model waits while it is hashed. Weights are never copied into the mirror.
 - A model that changes gets a new commit on top of the previous one, so `git pull`
   picks up the update.
-- Pulls are anonymous and read-only. Every model visible to all accounts can be pulled by
-  anyone who can reach the server; private uploads are never served. Set
-  `HUB_API_ENABLED=false` to turn pulling off.
+- Pulls are read-only. Without a token they can read every model visible to all accounts;
+  a personal API token also reaches its owner's private uploads. Set `HUB_API_ENABLED=false`
+  to require a token for every pull.
 - Set `PUBLIC_URL=http://NAS-IP:7860` when the address in your browser (for example
   `localhost`) is not the one other machines use.
 
@@ -503,7 +545,8 @@ Manually copied models are indexed but never modified.
 - Runtime dispatch is administrator-only in the UI. Optional bearer access is limited to runtime endpoints; use long random tokens and firewall Ollama and the vLLM agent to trusted LAN clients.
 - The vLLM agent rejects paths outside its configured model root and launches a fixed argument vector without a shell.
 - Use a read-only Hugging Face token.
-- The Hub-protocol pull endpoints are anonymous and read-only by design. Keep HuggingHack on a trusted network, or set `HUB_API_ENABLED=false`.
+- The Hub-protocol pull endpoints are read-only and allow anonymous reads of models every account can see. Keep HuggingHack on a trusted network, or set `HUB_API_ENABLED=false` to require personal API tokens.
+- API tokens are stored only as SHA-256 hashes and shown once. Revoke them from **Account → API tokens**; disabling an account stops its tokens immediately.
 
 ## Development
 

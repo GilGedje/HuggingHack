@@ -14,7 +14,6 @@ import {
   ShieldCheck,
   Trash2,
   UploadCloud,
-  UserPlus,
   Users,
   X,
 } from 'lucide-react'
@@ -393,7 +392,12 @@ export function UploadsPage({
       setRepositories(repos.items)
       setHealth(runtime)
       setStorageOptions(targets.items)
-      setStorageTarget((current) => current || targets.default)
+      const preferred = user.preferences?.default_storage_target
+      setStorageTarget(
+        (current) =>
+          current
+          || (preferred && targets.items.some((item) => item.id === preferred) ? preferred : targets.default),
+      )
       setActiveRepo((current) => current || repos.items.find((item) => item.owner_id === user.id && item.status === 'uploading')?.repo_id || '')
     } catch (reason) {
       onToast(reason instanceof Error ? reason.message : 'Unable to load repositories', 'error')
@@ -635,126 +639,5 @@ export function UploadsPage({
         </div>
       </section>
     </div>
-  )
-}
-
-export function AccountAdmin({
-  user,
-  onToast,
-}: {
-  user: User
-  onToast: ToastHandler
-}) {
-  const [users, setUsers] = useState<User[]>([])
-  const [username, setUsername] = useState('')
-  const [displayName, setDisplayName] = useState('')
-  const [password, setPassword] = useState('')
-  const [creating, setCreating] = useState(false)
-  const [currentPassword, setCurrentPassword] = useState('')
-  const [newPassword, setNewPassword] = useState('')
-  const [changingPassword, setChangingPassword] = useState(false)
-
-  const load = useCallback(() => {
-    api.users().then((payload) => setUsers(payload.items)).catch(() => undefined)
-  }, [])
-
-  useEffect(load, [load])
-
-  async function createMember(event: FormEvent) {
-    event.preventDefault()
-    setCreating(true)
-    try {
-      await api.createUser({ username, display_name: displayName, password })
-      setUsername('')
-      setDisplayName('')
-      setPassword('')
-      load()
-      onToast('Member account created.')
-    } catch (reason) {
-      onToast(reason instanceof Error ? reason.message : 'Unable to create account', 'error')
-    } finally {
-      setCreating(false)
-    }
-  }
-
-  async function changePassword(event: FormEvent) {
-    event.preventDefault()
-    setChangingPassword(true)
-    try {
-      await api.changePassword({
-        current_password: currentPassword,
-        new_password: newPassword,
-      })
-      setCurrentPassword('')
-      setNewPassword('')
-      onToast('Password changed. Other sessions were signed out.')
-    } catch (reason) {
-      onToast(reason instanceof Error ? reason.message : 'Unable to change password', 'error')
-    } finally {
-      setChangingPassword(false)
-    }
-  }
-
-  return (
-    <section className="settings-section account-settings">
-      <div className="settings-section-title">
-        <Users size={20} />
-        <div>
-          <h2>Accounts</h2>
-          <p>Signed in as {user.display_name} ({user.role}).</p>
-        </div>
-      </div>
-      <div className="member-list">
-        {users.map((member) => (
-          <div key={member.id}>
-            <span className="member-avatar">{member.display_name.slice(0, 2).toUpperCase()}</span>
-            <span><strong>{member.display_name}</strong><small>@{member.username}</small></span>
-            <em>{member.role}</em>
-          </div>
-        ))}
-      </div>
-      <form className="password-change-form" onSubmit={changePassword}>
-        <div className="settings-section-title">
-          <LockKeyhole size={17} />
-          <div><h3>Change my password</h3><p>Other signed-in sessions will be revoked.</p></div>
-        </div>
-        <input
-          type="password"
-          value={currentPassword}
-          onChange={(event) => setCurrentPassword(event.target.value)}
-          placeholder="Current password"
-          maxLength={256}
-          required
-        />
-        <input
-          type="password"
-          value={newPassword}
-          onChange={(event) => setNewPassword(event.target.value)}
-          placeholder="New password (12+ characters)"
-          minLength={12}
-          maxLength={256}
-          required
-        />
-        <button className="secondary-button" disabled={changingPassword}>
-          {changingPassword ? <LoaderCircle size={15} className="spin" /> : <LockKeyhole size={15} />}
-          Update password
-        </button>
-      </form>
-      {user.role === 'admin' && (
-        <form className="member-form" onSubmit={createMember}>
-          <div className="settings-section-title">
-            <UserPlus size={17} />
-            <div><h3>Add a member</h3><p>Give them the temporary password securely.</p></div>
-          </div>
-          <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Display name" maxLength={80} />
-          <input value={username} onChange={(event) => setUsername(event.target.value.toLowerCase())} placeholder="username" maxLength={32} required />
-          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="12+ character password" minLength={12} maxLength={256} required />
-          <button className="secondary-button" disabled={creating}>
-            {creating ? <LoaderCircle size={15} className="spin" /> : <UserPlus size={15} />}
-            Create member
-          </button>
-        </form>
-      )}
-    </section>
   )
 }

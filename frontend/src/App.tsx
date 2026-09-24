@@ -8,18 +8,13 @@ import {
   ChevronDown,
   CircleX,
   Clock3,
-  Cloud,
   Filter,
-  KeyRound,
   ListFilter,
   LoaderCircle,
   PackageCheck,
   RefreshCw,
   Search,
-  Server,
-  ShieldAlert,
   SlidersHorizontal,
-  Wifi,
 } from 'lucide-react'
 import {
   HashRouter,
@@ -30,20 +25,19 @@ import {
   useSearchParams,
 } from 'react-router-dom'
 import { api } from './api'
-import { AccountAdmin, AuthScreen, SavedPage, UploadsPage } from './components/AccountPages'
+import { AuthScreen, SavedPage, UploadsPage } from './components/AccountPages'
 import { LibraryModelRow } from './components/RepositoryRows'
+import { AccessProvider, useAccess } from './access'
+import { AccountPage } from './pages/AccountPage'
+import { AdminPage } from './pages/AdminPage'
 import { ModelPage } from './pages/ModelPage'
-import { StoragePage } from './pages/StoragePage'
 import { UploadProvider } from './uploads'
 import Shell from './components/Shell'
 import type {
   AuthStatus,
   DownloadJob,
-  Health,
   LibraryFacets,
   LibraryModel,
-  RuntimeJob,
-  RuntimeTarget,
   User,
 } from './types'
 import { formatBytes, relativeTime } from './utils'
@@ -95,7 +89,8 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
   const [library, setLibrary] = useState('')
   const [appFilter, setAppFilter] = useState('')
   const [parameters, setParameters] = useState('')
-  const [sort, setSort] = useState('updated')
+  const { user, can } = useAccess()
+  const [sort, setSort] = useState<string>(user.preferences?.catalog_sort || 'updated')
   const [models, setModels] = useState<LibraryModel[]>([])
   const [facets, setFacets] = useState<LibraryFacets>({ tasks: [], libraries: [], apps: [] })
   const [libraryTotal, setLibraryTotal] = useState(0)
@@ -262,10 +257,12 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
               <h1>Explore models</h1>
               <p>Everything here is served from your own storage. No internet connection required.</p>
             </div>
-            <button type="button" className="quiet-link" onClick={rescan} disabled={scanning}>
-              <RefreshCw size={14} className={scanning ? 'spin' : undefined} />
-              {scanning ? 'Scanning…' : 'Rescan library'}
-            </button>
+            {can('library.scan') && (
+              <button type="button" className="quiet-link" onClick={rescan} disabled={scanning}>
+                <RefreshCw size={14} className={scanning ? 'spin' : undefined} />
+                {scanning ? 'Scanning…' : 'Rescan library'}
+              </button>
+            )}
           </div>
 
           <div className="catalog-tools">
@@ -565,305 +562,6 @@ function DownloadsPage({
   )
 }
 
-const runtimeActiveStatuses = ['queued', 'preparing', 'transferring', 'loading']
-
-function RuntimesPage() {
-  const [targets, setTargets] = useState<RuntimeTarget[]>([])
-  const [jobs, setJobs] = useState<RuntimeJob[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-
-  const load = useCallback(() => {
-    setError('')
-    Promise.all([api.runtimeTargets(), api.runtimeJobs()])
-      .then(([targetPayload, jobPayload]) => {
-        setTargets(targetPayload.items)
-        setJobs(jobPayload.items)
-      })
-      .catch((reason) => {
-        const message = reason instanceof Error ? reason.message : 'Unable to read runtime targets.'
-        setError(message)
-      })
-      .finally(() => setLoading(false))
-  }, [])
-
-  useEffect(() => {
-    load()
-    const timer = window.setInterval(load, 2000)
-    return () => window.clearInterval(timer)
-  }, [load])
-
-  return (
-    <div className="standard-page runtimes-page">
-      <div className="page-heading">
-        <div>
-          <span className="eyebrow">Network inference destinations</span>
-          <h1>Runtimes</h1>
-          <p>Send cached models to Ollama over HTTP or switch a vLLM rig through the authenticated runtime agent.</p>
-        </div>
-        <button type="button" className="secondary-button" onClick={load} disabled={loading}>
-          {loading ? <LoaderCircle size={16} className="spin" /> : <RefreshCw size={16} />}
-          Refresh
-        </button>
-      </div>
-
-      {error && <div className="inline-error">{error}</div>}
-
-      <section className="runtime-target-grid">
-        {targets.map((target) => (
-          <article key={target.id} className="runtime-target-card">
-            <div className={`runtime-kind-icon ${target.kind}`}>
-              {target.kind === 'ollama' ? <Cloud size={20} /> : <Server size={20} />}
-            </div>
-            <div>
-              <span>{target.kind === 'ollama' ? 'Ollama' : 'vLLM agent'}</span>
-              <h2>{target.name}</h2>
-              <code>{target.base_url}</code>
-              <p>
-                {target.transfer_mode === 'blob-upload'
-                  ? `Model blobs transfer over the LAN · keep alive ${target.keep_alive || '5m'}`
-                  : `Shared model root ${target.remote_model_root}`}
-              </p>
-            </div>
-            <span className="status-pill ok"><Check size={13} /> Configured</span>
-          </article>
-        ))}
-        {!loading && targets.length === 0 && (
-          <div className="empty-state spacious runtime-empty">
-            <Server size={34} />
-            <h2>No runtime destinations configured</h2>
-            <p>Add Ollama or vLLM targets through <code>RUNTIME_TARGETS_JSON</code>, then restart HuggingHack.</p>
-          </div>
-        )}
-      </section>
-
-      <section className="runtime-history">
-        <div className="section-heading-line">
-          <div>
-            <span className="eyebrow">Persistent history</span>
-            <h2>Runtime jobs</h2>
-          </div>
-          <span>{jobs.filter((job) => runtimeActiveStatuses.includes(job.status)).length} active</span>
-        </div>
-        <div className="download-list">
-          {jobs.map((job) => (
-            <article key={job.id} className="runtime-job-row">
-              <div className={`runtime-state-icon ${job.status}`}>
-                {job.status === 'failed'
-                  ? <AlertCircle size={18} />
-                  : job.status === 'ready'
-                    ? <Check size={18} />
-                    : <Server size={18} />}
-              </div>
-              <div className="runtime-job-main">
-                <div className="runtime-job-heading">
-                  <div>
-                    <h3>{job.runtime_model_name}</h3>
-                    <span>{job.repo_id} → {job.target_name}</span>
-                  </div>
-                  <strong className={`job-status ${job.status}`}>{job.status}</strong>
-                </div>
-                <p>{job.error || job.message}</p>
-                {runtimeActiveStatuses.includes(job.status) && (
-                  <>
-                    <div className="job-progress">
-                      <span style={{ width: `${job.progress}%` }} />
-                    </div>
-                    <div className="download-stats">
-                      <span>{job.progress.toFixed(0)}%</span>
-                      {job.target_kind === 'ollama' && job.total_bytes > 0 && (
-                        <span>{formatBytes(job.processed_bytes)} of {formatBytes(job.total_bytes)}</span>
-                      )}
-                      <span>Updated {relativeTime(job.updated_at)}</span>
-                    </div>
-                  </>
-                )}
-                {!runtimeActiveStatuses.includes(job.status) && (
-                  <div className="download-stats">
-                    <span>{job.target_kind}</span>
-                    <span>Finished {relativeTime(job.completed_at || job.updated_at)}</span>
-                    {job.source_file && <code>{job.source_file}</code>}
-                  </div>
-                )}
-              </div>
-            </article>
-          ))}
-          {!loading && jobs.length === 0 && (
-            <div className="empty-compact">Load a model from its local-library drawer to create the first runtime job.</div>
-          )}
-        </div>
-      </section>
-    </div>
-  )
-}
-
-function SettingsPage({
-  user,
-  onToast,
-}: {
-  user: User
-  onToast: ToastHandler
-}) {
-  const [health, setHealth] = useState<Health | null>(null)
-  useEffect(() => {
-    api.health().then(setHealth).catch(() => undefined)
-  }, [])
-  return (
-    <div className="standard-page settings-page">
-      <div className="page-heading">
-        <div>
-          <span className="eyebrow">Runtime configuration</span>
-          <h1>Settings</h1>
-          <p>HuggingHack is configured with environment variables so credentials never enter the browser.</p>
-        </div>
-      </div>
-
-      <div className="settings-grid">
-        <section className="settings-section">
-          <div className="settings-section-title">
-            <Server size={20} />
-            <div>
-              <h2>{health?.object_storage.enabled ? 'S3 + local cache' : 'Storage mount'}</h2>
-              <p>
-                {health?.object_storage.enabled
-                  ? 'S3 is durable storage; /models is the working cache used by inference engines.'
-                  : 'The container sees your configured host folder as /models.'}
-              </p>
-            </div>
-          </div>
-          <dl className="settings-list">
-            <div>
-              <dt>Cache path</dt>
-              <dd><code>{health?.storage.path || '/models'}</code></dd>
-            </div>
-            <div>
-              <dt>Metadata database</dt>
-              <dd>{health?.database_backend === 'postgresql' ? 'PostgreSQL' : 'SQLite'}</dd>
-            </div>
-            {health?.object_storage.enabled && (
-              <>
-                <div>
-                  <dt>S3 location</dt>
-                  <dd>
-                    <code>
-                      s3://{health.object_storage.bucket}/{health.object_storage.prefix || ''}
-                    </code>
-                  </dd>
-                </div>
-                <div>
-                  <dt>Connection</dt>
-                  <dd className={health.object_storage.connected ? 'good-text' : 'danger-text'}>
-                    {health.object_storage.connected ? 'Connected' : health.object_storage.error || 'Unavailable'}
-                  </dd>
-                </div>
-              </>
-            )}
-            <div>
-              <dt>Write access</dt>
-              <dd className={health?.storage.writable ? 'good-text' : 'danger-text'}>
-                {health?.storage.writable ? 'Ready' : 'Not writable'}
-              </dd>
-            </div>
-            <div>
-              <dt>Free space</dt>
-              <dd>{health ? formatBytes(health.storage.free_bytes) : 'Reading…'}</dd>
-            </div>
-          </dl>
-          <div className="code-block">
-            <span>.env</span>
-            <code>
-              {health?.object_storage.enabled
-                ? 'MODEL_STORAGE_BACKEND=s3\nS3_BUCKET=my-models\nS3_PREFIX=models'
-                : 'MODEL_STORAGE_PATH=/volume1/AI/models'}
-            </code>
-          </div>
-        </section>
-
-        <section className="settings-section">
-          <div className="settings-section-title">
-            <KeyRound size={20} />
-            <div>
-              <h2>Hugging Face access</h2>
-              <p>A read token is only needed for private or gated repositories.</p>
-            </div>
-          </div>
-          <dl className="settings-list">
-            <div>
-              <dt>Endpoint</dt>
-              <dd><code>{health?.hf_endpoint || 'https://huggingface.co'}</code></dd>
-            </div>
-            <div>
-              <dt>HF token</dt>
-              <dd className={health?.hf_token_configured ? 'good-text' : ''}>
-                {health?.hf_token_configured ? 'Configured' : 'Not configured'}
-              </dd>
-            </div>
-          </dl>
-          <div className="code-block">
-            <span>.env</span>
-            <code>HF_TOKEN=hf_your_read_token</code>
-          </div>
-        </section>
-        <section className="settings-section">
-          <div className="settings-section-title">
-            <Server size={20} />
-            <div>
-              <h2>Network runtimes</h2>
-              <p>Configured destinations can receive cached models through the runtime API.</p>
-            </div>
-          </div>
-          <dl className="settings-list">
-            <div>
-              <dt>Destinations</dt>
-              <dd>{health?.runtime_target_count ?? 0} configured</dd>
-            </div>
-            <div>
-              <dt>Automation token</dt>
-              <dd className={health?.runtime_api_token_configured ? 'good-text' : ''}>
-                {health?.runtime_api_token_configured ? 'Configured' : 'Browser session only'}
-              </dd>
-            </div>
-          </dl>
-          <div className="code-block">
-            <span>.env</span>
-            <code>{'RUNTIME_TARGETS_JSON=[...]\nRUNTIME_API_TOKEN=use-a-long-random-secret'}</code>
-          </div>
-        </section>
-        <AccountAdmin user={user} onToast={onToast} />
-      </div>
-
-      <section className="settings-section security-section">
-        <div className="settings-section-title">
-          <ShieldAlert size={20} />
-          <div>
-            <h2>Local network safety</h2>
-            <p>Downloaded model files are data until another program loads them.</p>
-          </div>
-        </div>
-        <div className="security-columns">
-          <div>
-            <strong>HuggingHack never</strong>
-            <p>imports model code, unpickles weights, executes repositories, or sends your NAS files elsewhere.</p>
-          </div>
-          <div>
-            <strong>Before exposing it publicly</strong>
-            <p>keep accounts enabled, serve it through an HTTPS reverse proxy, and turn on secure cookies.</p>
-          </div>
-          <div>
-            <strong>For gated models</strong>
-            <p>accept the publisher's terms on Hugging Face first, then use a read-only token.</p>
-          </div>
-        </div>
-      </section>
-
-      <div className="runtime-line">
-        <Wifi size={15} />
-        HuggingHack {health?.version || '1.0.0'} · unofficial, local-first, and not affiliated with Hugging Face
-      </div>
-    </div>
-  )
-}
-
 function Application({
   authStatus,
   onAuthChange,
@@ -878,18 +576,28 @@ function Application({
     setToast({ message, tone })
   }, [])
 
+  const capabilities = authStatus.capabilities || []
+  const can = useCallback((capability: string) => capabilities.includes(capability), [capabilities])
+  const canDownload = can('hub.download')
+
   const refreshDownloads = useCallback(() => {
+    if (!canDownload) return
     api
       .downloads()
       .then((payload) => setJobs(payload.items))
       .catch(() => undefined)
-  }, [])
+  }, [canDownload])
 
   useEffect(() => {
+    if (!canDownload) return
     refreshDownloads()
     const timer = window.setInterval(refreshDownloads, 1800)
     return () => window.clearInterval(timer)
-  }, [refreshDownloads])
+  }, [canDownload, refreshDownloads])
+
+  const refreshAccess = useCallback(() => {
+    api.authStatus().then(onAuthChange).catch(() => undefined)
+  }, [onAuthChange])
 
   useEffect(() => {
     if (!toast) return
@@ -913,6 +621,7 @@ function Application({
   }
 
   return (
+    <AccessProvider user={user} capabilities={capabilities} refresh={refreshAccess}>
     <UploadProvider onToast={showToast}>
     <Shell activeDownloads={activeDownloads} user={user} onLogout={logout}>
       <Routes>
@@ -923,33 +632,35 @@ function Application({
         />
         <Route
           path="/models/:owner/:name/*"
-          element={<ModelPage user={user} onToast={showToast} />}
+          element={<ModelPage onToast={showToast} />}
         />
-        <Route path="/local" element={<Navigate to={user.role === 'admin' ? '/storage' : '/models'} replace />} />
-        {user.role === 'admin' && (
-          <Route path="/storage" element={<StoragePage onToast={showToast} />} />
-        )}
+        <Route path="/local" element={<Navigate to={can('storage.view') ? '/admin/storage' : '/models'} replace />} />
+        <Route path="/storage" element={<Navigate to="/admin/storage" replace />} />
+        <Route path="/runtimes" element={<Navigate to="/admin/runtimes" replace />} />
+        <Route path="/settings" element={<Navigate to={can('settings.view') ? '/admin/server' : '/account'} replace />} />
         <Route path="/saved" element={<SavedPage onToast={showToast} />} />
-        <Route path="/uploads" element={<UploadsPage user={user} onToast={showToast} />} />
+        <Route
+          path="/uploads"
+          element={can('repos.create') ? <UploadsPage user={user} onToast={showToast} /> : <Navigate to="/models" replace />}
+        />
         <Route
           path="/downloads"
           element={
-            <DownloadsPage
-              jobs={jobs}
-              onToast={showToast}
-              refreshDownloads={refreshDownloads}
-            />
+            canDownload ? (
+              <DownloadsPage
+                jobs={jobs}
+                onToast={showToast}
+                refreshDownloads={refreshDownloads}
+              />
+            ) : (
+              <Navigate to="/models" replace />
+            )
           }
         />
-        <Route
-          path="/runtimes"
-          element={
-            user.role === 'admin'
-              ? <RuntimesPage />
-              : <Navigate to="/local" replace />
-          }
-        />
-        <Route path="/settings" element={<SettingsPage user={user} onToast={showToast} />} />
+        <Route path="/account" element={<AccountPage onToast={showToast} />} />
+        <Route path="/account/:tab" element={<AccountPage onToast={showToast} />} />
+        <Route path="/admin" element={<AdminPage onToast={showToast} />} />
+        <Route path="/admin/:tab" element={<AdminPage onToast={showToast} />} />
         <Route path="*" element={<Navigate to="/models" replace />} />
       </Routes>
       {toast && (
@@ -960,6 +671,7 @@ function Application({
       )}
     </Shell>
     </UploadProvider>
+    </AccessProvider>
   )
 }
 
