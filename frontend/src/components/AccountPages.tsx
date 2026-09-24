@@ -3,6 +3,7 @@ import {
   BookMarked,
   Check,
   Eye,
+  KeyRound,
   EyeOff,
   FileUp,
   FolderHeart,
@@ -41,11 +42,31 @@ import { relativeUploadPath, useUploads } from '../uploads'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
+function takeSsoError(): string {
+  // The sign-in callback reports problems as #/?sso_error=...; show it once.
+  const [path, query = ''] = window.location.hash.replace(/^#/, '').split('?')
+  const params = new URLSearchParams(query)
+  const message = params.get('sso_error') || ''
+  if (message) {
+    params.delete('sso_error')
+    const rest = params.toString()
+    window.history.replaceState(null, '', `#${path || '/'}${rest ? `?${rest}` : ''}`)
+  }
+  return message
+}
+
+function currentPath(): string {
+  const path = window.location.hash.replace(/^#/, '')
+  return path.startsWith('/') && !path.startsWith('//') ? path : '/models'
+}
+
 export function AuthScreen({
   setup,
+  oidc,
   onAuthenticated,
 }: {
   setup: boolean
+  oidc?: { enabled: boolean; name: string }
   onAuthenticated: (status: AuthStatus) => void
 }) {
   const [username, setUsername] = useState('')
@@ -53,7 +74,8 @@ export function AuthScreen({
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState(takeSsoError)
+  const sso = !setup && oidc?.enabled
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -93,6 +115,17 @@ export function AuthScreen({
           <span className="eyebrow">{setup ? 'One-time setup' : 'HuggingHack account'}</span>
           <h2>{setup ? 'Set up your library' : 'Sign in'}</h2>
         </div>
+        {sso && (
+          <>
+            <a
+              className="download-button auth-submit sso-button"
+              href={`/api/auth/oidc/login?next=${encodeURIComponent(currentPath())}`}
+            >
+              <KeyRound size={17} /> Sign in with {oidc?.name || 'single sign-on'}
+            </a>
+            <div className="auth-divider"><span>or use a HuggingHack password</span></div>
+          </>
+        )}
         {setup && (
           <label>
             Display name
@@ -141,7 +174,7 @@ export function AuthScreen({
           {setup && <small>Use at least 12 characters. HuggingHack stores a salted scrypt hash.</small>}
         </label>
         {error && <div className="inline-error">{error}</div>}
-        <button className="download-button auth-submit" disabled={submitting}>
+        <button className={sso ? 'secondary-button auth-submit' : 'download-button auth-submit'} disabled={submitting}>
           {submitting ? <LoaderCircle size={17} className="spin" /> : <LockKeyhole size={17} />}
           {submitting ? 'Working…' : setup ? 'Create owner account' : 'Sign in'}
         </button>

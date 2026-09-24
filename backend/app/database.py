@@ -167,6 +167,16 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_sessions_expiry
                     ON sessions(expires_at);
 
+                CREATE TABLE IF NOT EXISTS oidc_states (
+                    state_hash TEXT PRIMARY KEY,
+                    browser_hash TEXT NOT NULL,
+                    nonce TEXT NOT NULL,
+                    code_verifier TEXT NOT NULL,
+                    redirect_uri TEXT NOT NULL,
+                    next_path TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS api_tokens (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -554,6 +564,41 @@ class Database:
         with self.connect() as connection:
             row = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         return self._user(row, include_secret)
+
+    def get_user_by_external(self, provider: str, subject: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM users WHERE auth_provider = ? AND external_subject = ?",
+                (provider, subject),
+            ).fetchone()
+        return self._user(row, include_secret=False)
+
+    def create_oidc_state(self, record: dict[str, Any]) -> None:
+        with self._write_lock, self.connect() as connection:
+            connection.execute(
+                "DELETE FROM oidc_states WHERE created_at < ?", (record["expires_before"],)
+            )
+            connection.execute(
+                """
+                INSERT INTO oidc_states (
+                    state_hash, browser_hash, nonce, code_verifier, redirect_uri,
+                    next_path, created_at
+                ) VALUES (
+                    :state_hash, :browser_hash, :nonce, :code_verifier, :redirect_uri,
+                    :next_path, :created_at
+                )
+                """,
+                {key: value for key, value in record.items() if key != "expires_before"},
+            )
+
+    def take_oidc_state(self, state_hash: str) -> dict[str, Any] | None:
+        """Return and delete a pending sign-in, so each state works exactly once."""
+        with self._write_lock, self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM oidc_states WHERE state_hash = ?", (state_hash,)
+            ).fetchone()
+            connection.execute("DELETE FROM oidc_states WHERE state_hash = ?", (state_hash,))
+        return dict(row) if row else None
 
     def get_user_by_username(self, username: str) -> dict[str, Any] | None:
         with self.connect() as connection:

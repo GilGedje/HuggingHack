@@ -717,7 +717,7 @@ export default function App() {
   }
 
   if (status.setup_required || !status.user) {
-    return <AuthScreen setup={status.setup_required} onAuthenticated={setStatus} />
+    return <AuthScreen setup={status.setup_required} oidc={status.oidc} onAuthenticated={setStatus} />
   }
 
   return (

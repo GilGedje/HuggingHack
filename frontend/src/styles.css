@@ -2077,3 +2077,7 @@ button.file-browser-name:hover { text-decoration: underline; text-underline-offs
 @media (max-width: 480px) {
   .section-hero-inner, .section-body { width: calc(100% - 32px); }
 }
+
+.sso-button { justify-content: center; text-decoration: none; }
+.auth-divider { display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 11px; }
+.auth-divider::before, .auth-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }

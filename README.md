@@ -456,6 +456,30 @@ repositories use the backend's `HF_TOKEN`; the token is never exposed to the bro
 
 Active downloads have a **Cancel download** action. Cancellation stops the isolated download worker, keeps already transferred files and Hugging Face local-directory metadata, and marks the job as cancelled in history. Starting the same repository again can reuse those partial files instead of discarding the completed work.
 
+## Single sign-on (OpenID Connect)
+
+HuggingHack signs people in through any OpenID Connect provider (Authentik, Keycloak,
+Microsoft Entra ID, Okta, Dex, and others) using the Authorization Code flow with PKCE.
+Passwords keep working alongside it, so a local administrator can always get in.
+
+```dotenv
+PUBLIC_URL=https://hugginghack.example.internal
+OIDC_ISSUER=https://authentik.example.internal/application/o/hugginghack/
+OIDC_CLIENT_ID=from-your-provider
+OIDC_CLIENT_SECRET=from-your-provider
+OIDC_PROVIDER_NAME=Authentik
+OIDC_DEFAULT_ROLE=viewer
+```
+
+- Register `PUBLIC_URL` + `/api/auth/oidc/callback` as the redirect URI with the provider.
+- The first sign-in creates an account with `OIDC_DEFAULT_ROLE`; administrators change roles
+  under **Admin → Users**. Accounts are matched by the provider's subject id, never by
+  username or email, so single sign-on cannot take over a local account.
+- `OIDC_ALLOWED_GROUPS` limits who may sign in. To block one person, disable their account;
+  deleting it only lasts until their next sign-in.
+- The owner account is always created with a password on first run.
+- The step-by-step Authentik setup is in the [air-gapped setup guide](docs/AIRGAPPED.md#5a-single-sign-on-with-authentik).
+
 ## Model pages and commit history
 
 Every model has a full page at `#/models/owner/name` with its rendered model card,

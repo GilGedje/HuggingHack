@@ -178,3 +178,52 @@ def test_sqlite_installation_copies_into_postgresql(tmp_path: Path, fresh_postgr
     assert target.get_text_blob("a" * 64) == "hello"
     with pytest.raises(ValueError):
         migrate(source_path, fresh_postgres)
+
+
+def test_postgresql_sso_state_and_external_accounts(fresh_postgres: str):
+    database = Database(fresh_postgres)
+    database.initialize()
+    database.create_oidc_state(
+        {
+            "state_hash": "s" * 64,
+            "browser_hash": "b" * 64,
+            "nonce": "n",
+            "code_verifier": "v",
+            "redirect_uri": "http://x/api/auth/oidc/callback",
+            "next_path": "/models",
+            "created_at": "2026-09-24T00:00:00+00:00",
+            "expires_before": "2026-09-23T00:00:00+00:00",
+        }
+    )
+    assert database.take_oidc_state("s" * 64)["nonce"] == "n"
+    assert database.take_oidc_state("s" * 64) is None
+    database.create_user(
+        {
+            "id": "ext1",
+            "username": "sso-user",
+            "display_name": "SSO",
+            "password_hash": "!oidc",
+            "role": "viewer",
+            "created_at": "now",
+            "updated_at": "now",
+            "auth_provider": "oidc",
+            "external_subject": "subject-1",
+        }
+    )
+    assert database.get_user_by_external("oidc", "subject-1")["id"] == "ext1"
+    import psycopg
+
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        database.create_user(
+            {
+                "id": "ext2",
+                "username": "sso-user-2",
+                "display_name": "Dup",
+                "password_hash": "!oidc",
+                "role": "viewer",
+                "created_at": "now",
+                "updated_at": "now",
+                "auth_provider": "oidc",
+                "external_subject": "subject-1",
+            }
+        )
