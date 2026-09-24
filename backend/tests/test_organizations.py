@@ -100,8 +100,12 @@ def test_writers_upload_into_the_organization_and_roles_control_access(org):
     assert outsider.get(f"/api/library/models/{repo_id}").status_code == 404
     assert repo_id in [item["id"] for item in reader.get("/api/library/models", params={"owner": "nvidia"}).json()["items"]]
     assert outsider.get("/api/library/models", params={"owner": "nvidia"}).json()["count"] == 0
-    assert repo_id in [item["repo_id"] for item in reader.get("/api/uploads/repositories").json()["items"]]
+    # The Uploads page lists only repositories the account can upload to, with its role.
+    assert [(item["repo_id"], item["my_role"]) for item in writer.get("/api/uploads/repositories").json()["items"]] == [(repo_id, "write")]
+    assert repo_id not in [item["repo_id"] for item in reader.get("/api/uploads/repositories").json()["items"]]
     assert repo_id not in [item["repo_id"] for item in outsider.get("/api/uploads/repositories").json()["items"]]
+    admin_view, _ = login("admin")
+    assert (repo_id, "admin") in [(item["repo_id"], item["my_role"]) for item in admin_view.get("/api/uploads/repositories").json()["items"]]
     details = reader.get(f"/api/library/models/{repo_id}").json()
     assert details["organization"] == {"name": "Nvidia", "display_name": "NVIDIA"}
     assert details["can_edit"] is False
@@ -239,3 +243,36 @@ def test_new_accounts_can_start_in_organizations(org):
 
     member, _ = login("member")
     assert member.post("/api/users", json={**account, "username": "sneaky", "organizations": [{"organization": "Nvidia", "role": "admin"}]}).status_code == 403
+
+
+def test_upload_permission_needs_both_server_and_organization_roles(org):
+    writer, _ = login("writer")
+    repo_id = writer.post("/api/uploads/repositories", json={"slug": "gated", "namespace": "Nvidia"}).json()["repo_id"]
+    upload(writer, repo_id, {"config.json": b"{}"})
+    admin, _ = login("admin")
+    assert admin.put("/api/organizations/Nvidia/members/viewer", json={"role": "write"}).status_code == 200
+
+    # A server Viewer with an organization Write role still cannot upload anywhere.
+    viewer, status = login("viewer")
+    assert "repos.create" not in status["capabilities"]
+    assert viewer.get("/api/uploads/repositories").status_code == 403
+    assert viewer.get("/api/uploads/namespaces").json()["items"] == []
+    assert viewer.post("/api/uploads/repositories", json={"slug": "x", "namespace": "Nvidia"}).status_code == 403
+    assert viewer.put(
+        "/api/uploads/repositories/files",
+        params={"repo_id": repo_id, "path": "extra.json"},
+        headers={"Upload-Offset": "0", "Upload-Length": "2"},
+        content=b"{}",
+    ).status_code == 403
+    assert viewer.post("/api/repos/changes", json={"repo_id": repo_id}).status_code == 403
+    assert viewer.get(f"/api/library/models/{repo_id}").json()["can_edit"] is False
+
+    # A member with only Read in the organization cannot write to it either.
+    reader, _ = login("reader")
+    assert [item["name"] for item in reader.get("/api/uploads/namespaces").json()["items"]] == ["reader"]
+    assert reader.put(
+        "/api/uploads/repositories/files",
+        params={"repo_id": repo_id, "path": "extra.json"},
+        headers={"Upload-Offset": "0", "Upload-Length": "2"},
+        content=b"{}",
+    ).status_code == 404
