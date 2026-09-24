@@ -13,6 +13,8 @@ from app.config import Settings, repository_path, validate_repo_id
 from app.database import Database, _postgres_query
 from app.downloads import DownloadManager
 from app.hub_service import HubService, parse_gguf_range, validate_gguf_filename
+from app.history import RepoHistory
+from app.hub_api import HubRepositories
 from app.indexer import (
     LocalModelIndexer,
     gguf_parameter_count,
@@ -25,7 +27,7 @@ from app.runtimes import (
     parse_runtime_targets,
     remote_model_path,
 )
-from app.storage import FilesystemModelStorage, S3ModelStorage
+from app.storage import FilesystemModelStorage, S3ModelStorage, StorageRegistry
 from app.uploads import UploadManager, validate_upload_path
 from app.vllm_agent import AgentSettings, VllmProcessManager
 
@@ -34,6 +36,12 @@ class FakeS3Client:
     def __init__(self):
         self.objects: dict[str, bytes] = {}
         self.uploads: list[str] = []
+        self.modified: dict[str, str] = {}
+        self._clock = 0
+
+    def _touch(self, key: str) -> None:
+        self._clock += 1
+        self.modified[key] = f"2026-07-24T12:00:{self._clock % 60:02d}.{self._clock:06d}+00:00"
 
     def get_paginator(self, operation: str):
         assert operation == "list_objects_v2"
@@ -46,7 +54,7 @@ class FakeS3Client:
                     {
                         "Key": key,
                         "Size": len(value),
-                        "LastModified": "2026-07-24T12:00:00+00:00",
+                        "LastModified": self.modified.get(key, "2026-07-24T12:00:00+00:00"),
                     }
                     for key, value in sorted(self.objects.items())
                     if key.startswith(Prefix)
@@ -65,6 +73,7 @@ class FakeS3Client:
     def upload_file(self, filename: str, bucket: str, key: str, **kwargs):
         self.objects[key] = Path(filename).read_bytes()
         self.uploads.append(key)
+        self._touch(key)
 
     def download_file(self, bucket: str, key: str, filename: str, **kwargs):
         Path(filename).write_bytes(self.objects[key])
@@ -72,6 +81,12 @@ class FakeS3Client:
     def delete_objects(self, *, Bucket: str, Delete: dict):
         for item in Delete["Objects"]:
             self.objects.pop(item["Key"], None)
+        return {}
+
+    def put_object(self, *, Bucket: str, Key: str, Body: bytes):
+        self.objects[Key] = bytes(Body)
+        self.uploads.append(Key)
+        self._touch(Key)
         return {}
 
     def head_object(self, *, Bucket: str, Key: str):
@@ -1140,8 +1155,12 @@ def test_library_api_serves_local_data_and_hides_private_uploads(
     monkeypatch.setattr(main, "settings", settings)
     monkeypatch.setattr(main, "database", database)
     monkeypatch.setattr(main, "indexer", indexer)
-    monkeypatch.setattr(main, "model_storage", model_storage)
+    monkeypatch.setattr(main, "storages", StorageRegistry.wrap(model_storage, settings))
     monkeypatch.setattr(main, "catalog", LocalCatalog(settings, model_storage))
+    hub_repositories = HubRepositories(settings, database, model_storage)
+    monkeypatch.setattr(main, "hub_repositories", hub_repositories)
+    monkeypatch.setattr(main, "history", RepoHistory(database, hub_repositories))
+    monkeypatch.setattr(main, "uploads", uploads)
     current = {"user": member}
     main.app.dependency_overrides[main.require_user] = lambda: current["user"]
     try:

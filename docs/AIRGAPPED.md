@@ -13,6 +13,8 @@ parameter counts, GGUF inspection, and every pull are served from your own stora
 - [4. Start, stop, and update](#4-start-stop-and-update)
 - [5. First sign-in](#5-first-sign-in)
 - [6. Add models](#6-add-models)
+- [6a. Browse models, history, and changes](#6a-browse-models-history-and-changes)
+- [6b. Storage locations and buckets](#6b-storage-locations-and-buckets)
 - [7. Use models from other machines](#7-use-models-from-other-machines)
 - [8. Network and security](#8-network-and-security)
 - [9. Troubleshooting](#9-troubleshooting)
@@ -73,6 +75,8 @@ Settings that matter for an air-gapped install:
 | --- | --- | --- |
 | `MODEL_STORAGE_PATH` | `./models` or an absolute path such as `/mnt/tank/ai/models` | Folder that holds every model. It must exist before starting. |
 | `MODEL_STORAGE_BACKEND` | `filesystem` (default) | Plain folders, no S3 needed. Use `s3` only with an internal MinIO or Ceph (see the README). |
+| `STORAGE_TARGETS_JSON` | `[]` | Optional extra S3-compatible buckets. See [6b](#6b-storage-locations-and-buckets). |
+| `DEFAULT_STORAGE_TARGET` | empty | Where new uploads go when there are several locations. |
 | `PUBLIC_URL` | `http://<server-LAN-IP>:7860` | **Set this.** It is the address shown in every copy-paste command. Without it, commands use the address in your browser, which is wrong when you browse via `localhost`. |
 | `HUB_API_ENABLED` | `true` (default) | Lets other machines pull models. Set `false` to disable pulling entirely. |
 | `ACCOUNTS_ENABLED` | `true` (default) | Web UI sign-in. `false` skips sign-in on a single-user trusted network. Pulling is anonymous either way. |
@@ -136,16 +140,74 @@ license, and tags, and renders it as the model card.
 2. In the web UI open **Models** and click **Rescan library** (or restart the container,
    which also scans).
 
-The folders are only indexed, never modified. The **Uploads** page is an alternative for
-adding a model folder from a browser.
+The folders are only indexed, never modified. The first scan records an "Initial import"
+commit for every model.
+
+The **Uploads** page is an alternative for adding a model folder from a browser: create a
+repository, choose a folder, give the upload a commit message, and start it. The upload runs
+in a panel at the bottom of the screen, so you can keep browsing. If the page is reloaded,
+choose the same folder again in that panel and it resumes where it stopped.
+
+## 6a. Browse models, history, and changes
+
+Click any model to open its page (`#/models/owner/name`):
+
+- **Model card** renders the model's `README.md`, with a side panel for size, parameters,
+  storage location, the last commit, **Use this model**, cache actions, and runtime dispatch.
+- **Files and versions** lists folders and files with the last commit that touched each,
+  and a download button per file.
+- **Commits** lists every change: who made it, when, the message, and how many files were
+  added, modified, or deleted. Open a commit to see line diffs for text files such as
+  `README.md` and `config.json`, and size changes for weights.
+- **GGUF** inspects GGUF headers and tensors.
+
+To change a model, its owner or an administrator chooses **Upload changes**: add files or a
+folder (optionally into a subfolder), tick existing files to delete, write a commit message,
+and commit. Files are staged and applied all at once, so vLLM and `git clone` never see a
+half-finished change. Scans also record commits when files change directly on disk or in a
+bucket ("Detected changes in storage").
+
+History keeps the text of small text files, but not old weights: only the newest version of
+each file can be downloaded or pulled.
+
+## 6b. Storage locations and buckets
+
+Administrators see a **Storage** page (it replaces the old Local library) listing every
+location that holds models: the local model folder, the `MODEL_STORAGE_BACKEND=s3` bucket if
+set, and any extra buckets. Each shows its connection status, location, capacity, and every
+model with its size, file count, parameters, and whether it is on disk or only in S3.
+
+Add internal buckets (MinIO, Ceph, or any S3-compatible service) in `.env`, keeping the JSON
+on one line:
+
+```dotenv
+STORAGE_TARGETS_JSON=[{"id":"minio-main","name":"MinIO models","bucket":"models","endpoint_url":"http://minio:9000","addressing_style":"path","use_ssl":false,"access_key_env":"MINIO_MAIN_KEY","secret_key_env":"MINIO_MAIN_SECRET"},{"id":"minio-archive","name":"MinIO archive","bucket":"archive","prefix":"","endpoint_url":"http://minio:9000","addressing_style":"path","use_ssl":false,"access_key_env":"MINIO_MAIN_KEY","secret_key_env":"MINIO_MAIN_SECRET"}]
+MINIO_MAIN_KEY=replace-me
+MINIO_MAIN_SECRET=replace-me
+DEFAULT_STORAGE_TARGET=minio-main
+```
+
+- `id` is permanent (models reference it): 1-40 lowercase letters, digits, or hyphens.
+- `prefix` is the folder inside the bucket (default `models`; `""` for the bucket root).
+- Credentials are only named here; their values live in the variables you name, which
+  Docker Compose passes into the container from `.env`.
+- Every bucket needs `s3:ListBucket`, and `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`
+  on its prefix.
+- Uploaders choose the location when they create a repository. Everything else uses
+  `DEFAULT_STORAGE_TARGET`.
+- A repository must exist in only one location. If the same `owner/name` is found in two,
+  the earlier one is used and the Storage page shows a warning.
+
+Models in a bucket are pulled directly from the bucket, so they work with vLLM, `git clone`,
+and the `hf` CLI without being copied to the server first.
 
 ## 7. Use models from other machines
 
 Open a model and click **Use model** (on its card or in its detail panel). The dialog
 shows ready-to-copy commands with your server address. Links are shareable:
 
-- `http://<server>:7860/#/models?model=owner/name&local-app=vllm`
-- `http://<server>:7860/#/models?model=owner/name&clone=true`
+- `http://<server>:7860/#/models/owner/name?local-app=vllm`
+- `http://<server>:7860/#/models/owner/name?clone=true`
 
 In the commands below, replace `SERVER` with your `PUBLIC_URL`, for example
 `http://192.168.1.50:7860`.
@@ -229,11 +291,15 @@ Set `HF_ENDPOINT` before Python starts; it is read at import time.
 | `Repository not found` when pulling | The model is a private upload, or it is missing from the library, or `HUB_API_ENABLED=false`. |
 | UI still shows an old version after upgrading | Hard-refresh the browser once. |
 | S3-only models | They can be pulled directly (streamed from S3). **Restore to local cache** is only needed for the built-in runtime dispatch. |
+| A bucket shows **Offline** on the Storage page | Check its `endpoint_url`, the credential variables it names, and the bucket permissions. Its models stay listed until it reconnects. |
+| Storage page warns that a model exists in two locations | Delete one copy; the earlier storage target in the list is the one being served. |
+| Upload panel says "Choose the same folder again" | The page was reloaded mid-upload. Pick the same folder; already-sent bytes are skipped. |
 
 ## 10. Limitations
 
 - `llama-server -hf …` (llama.cpp) and `ollama run hf.co/…` use different protocols and
   are not supported yet. Clone the GGUF repository and point them at the file instead.
 - Pull access has no tokens: it is all-or-nothing per server via `HUB_API_ENABLED`.
-- The **Saved** page and **Downloads** page still contact the real Hugging Face Hub and do
-  not work offline. The **Models** tab, **Local library**, **Uploads**, and pulling do.
+- The **Downloads** page and **Settings → Hugging Face access** still refer to the real
+  Hugging Face Hub and do not work offline. Everything else, including **Saved**, works offline.
+- Commit history keeps text files but not old weights; older versions cannot be downloaded.

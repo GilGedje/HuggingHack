@@ -17,7 +17,7 @@ from .config import Settings, repository_path, validate_repo_id
 from .database import Database
 from .hub_service import HubService
 from .indexer import LocalModelIndexer, directory_stats
-from .storage import FilesystemModelStorage
+from .storage import FilesystemModelStorage, StorageRegistry
 
 
 def now_iso() -> str:
@@ -35,13 +35,15 @@ class DownloadManager:
         database: Database,
         hub: HubService,
         indexer: LocalModelIndexer,
-        model_storage: FilesystemModelStorage | None = None,
+        model_storage: FilesystemModelStorage | StorageRegistry | None = None,
+        history: Any | None = None,
     ):
         self.settings = settings
         self.database = database
         self.hub = hub
         self.indexer = indexer
-        self.model_storage = model_storage or FilesystemModelStorage(settings)
+        self.storages = StorageRegistry.wrap(model_storage, settings)
+        self.history = history
         self.executor = ThreadPoolExecutor(
             max_workers=settings.max_concurrent_downloads,
             thread_name_prefix="hugginghack-download",
@@ -59,8 +61,14 @@ class DownloadManager:
         ignore_patterns: list[str] | None = None,
         mode: str = "full",
         user_id: str | None = None,
+        storage_target: str | None = None,
     ) -> dict[str, Any]:
         validated = validate_repo_id(repo_id)
+        existing = self.database.get_local_model(validated)
+        if storage_target is None and existing:
+            # Updating a repository keeps it in the target that already holds it.
+            storage_target = self.storages.for_model(existing).id
+        target_storage = self.storages.get(storage_target)
         active = self.database.find_active_download(validated)
         if active:
             if active.get("user_id") != user_id:
@@ -72,6 +80,7 @@ class DownloadManager:
             "allow_patterns": [value for value in (allow_patterns or []) if value.strip()],
             "ignore_patterns": [value for value in (ignore_patterns or []) if value.strip()],
             "mode": mode,
+            "storage_target": target_storage.id,
         }
         record = {
             "id": uuid.uuid4().hex,
@@ -292,6 +301,8 @@ class DownloadManager:
                 ),
                 updated_at=now_iso(),
             )
+            payload = download.get("payload") or {}
+            target_storage = self.storages.get(payload.get("storage_target"))
             manifest_path = target / ".hugginghack.json"
             manifest_path.write_text(
                 json.dumps(
@@ -338,14 +349,26 @@ class DownloadManager:
                         "gated": details.get("gated"),
                         "total_bytes": final_size,
                         "file_count": file_count,
+                        "storage_target": target_storage.id,
                     },
                     indent=2,
                 ),
                 encoding="utf-8",
             )
             final_size, _, _ = directory_stats(target)
-            self.model_storage.sync_repository(repo_id, target)
-            self.indexer.index_path(target)
+            target_storage.sync_repository(repo_id, target)
+            indexed = self.indexer.index_path(target)
+            if self.history and indexed:
+                author = (
+                    self.database.get_user(download["user_id"], include_secret=False)
+                    if download.get("user_id")
+                    else None
+                )
+                self.history.record(
+                    indexed,
+                    f"Download {repo_id} ({download['revision']}) from Hugging Face",
+                    author=author,
+                )
             self.database.update_download(
                 download_id,
                 status="complete",

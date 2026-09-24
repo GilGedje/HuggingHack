@@ -25,6 +25,8 @@ WEIGHT_EXTENSIONS = {
 }
 UNSAFE_EXTENSIONS = {".bin", ".pt", ".pth", ".pkl", ".pickle", ".ckpt"}
 CONFIG_FILES = {"config.json", "model_index.json", "tokenizer.json", "params.json"}
+LOCAL_TARGET_ID = "local"
+LEGACY_S3_TARGET_ID = "s3"
 FORMAT_EXTENSIONS = {
     ".safetensors": "safetensors",
     ".gguf": "gguf",
@@ -69,6 +71,14 @@ def directory_stats(path: Path, include_cache: bool = False) -> tuple[int, int, 
             count += 1
             latest = max(latest, stat.st_mtime)
     return size, count, latest
+
+
+def manifest_target(manifest: dict[str, Any]) -> str:
+    """Storage target of a repository manifest, including pre-target manifests."""
+    target = manifest.get("storage_target")
+    if isinstance(target, str) and target:
+        return target
+    return LEGACY_S3_TARGET_ID if manifest.get("storage_backend") == "s3" else LOCAL_TARGET_ID
 
 
 def model_formats(relative_paths: Iterable[str]) -> list[str]:
@@ -350,9 +360,16 @@ class LocalModelIndexer:
             "downloaded_at": manifest.get("downloaded_at"),
             "revision": manifest.get("revision"),
             "sha": manifest.get("sha"),
+            # S3 syncs used to store config.model_type as the task; a real task from
+            # the model card wins over that fallback.
             "pipeline_tag": (
-                manifest.get("pipeline_tag")
+                (
+                    manifest.get("pipeline_tag")
+                    if manifest.get("pipeline_tag") not in {None, "", config.get("model_type")}
+                    else None
+                )
                 or card.get("pipeline_tag")
+                or manifest.get("pipeline_tag")
                 or config.get("model_type")
             ),
             "library_name": manifest.get("library_name") or card.get("library_name"),
@@ -369,6 +386,7 @@ class LocalModelIndexer:
             "source_url": manifest.get("source_url"),
             "managed": 1 if manifest else 0,
             "storage_backend": manifest.get("storage_backend") or "filesystem",
+            "storage_target": manifest_target(manifest),
             "cached": 1,
             "remote_uri": manifest.get("remote_uri"),
             "parameter_count": facts["parameter_count"],
@@ -395,6 +413,7 @@ class LocalModelIndexer:
             "source_url": model.get("source_url"),
             "managed": int(bool(model.get("managed", True))),
             "storage_backend": "s3",
+            "storage_target": model.get("storage_target") or LEGACY_S3_TARGET_ID,
             "cached": int(bool(model.get("cached"))),
             "remote_uri": model.get("remote_uri"),
             "parameter_count": model.get("parameter_count"),

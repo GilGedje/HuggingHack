@@ -8,6 +8,11 @@ services:
       dockerfile: Dockerfile
     container_name: hugginghack
     restart: unless-stopped
+    # Passes every .env value into the container, including the credential
+    # variables named by each storage target in STORAGE_TARGETS_JSON.
+    env_file:
+      - path: .env
+        required: false
     user: "${PUID:-0}:${PGID:-0}"
     ports:
       - "${HUGGINGHACK_PORT:-7860}:7860"
@@ -31,6 +36,8 @@ services:
       RUNTIME_WORKERS: "${RUNTIME_WORKERS:-2}"
       RUNTIME_API_TOKEN: "${RUNTIME_API_TOKEN:-}"
       VLLM_AGENT_TOKEN: "${VLLM_AGENT_TOKEN:-}"
+      STORAGE_TARGETS_JSON: "${STORAGE_TARGETS_JSON:-[]}"
+      DEFAULT_STORAGE_TARGET: "${DEFAULT_STORAGE_TARGET:-}"
       HUB_API_ENABLED: "${HUB_API_ENABLED:-true}"
       PUBLIC_URL: "${PUBLIC_URL:-}"
       S3_BUCKET: "${S3_BUCKET:-}"

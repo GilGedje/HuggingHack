@@ -33,10 +33,12 @@ import type {
   Health,
   OwnedRepository,
   SavedModel,
+  StorageOption,
   User,
 } from '../types'
 import { formatBytes, relativeTime, taskLabel } from '../utils'
-import { ModelDrawer } from './Drawers'
+import { Link, useNavigate } from 'react-router-dom'
+import { relativeUploadPath, useUploads } from '../uploads'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -156,7 +158,7 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
   const [query, setQuery] = useState('')
   const [newCollection, setNewCollection] = useState('')
   const [loading, setLoading] = useState(true)
-  const [selected, setSelected] = useState<string | null>(null)
+  const navigate = useNavigate()
   const [editing, setEditing] = useState<string | null>(null)
   const [draftNote, setDraftNote] = useState('')
   const [draftCollections, setDraftCollections] = useState<string[]>([])
@@ -275,7 +277,7 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
               <div className="saved-grid">
                 {items.map((item) => (
                   <article className="saved-card" key={item.id}>
-                    <button className="saved-card-open" onClick={() => setSelected(item.repo_id)}>
+                    <button className="saved-card-open" onClick={() => navigate(`/models/${item.repo_id}`)}>
                       <span className="saved-card-mark">{item.repo_id.slice(0, 2).toUpperCase()}</span>
                       <span>
                         <small>{item.repo_id.split('/')[0]}</small>
@@ -356,7 +358,6 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
           </section>
         </div>
       </div>
-      <ModelDrawer repoId={selected} onClose={() => setSelected(null)} onQueued={() => undefined} />
     </>
   )
 }
@@ -376,15 +377,23 @@ export function UploadsPage({
   const [description, setDescription] = useState('')
   const [visibility, setVisibility] = useState<'private' | 'shared'>('private')
   const [files, setFiles] = useState<File[]>([])
-  const [progress, setProgress] = useState<Record<string, number>>({})
-  const [uploading, setUploading] = useState(false)
+  const [message, setMessage] = useState('')
   const [creating, setCreating] = useState(false)
+  const [storageOptions, setStorageOptions] = useState<StorageOption[]>([])
+  const [storageTarget, setStorageTarget] = useState('')
+  const { jobs, enqueue } = useUploads()
 
   const load = useCallback(async () => {
     try {
-      const [repos, runtime] = await Promise.all([api.uploadRepositories(), api.health()])
+      const [repos, runtime, targets] = await Promise.all([
+        api.uploadRepositories(),
+        api.health(),
+        api.storageOptions(),
+      ])
       setRepositories(repos.items)
       setHealth(runtime)
+      setStorageOptions(targets.items)
+      setStorageTarget((current) => current || targets.default)
       setActiveRepo((current) => current || repos.items.find((item) => item.owner_id === user.id && item.status === 'uploading')?.repo_id || '')
     } catch (reason) {
       onToast(reason instanceof Error ? reason.message : 'Unable to load repositories', 'error')
@@ -393,6 +402,9 @@ export function UploadsPage({
 
   useEffect(() => {
     load()
+    const refresh = () => load()
+    window.addEventListener('hugginghack:repository-changed', refresh)
+    return () => window.removeEventListener('hugginghack:repository-changed', refresh)
   }, [load])
 
   useEffect(() => {
@@ -401,17 +413,21 @@ export function UploadsPage({
   }, [])
 
   const totalBytes = useMemo(() => files.reduce((sum, file) => sum + file.size, 0), [files])
-  const uploadedBytes = useMemo(
-    () => Object.values(progress).reduce((sum, value) => sum + value, 0),
-    [progress],
-  )
   const active = repositories.find((item) => item.repo_id === activeRepo)
+  const queued = jobs.some(
+    (job) => job.repoId === activeRepo && ['queued', 'uploading', 'committing'].includes(job.status),
+  )
 
   async function createRepository(event: FormEvent) {
     event.preventDefault()
     setCreating(true)
     try {
-      const repository = await api.createUploadRepository({ slug, description, visibility })
+      const repository = await api.createUploadRepository({
+        slug,
+        description,
+        visibility,
+        storage_target: storageTarget || undefined,
+      })
       setSlug('')
       setDescription('')
       setActiveRepo(repository.repo_id)
@@ -424,39 +440,17 @@ export function UploadsPage({
     }
   }
 
-  function relativeUploadPath(file: File): string {
-    const relative = file.webkitRelativePath || file.name
-    const parts = relative.split('/').filter(Boolean)
-    return parts.length > 1 ? parts.slice(1).join('/') : parts[0]
-  }
-
-  async function uploadFolder() {
+  function uploadFolder() {
     if (!active || active.owner_id !== user.id || files.length === 0) return
-    setUploading(true)
-    try {
-      for (const file of files) {
-        const path = relativeUploadPath(file)
-        await api.uploadFile(
-          active.repo_id,
-          path,
-          file,
-          health?.upload_chunk_bytes || 8 * 1024 * 1024,
-          (uploaded) => setProgress((current) => ({ ...current, [path]: uploaded })),
-        )
-      }
-      await api.finalizeUploadRepository(active.repo_id)
-      setFiles([])
-      setProgress({})
-      await load()
-      onToast(`${active.repo_id} is indexed and ready in the local library.`)
-    } catch (reason) {
-      onToast(
-        `${reason instanceof Error ? reason.message : 'Upload failed'} Progress is saved; retry to resume.`,
-        'error',
-      )
-    } finally {
-      setUploading(false)
-    }
+    enqueue({
+      kind: 'new',
+      repoId: active.repo_id,
+      items: files.map((file) => ({ file, path: relativeUploadPath(file) })),
+      message: message.trim() || `Upload ${files.length} file${files.length === 1 ? '' : 's'}`,
+    })
+    setFiles([])
+    setMessage('')
+    onToast(`Uploading to ${active.repo_id}. You can keep browsing; progress stays at the bottom of the screen.`)
   }
 
   async function toggleVisibility(repository: OwnedRepository) {
@@ -530,6 +524,18 @@ export function UploadsPage({
                 <option value="shared">Shared — all local accounts</option>
               </select>
             </label>
+            {storageOptions.length > 1 && (
+              <label>
+                Storage
+                <select value={storageTarget} onChange={(event) => setStorageTarget(event.target.value)}>
+                  {storageOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.name}{option.kind === 's3' ? ' · S3' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <button className="download-button" disabled={creating}>
               {creating ? <LoaderCircle size={16} className="spin" /> : <Plus size={16} />}
               Create repository
@@ -555,28 +561,28 @@ export function UploadsPage({
               ref={folderInput}
               type="file"
               multiple
-              onChange={(event) => {
-                setFiles(Array.from(event.target.files || []))
-                setProgress({})
-              }}
+              onChange={(event) => setFiles(Array.from(event.target.files || []))}
             />
             <FileUp size={25} />
             <strong>{files.length ? `${files.length} files selected` : 'Choose model folder'}</strong>
             <span>{files.length ? formatBytes(totalBytes) : 'Config, tokenizer, weights, and documentation'}</span>
           </label>
-          {uploading && (
-            <div className="upload-progress">
-              <div><span style={{ width: `${totalBytes ? uploadedBytes * 100 / totalBytes : 0}%` }} /></div>
-              <small>{formatBytes(uploadedBytes)} of {formatBytes(totalBytes)}</small>
-            </div>
-          )}
+          <label>
+            Commit message
+            <input
+              value={message}
+              onChange={(event) => setMessage(event.target.value)}
+              maxLength={200}
+              placeholder={files.length ? `Upload ${files.length} file${files.length === 1 ? '' : 's'}` : 'Initial upload'}
+            />
+          </label>
           <button
             className="download-button"
-            disabled={!active || !files.length || uploading}
+            disabled={!active || !files.length || queued}
             onClick={uploadFolder}
           >
-            {uploading ? <LoaderCircle size={16} className="spin" /> : <UploadCloud size={16} />}
-            {uploading ? 'Uploading…' : 'Upload and index'}
+            {queued ? <LoaderCircle size={16} className="spin" /> : <UploadCloud size={16} />}
+            {queued ? 'Uploading in the background…' : 'Upload and commit'}
           </button>
         </section>
       </div>
@@ -593,7 +599,13 @@ export function UploadsPage({
               </div>
               <div>
                 <small>{repository.owner_display_name}</small>
-                <h3>{repository.repo_id}</h3>
+                <h3>
+                  {repository.status === 'ready' ? (
+                    <Link to={`/models/${repository.repo_id}`}>{repository.repo_id}</Link>
+                  ) : (
+                    repository.repo_id
+                  )}
+                </h3>
                 <p>{repository.description || 'No description yet.'}</p>
                 <div className="repo-stats">
                   <span className={`status-pill ${repository.status === 'ready' ? 'ok' : ''}`}>{repository.status}</span>
@@ -603,6 +615,11 @@ export function UploadsPage({
               </div>
               {repository.owner_id === user.id && (
                 <div className="repository-actions">
+                  {repository.status === 'ready' && (
+                    <Link to={`/models/${repository.repo_id}?upload=1`}>
+                      <UploadCloud size={14} /> Upload changes
+                    </Link>
+                  )}
                   <button onClick={() => toggleVisibility(repository)}>
                     {repository.visibility === 'private' ? <Users size={14} /> : <LockKeyhole size={14} />}
                     {repository.visibility === 'private' ? 'Share locally' : 'Make private'}

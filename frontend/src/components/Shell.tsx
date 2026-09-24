@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import {
   Bookmark,
   Box,
+  Database,
   Download,
-  HardDrive,
   LogOut,
   Menu,
   Moon,
@@ -27,11 +27,11 @@ interface ShellProps {
 
 const links = [
   { to: '/models', label: 'Models', icon: Box },
-  { to: '/local', label: 'Local library', icon: HardDrive },
   { to: '/saved', label: 'Saved', icon: Bookmark },
   { to: '/uploads', label: 'Uploads', icon: UploadCloud },
   { to: '/downloads', label: 'Downloads', icon: Download },
   { to: '/runtimes', label: 'Runtimes', icon: Server, adminOnly: true },
+  { to: '/storage', label: 'Storage', icon: Database, adminOnly: true },
 ]
 
 export default function Shell({ children, activeDownloads, user, onLogout }: ShellProps) {

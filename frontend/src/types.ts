@@ -105,6 +105,7 @@ export interface LibraryModel {
   sha?: string | null
   managed: boolean
   storage_backend: 'filesystem' | 's3'
+  storage_target: string
   cached: boolean
   saved: boolean
 }
@@ -124,7 +125,12 @@ export interface LibrarySearchResult {
 }
 
 export interface LibraryModelDetails extends LibraryModel {
-  files: HubFile[]
+  files: LibraryFile[]
+  latest_commit?: CommitSummary | null
+  commit_count: number
+  can_edit: boolean
+  visibility: 'public' | 'shared' | 'private'
+  description: string
   total_bytes: number
   truncated: boolean
   unsafe_file_count: number
@@ -265,4 +271,94 @@ export interface OwnedRepository {
   modified_at?: string | null
   created_at: string
   updated_at: string
+}
+
+export interface StorageModel {
+  repo_id: string
+  size_bytes: number
+  file_count: number
+  parameter_count?: number | null
+  formats: ModelFormat[]
+  cached: boolean
+  storage_backend: 'filesystem' | 's3'
+  modified_at?: string | null
+  visibility: 'public' | 'shared' | 'private'
+}
+
+export interface StorageCapacity {
+  total_bytes: number
+  used_bytes: number
+  free_bytes: number
+}
+
+export interface StorageTarget {
+  id: string
+  name: string
+  kind: 'filesystem' | 's3'
+  bucket?: string | null
+  prefix?: string | null
+  endpoint?: string | null
+  region?: string | null
+  path?: string | null
+  default: boolean
+  connected: boolean
+  error?: string | null
+  model_count: number
+  total_bytes: number
+  cached_count: number
+  models: StorageModel[]
+  capacity?: StorageCapacity | null
+}
+
+export interface StorageOverview {
+  default: string
+  cache: StorageCapacity & { path: string; model_count: number; model_bytes: number }
+  targets: StorageTarget[]
+  conflicts: Array<{ repo_id: string; kept_target: string; skipped_target: string }>
+}
+
+export interface StorageOption {
+  id: string
+  name: string
+  kind: 'filesystem' | 's3'
+}
+
+export interface CommitSummary {
+  id: string
+  repo_id: string
+  sequence: number
+  parent_id?: string | null
+  author_id?: string | null
+  author_name: string
+  message: string
+  description: string
+  created_at: string
+  summary: { added: number; modified: number; deleted: number }
+}
+
+export interface CommitChange {
+  path: string
+  change: 'added' | 'modified' | 'deleted'
+  old_size?: number | null
+  new_size?: number | null
+  binary: boolean
+  diff: string[] | null
+  truncated?: boolean
+  additions?: number
+  deletions?: number
+}
+
+export interface CommitDetail extends CommitSummary {
+  changes: CommitChange[]
+}
+
+export interface ChangeSession {
+  id: string
+  repo_id: string
+  user_id: string
+  created_at: string
+}
+
+export interface LibraryFile extends HubFile {
+  last_commit?: { id: string; message: string; created_at: string } | null
 }

@@ -239,7 +239,7 @@ S3_USE_SSL=false
 HuggingHack also supports boto3's normal credential chain, including attached IAM roles, so
 static keys are optional on AWS. Credentials stay server-side and are never returned by the API.
 Downloads and finalized browser uploads sync automatically. The manifest is published last, so
-partially transferred repositories are not indexed as complete. From the Local library you can
+partially transferred repositories are not indexed as complete. From a model's page you can
 remove a local cache copy while keeping its durable S3 copy, then restore it when an inference
 runtime needs the files.
 
@@ -252,7 +252,7 @@ matching ownership metadata is present.
 
 HuggingHack can dispatch a cached model to another inference device on the same network.
 Destinations are configured server-side so endpoints and credentials never have to be entered
-in the browser. The owner can then choose **Local library → model → Send to runtime**, while
+in the browser. The owner can then open a model and choose **Send to runtime**, while
 automation can use the same API.
 
 Add one or both target types to `.env` on a single line:
@@ -414,13 +414,50 @@ repositories use the backend's `HF_TOKEN`; the token is never exposed to the bro
 
 Active downloads have a **Cancel download** action. Cancellation stops the isolated download worker, keeps already transferred files and Hugging Face local-directory metadata, and marks the job as cancelled in history. Starting the same repository again can reuse those partial files instead of discarding the completed work.
 
+## Model pages and commit history
+
+Every model has a full page at `#/models/owner/name` with its rendered model card,
+a **Files and versions** browser with per-file downloads, a **Commits** history, and
+GGUF inspection. Each change is recorded as a commit with its author, message, and the
+files that were added, modified, or deleted; text files such as `README.md` and
+`config.json` show line diffs.
+
+Commits are created when you upload or change a repository, when a Hub download finishes,
+and when a scan finds that files changed on disk or in a bucket. The repository owner, or
+any administrator, can choose **Upload changes** to add, replace, or delete files with a
+commit message. Changed files are staged and applied all at once, so nobody pulling the
+model sees a half-uploaded change. Weights of older commits are not kept; only the newest
+version of each file can be downloaded.
+
+Uploads continue in a panel at the bottom of the screen while you browse. Reloading the page
+stops them, but the server keeps what was sent: choose the same folder again to resume.
+
+## Storage page and multiple buckets
+
+Administrators get a **Storage** page listing every location that holds models, with its
+connection status, capacity, and each model's size. Besides the local model folder and the
+optional `MODEL_STORAGE_BACKEND=s3` bucket, add as many S3-compatible buckets as you need:
+
+```dotenv
+STORAGE_TARGETS_JSON=[{"id":"minio-main","name":"MinIO models","bucket":"models","endpoint_url":"http://minio:9000","addressing_style":"path","use_ssl":false,"access_key_env":"MINIO_MAIN_KEY","secret_key_env":"MINIO_MAIN_SECRET"}]
+MINIO_MAIN_KEY=replace-me
+MINIO_MAIN_SECRET=replace-me
+DEFAULT_STORAGE_TARGET=minio-main
+```
+
+Target ids are permanent because models reference them. Credentials are read from the
+named environment variables and never returned by the API. Uploaders pick a target when
+creating a repository; new uploads and downloads otherwise use `DEFAULT_STORAGE_TARGET`.
+If the same repository exists in two locations, the earlier target wins and the Storage page
+reports the conflict.
+
 ## Pull models with vLLM, git, or the hf CLI
 
 HuggingHack speaks the Hugging Face Hub protocol, so any machine on the network can
 pull a model from the library without internet access. Open a model and choose
 **Use model**, then **Deploy with vLLM** or **Clone repository**, for copy-paste
-commands. Links use the same form as the Hub: `#/models?model=owner/name&local-app=vllm`
-and `#/models?model=owner/name&clone=true`.
+commands. Links use the same form as the Hub: `#/models/owner/name?local-app=vllm`
+and `#/models/owner/name?clone=true`.
 
 ```bash
 # vLLM, Transformers, and the hf CLI all honor HF_ENDPOINT
@@ -448,7 +485,7 @@ git clone http://NAS-IP:7860/owner/model-name
 
 ## Manually added models
 
-Copy a model folder anywhere within the first few directory levels of the mounted model folder, then choose **Local library → Scan folder**. HuggingHack recognizes common configs and weight extensions such as:
+Copy a model folder anywhere within the first few directory levels of the mounted model folder, then choose **Models → Rescan library** (or **Storage → Scan storage**). HuggingHack recognizes common configs and weight extensions such as:
 
 - `config.json`, `model_index.json`, `tokenizer.json`
 - `.safetensors`, `.gguf`, `.onnx`, `.bin`, `.pt`, `.pth`, and `.ckpt`

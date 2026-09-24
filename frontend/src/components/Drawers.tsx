@@ -20,14 +20,11 @@ import {
   Archive,
   Boxes,
   Check,
-  Cloud,
   CloudDownload,
   Download,
   ExternalLink,
   File,
   FileJson,
-  GitBranch,
-  HardDrive,
   LoaderCircle,
   LockKeyhole,
   Rocket,
@@ -37,7 +34,6 @@ import {
   X,
 } from 'lucide-react'
 import { api } from '../api'
-import { LIBRARY_GGUF_ENDPOINT } from '../gguf'
 import {
   modelCardHeadingId,
   modelCardSanitizeSchema,
@@ -46,17 +42,14 @@ import {
   resolveModelCardUrl,
 } from '../modelCard'
 import { GgufInspector } from './GgufInspector'
-import { formatLabels } from './RepositoryRows'
 import type {
   DownloadMode,
   HubFile,
   HubModelDetails,
-  LibraryModelDetails,
-  LocalModelDetails,
   RuntimeJob,
   RuntimeTarget,
 } from '../types'
-import { formatBytes, formatNumber, relativeTime, taskLabel } from '../utils'
+import { formatBytes, formatNumber, taskLabel } from '../utils'
 
 interface ModelDrawerProps {
   repoId: string | null
@@ -194,7 +187,7 @@ const modelCardComponents: Components = {
   },
 }
 
-const ModelCardDocument = memo(function ModelCardDocument({
+export const ModelCardDocument = memo(function ModelCardDocument({
   source,
   sourceUrl,
   revision,
@@ -558,7 +551,7 @@ interface ModelActionsProps {
   onToast: (message: string, tone?: 'success' | 'error') => void
 }
 
-function ModelActions({
+export function ModelActions({
   repoId,
   storageBackend,
   cached,
@@ -785,370 +778,5 @@ function ModelActions({
         </section>
       )}
     </>
-  )
-}
-
-interface LibraryModelDrawerProps {
-  repoId: string | null
-  onClose: () => void
-  onUse: (mode: 'vllm' | 'clone') => void
-  onChanged: () => void
-  onToast: (message: string, tone?: 'success' | 'error') => void
-  canManageRuntimes: boolean
-}
-
-export function LibraryModelDrawer({
-  repoId,
-  onClose,
-  onUse,
-  onChanged,
-  onToast,
-  canManageRuntimes,
-}: LibraryModelDrawerProps) {
-  const [model, setModel] = useState<LibraryModelDetails | null>(null)
-  const [error, setError] = useState('')
-  const [tab, setTab] = useState<'card' | 'files' | 'gguf'>('card')
-  const [reloadKey, setReloadKey] = useState(0)
-  const closeButtonRef = useRef<HTMLButtonElement>(null)
-
-  useEffect(() => {
-    setTab('card')
-  }, [repoId])
-
-  useEffect(() => {
-    let ignore = false
-    setModel(null)
-    setError('')
-    if (!repoId) return
-    api
-      .libraryModelDetails(repoId)
-      .then((payload) => {
-        if (!ignore) setModel(payload)
-      })
-      .catch((reason) => {
-        if (!ignore) setError(reason.message)
-      })
-    return () => {
-      ignore = true
-    }
-  }, [repoId, reloadKey])
-
-  useEffect(() => {
-    if (!repoId) return
-    closeButtonRef.current?.focus()
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [onClose, repoId])
-
-  const ggufFiles = useMemo(
-    () => model?.files.filter((file) => file.path.toLowerCase().endsWith('.gguf')) || [],
-    [model],
-  )
-
-  if (!repoId) return null
-  const remoteOnly = model?.storage_backend === 's3' && !model.cached
-  const location = model ? (remoteOnly ? model.remote_uri || model.local_path : model.local_path) : ''
-
-  return (
-    <div className="drawer-backdrop" role="presentation" onMouseDown={onClose}>
-      <aside
-        className="drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Model details for ${repoId}`}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="drawer-header">
-          <div>
-            <span className="eyebrow">
-              {model?.storage_backend === 's3' ? 'S3-backed model' : 'Local model'}
-            </span>
-            <h2>{repoId}</h2>
-          </div>
-          <button ref={closeButtonRef} type="button" className="icon-button" onClick={onClose} aria-label="Close">
-            <X size={20} />
-          </button>
-        </div>
-
-        {!model && !error && (
-          <div className="drawer-loading">
-            <LoaderCircle size={24} className="spin" /> Reading the local library…
-          </div>
-        )}
-        {error && <div className="inline-error">{error}</div>}
-        {model && (
-          <>
-            <div className="drawer-summary">
-              <div className="drawer-tags">
-                {model.pipeline_tag && <span className="task-tag">{taskLabel(model.pipeline_tag)}</span>}
-                {model.formats.map((format) => (
-                  <span key={format}>{formatLabels[format] || format}</span>
-                ))}
-                {model.library_name && !model.formats.includes(model.library_name as never) && (
-                  <span>{model.library_name}</span>
-                )}
-                {model.license && <span>{model.license}</span>}
-                <span className="local-badge">
-                  {remoteOnly ? <Cloud size={12} /> : <Check size={12} />}
-                  {remoteOnly ? ' S3 only' : model.storage_backend === 's3' ? ' Cached from S3' : ' On disk'}
-                </span>
-              </div>
-              <div className="detail-metrics">
-                <span>
-                  <strong>
-                    {model.parameter_count ? formatNumber(model.parameter_count) : '—'}
-                  </strong>{' '}
-                  parameters
-                </span>
-                <span>
-                  <strong>{formatNumber(model.file_count)}</strong> files
-                </span>
-                <span>
-                  <strong>{formatBytes(model.size_bytes)}</strong> {remoteOnly ? 'in S3' : 'on disk'}
-                </span>
-              </div>
-              <span className="text-link" title={location}>
-                {remoteOnly ? <Cloud size={13} /> : <HardDrive size={13} />} {location}
-              </span>
-            </div>
-
-            <div className="download-box">
-              <div className="download-box-title">
-                <div>
-                  <h3>Use this model</h3>
-                  <p>
-                    Pull it from any machine on your network with vLLM, git, or the hf CLI.
-                    {remoteOnly ? ' Files stream straight from S3.' : ''}
-                  </p>
-                </div>
-                <Rocket size={20} />
-              </div>
-              <div className="use-model-actions">
-                {model.apps.includes('vllm') && (
-                  <button type="button" className="download-button" onClick={() => onUse('vllm')}>
-                    <Rocket size={16} /> Deploy with vLLM
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className={model.apps.includes('vllm') ? 'secondary-button' : 'download-button'}
-                  onClick={() => onUse('clone')}
-                >
-                  <GitBranch size={16} /> Clone repository
-                </button>
-              </div>
-              <div className="download-selection-summary">
-                <span>
-                  {model.revision ? `Revision ${model.revision}` : 'Local repository'}
-                  {model.sha ? ` · ${model.sha.slice(0, 10)}` : ''}
-                </span>
-                <strong>
-                  {model.downloaded_at
-                    ? `Added ${relativeTime(model.downloaded_at)}`
-                    : `Updated ${relativeTime(model.last_modified)}`}
-                </strong>
-              </div>
-              <ModelActions
-                repoId={model.id}
-                storageBackend={model.storage_backend}
-                cached={model.cached}
-                files={model.files}
-                canManageRuntimes={canManageRuntimes}
-                onCacheChanged={() => {
-                  setReloadKey((value) => value + 1)
-                  onChanged()
-                }}
-                onToast={onToast}
-              />
-              {model.unsafe_file_count > 0 ? (
-                <div className="security-note warning">
-                  <AlertTriangle size={16} />
-                  {model.unsafe_file_count} file{model.unsafe_file_count === 1 ? '' : 's'} may use
-                  pickle serialization. Do not load untrusted artifacts with code execution enabled.
-                </div>
-              ) : (
-                <div className="security-note">
-                  <ShieldCheck size={16} />
-                  No common pickle-compatible file extensions found in this repository.
-                </div>
-              )}
-            </div>
-
-            <div className="drawer-tabs" role="tablist" aria-label="Repository content">
-              <button id="model-card-tab" role="tab" aria-selected={tab === 'card'} aria-controls="model-card-panel" className={tab === 'card' ? 'active' : ''} onClick={() => setTab('card')}>
-                Model card
-              </button>
-              <button id="model-files-tab" role="tab" aria-selected={tab === 'files'} aria-controls="model-files-panel" className={tab === 'files' ? 'active' : ''} onClick={() => setTab('files')}>
-                Files <span>{model.files.length}{model.truncated ? '+' : ''}</span>
-              </button>
-              {ggufFiles.length > 0 && (
-                <button id="model-gguf-tab" role="tab" aria-selected={tab === 'gguf'} aria-controls="model-gguf-panel" className={tab === 'gguf' ? 'active' : ''} onClick={() => setTab('gguf')}>
-                  GGUF <span>{ggufFiles.length}</span>
-                </button>
-              )}
-            </div>
-            {tab === 'card' ? (
-              <section id="model-card-panel" role="tabpanel" aria-labelledby="model-card-tab">
-                {model.model_card ? (
-                  <ModelCardDocument
-                    source={model.model_card}
-                    sourceUrl=""
-                    revision={model.revision || 'main'}
-                    localRepoId={model.id}
-                  />
-                ) : (
-                  <div className="empty-compact">This repository does not include a README model card.</div>
-                )}
-              </section>
-            ) : tab === 'files' ? (
-              <div id="model-files-panel" role="tabpanel" aria-labelledby="model-files-tab" className="file-list">
-                {model.files.map((file) => (
-                  <div key={file.path} className="file-row">
-                    <File size={15} />
-                    <span title={file.path}>{file.path}</span>
-                    <small>{file.size ? formatBytes(file.size) : '—'}</small>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div id="model-gguf-panel" role="tabpanel" aria-labelledby="model-gguf-tab">
-                <GgufInspector
-                  repoId={model.id}
-                  revision={model.revision || 'main'}
-                  files={ggufFiles}
-                  endpoint={LIBRARY_GGUF_ENDPOINT}
-                />
-              </div>
-            )}
-          </>
-        )}
-      </aside>
-    </div>
-  )
-}
-
-interface LocalDrawerProps {
-  repoId: string | null
-  onClose: () => void
-  onChanged: () => void
-  onToast: (message: string, tone?: 'success' | 'error') => void
-  canManageRuntimes: boolean
-}
-
-export function LocalDrawer({
-  repoId,
-  onClose,
-  onChanged,
-  onToast,
-  canManageRuntimes,
-}: LocalDrawerProps) {
-  const [details, setDetails] = useState<LocalModelDetails | null>(null)
-  const [error, setError] = useState('')
-  const [reloadKey, setReloadKey] = useState(0)
-
-  useEffect(() => {
-    let ignore = false
-    setDetails(null)
-    setError('')
-    if (!repoId) return
-    api
-      .localModelDetails(repoId)
-      .then((payload) => {
-        if (!ignore) setDetails(payload)
-      })
-      .catch((reason) => {
-        if (!ignore) setError(reason.message)
-      })
-    return () => {
-      ignore = true
-    }
-  }, [repoId, reloadKey])
-
-  if (!repoId) return null
-  return (
-    <div className="drawer-backdrop" role="presentation" onMouseDown={onClose}>
-      <aside
-        className="drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Local details for ${repoId}`}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="drawer-header">
-          <div>
-            <span className="eyebrow">
-              {details?.model.storage_backend === 's3' ? 'S3-backed model' : 'Local model'}
-            </span>
-            <h2>{repoId}</h2>
-          </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">
-            <X size={20} />
-          </button>
-        </div>
-        {!details && !error && (
-          <div className="drawer-loading">
-            <LoaderCircle size={24} className="spin" /> Scanning local files…
-          </div>
-        )}
-        {error && <div className="inline-error">{error}</div>}
-        {details && (
-          <>
-            <div className="local-detail-hero">
-              {details.model.cached ? <HardDrive size={24} /> : <Cloud size={24} />}
-              <div>
-                <code>
-                  {details.model.cached
-                    ? `/models/${details.model.relative_path}`
-                    : details.model.remote_uri}
-                </code>
-                <p>
-                  {formatBytes(details.model.size_bytes)} across {details.model.file_count} files ·
-                  updated {relativeTime(details.model.modified_at)}
-                  {details.model.storage_backend === 's3'
-                    ? details.model.cached ? ' · cached locally' : ' · S3 only'
-                    : ''}
-                </p>
-              </div>
-            </div>
-            <ModelActions
-              repoId={details.model.repo_id}
-              storageBackend={details.model.storage_backend}
-              cached={details.model.cached}
-              files={details.files}
-              canManageRuntimes={canManageRuntimes}
-              onCacheChanged={() => {
-                setReloadKey((value) => value + 1)
-                onChanged()
-              }}
-              onToast={onToast}
-            />
-            {details.unsafe_file_count > 0 ? (
-              <div className="security-note warning">
-                <AlertTriangle size={16} />
-                {details.unsafe_file_count} file{details.unsafe_file_count === 1 ? '' : 's'} may use
-                pickle serialization. Do not load untrusted artifacts with code execution enabled.
-              </div>
-            ) : (
-              <div className="security-note">
-                <ShieldCheck size={16} />
-                No common pickle-compatible file extensions found in the indexed file set.
-              </div>
-            )}
-            <div className="file-list local-files">
-              {details.files.map((file) => (
-                <div key={file.path} className="file-row">
-                  {file.unsafe_serialization ? <AlertTriangle size={15} /> : <File size={15} />}
-                  <span title={file.path}>{file.path}</span>
-                  <small>{formatBytes(file.size)}</small>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-      </aside>
-    </div>
   )
 }

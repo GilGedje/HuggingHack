@@ -1,5 +1,8 @@
 import type {
   AuthStatus,
+  ChangeSession,
+  CommitDetail,
+  CommitSummary,
   Collection,
   DownloadJob,
   DownloadMode,
@@ -14,6 +17,8 @@ import type {
   RuntimeJob,
   RuntimeTarget,
   SavedModel,
+  StorageOption,
+  StorageOverview,
   User,
 } from './types'
 
@@ -120,6 +125,9 @@ export const api = {
       `/api/local-models/${repoPath(repoId)}/cache`,
       { method: 'DELETE' },
     ),
+  storageTargets: () => request<StorageOverview>('/api/storage/targets'),
+  storageOptions: () =>
+    request<{ default: string; items: StorageOption[] }>('/api/storage/options'),
   runtimeTargets: () => request<{ items: RuntimeTarget[] }>('/api/runtimes'),
   runtimeJobs: (limit = 100) =>
     request<{ items: RuntimeJob[]; active: number }>(
@@ -177,6 +185,7 @@ export const api = {
     slug: string
     description?: string
     visibility?: 'private' | 'shared'
+    storage_target?: string
   }) =>
     request<OwnedRepository>('/api/uploads/repositories', {
       method: 'POST',
@@ -203,49 +212,123 @@ export const api = {
         body: JSON.stringify({ confirmation }),
       },
     ),
-  uploadFile: async (
+  uploadFile: (
     repoId: string,
     filePath: string,
     file: File,
     chunkBytes: number,
     onProgress: (uploaded: number) => void,
+    signal?: AbortSignal,
   ) => {
     const params = new URLSearchParams({ repo_id: repoId, path: filePath })
-    const status = await request<{ offset: number; complete: boolean }>(
+    return uploadResumable(
       `/api/uploads/repositories/files/status?${params.toString()}`,
+      `/api/uploads/repositories/files?${params.toString()}`,
+      filePath,
+      file,
+      chunkBytes,
+      onProgress,
+      signal,
     )
-    if (status.complete && status.offset === file.size) {
-      onProgress(file.size)
-      return
-    }
-    if (status.complete || status.offset > file.size) {
-      throw new Error(`A different completed or partial file already exists at ${filePath}.`)
-    }
-    let offset = status.offset
-    do {
-      const chunk = file.slice(offset, Math.min(file.size, offset + chunkBytes))
-      const headers = new Headers({
-        'Content-Type': 'application/octet-stream',
-        'Upload-Offset': String(offset),
-        'Upload-Length': String(file.size),
-      })
-      if (csrfToken) headers.set('X-CSRF-Token', csrfToken)
-      const response = await fetch(
-        `/api/uploads/repositories/files?${params.toString()}`,
-        {
-          method: 'PUT',
-          credentials: 'same-origin',
-          headers,
-          body: chunk,
-        },
-      )
-      const result = await response.json().catch(() => ({}))
-      if (!response.ok) {
-        throw new Error(result.detail || `Upload failed with status ${response.status}`)
-      }
-      offset = result.offset
-      onProgress(offset)
-      if (file.size === 0) break
-    } while (offset < file.size)
   },
+  finalizeUpload: (repoId: string, payload: { message?: string; description?: string }) =>
+    request<OwnedRepository>(
+      `/api/uploads/repositories/finalize?repo_id=${encodeURIComponent(repoId)}`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+  startChange: (repoId: string) =>
+    request<ChangeSession>('/api/repos/changes', {
+      method: 'POST',
+      body: JSON.stringify({ repo_id: repoId }),
+    }),
+  uploadChangeFile: (
+    sessionId: string,
+    filePath: string,
+    file: File,
+    chunkBytes: number,
+    onProgress: (uploaded: number) => void,
+    signal?: AbortSignal,
+  ) => {
+    const params = new URLSearchParams({ path: filePath })
+    const base = `/api/repos/changes/${encodeURIComponent(sessionId)}/files`
+    return uploadResumable(
+      `${base}/status?${params.toString()}`,
+      `${base}?${params.toString()}`,
+      filePath,
+      file,
+      chunkBytes,
+      onProgress,
+      signal,
+    )
+  },
+  commitChange: (
+    sessionId: string,
+    payload: { message: string; description?: string; deletions?: string[] },
+  ) =>
+    request<{ commit: CommitSummary | null; model: unknown }>(
+      `/api/repos/changes/${encodeURIComponent(sessionId)}/commit`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+  abortChange: (sessionId: string) =>
+    request<{ status: string }>(`/api/repos/changes/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+    }),
+  commits: (repoId: string, limit = 50, offset = 0) =>
+    request<{ items: CommitSummary[]; total: number }>(
+      `/api/library/commits?${new URLSearchParams({
+        repo_id: repoId,
+        limit: String(limit),
+        offset: String(offset),
+      }).toString()}`,
+    ),
+  commit: (repoId: string, commitId: string) =>
+    request<CommitDetail>(
+      `/api/library/commit?${new URLSearchParams({ repo_id: repoId, commit_id: commitId }).toString()}`,
+    ),
+  fileUrl: (repoId: string, path: string) =>
+    `/api/library/file?${new URLSearchParams({ repo_id: repoId, path }).toString()}`,
+}
+
+async function uploadResumable(
+  statusUrl: string,
+  putUrl: string,
+  filePath: string,
+  file: File,
+  chunkBytes: number,
+  onProgress: (uploaded: number) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const status = await request<{ offset: number; complete: boolean }>(statusUrl, { signal })
+  if (status.complete && status.offset === file.size) {
+    onProgress(file.size)
+    return
+  }
+  if (status.complete || status.offset > file.size) {
+    throw new Error(`A different completed or partial file already exists at ${filePath}.`)
+  }
+  let offset = status.offset
+  onProgress(offset)
+  do {
+    const chunk = file.slice(offset, Math.min(file.size, offset + chunkBytes))
+    const headers = new Headers({
+      'Content-Type': 'application/octet-stream',
+      'Upload-Offset': String(offset),
+      'Upload-Length': String(file.size),
+    })
+    if (csrfToken) headers.set('X-CSRF-Token', csrfToken)
+    const response = await fetch(putUrl, {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers,
+      body: chunk,
+      signal,
+    })
+    const result = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      throw new Error(result.detail || `Upload failed with status ${response.status}`)
+    }
+    offset = result.offset
+    onProgress(offset)
+    if (file.size === 0) break
+  } while (offset < file.size)
 }

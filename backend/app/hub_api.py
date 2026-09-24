@@ -18,7 +18,7 @@ from typing import Any, Iterator
 
 from .config import Settings, validate_repo_id
 from .database import Database
-from .storage import PART_SUFFIXES, FilesystemModelStorage
+from .storage import PART_SUFFIXES, FilesystemModelStorage, StorageRegistry
 
 
 STREAM_CHUNK_BYTES = 1024 * 1024
@@ -92,16 +92,46 @@ def _hidden(relative: str) -> bool:
     )
 
 
+def local_entries(root: Path) -> list[RepoEntry]:
+    entries: list[RepoEntry] = []
+    for current, directories, names in os.walk(root):
+        directories[:] = sorted(
+            name for name in directories if not name.startswith(".") and name != "__pycache__"
+        )
+        for name in names:
+            path = Path(current) / name
+            relative = path.relative_to(root).as_posix()
+            if _hidden(relative) or path.is_symlink():
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            entries.append(RepoEntry(relative, stat.st_size, f"{stat.st_size}-{stat.st_mtime_ns}"))
+    entries.sort(key=lambda entry: entry.path)
+    return entries
+
+
+def remote_entries(items: list[dict[str, Any]]) -> list[RepoEntry]:
+    entries = [
+        RepoEntry(item["path"], item["size"], f"{item['size']}-{item['version']}")
+        for item in items
+        if not _hidden(item["path"])
+    ]
+    entries.sort(key=lambda entry: entry.path)
+    return entries
+
+
 class HubRepositories:
     def __init__(
         self,
         settings: Settings,
         database: Database,
-        model_storage: FilesystemModelStorage,
+        model_storage: FilesystemModelStorage | StorageRegistry,
     ):
         self.settings = settings
         self.database = database
-        self.model_storage = model_storage
+        self.storages = StorageRegistry.wrap(model_storage, settings)
 
     def model(self, repo_id: str) -> dict[str, Any]:
         if not self.settings.hub_api_enabled:
@@ -125,38 +155,24 @@ class HubRepositories:
         return root if root.is_dir() else None
 
     def snapshot(self, repo_id: str) -> RepoSnapshot:
-        model = self.model(repo_id)
+        return self.snapshot_for_model(self.model(repo_id))
+
+    def snapshot_for_model(self, model: dict[str, Any]) -> RepoSnapshot:
+        """Files of an indexed model, without the anonymous visibility check."""
         root = self._local_root(model)
-        entries: list[RepoEntry] = []
         if root is not None:
-            for current, directories, names in os.walk(root):
-                directories[:] = sorted(
-                    name
-                    for name in directories
-                    if not name.startswith(".") and name != "__pycache__"
-                )
-                for name in names:
-                    path = Path(current) / name
-                    relative = path.relative_to(root).as_posix()
-                    if _hidden(relative) or path.is_symlink():
-                        continue
-                    try:
-                        stat = path.stat()
-                    except OSError:
-                        continue
-                    entries.append(
-                        RepoEntry(relative, stat.st_size, f"{stat.st_size}-{stat.st_mtime_ns}")
-                    )
+            entries = local_entries(root)
         elif model.get("storage_backend") == "s3":
-            for item in self.model_storage.list_repository_entries(model["repo_id"]) or []:
-                if not _hidden(item["path"]):
-                    entries.append(
-                        RepoEntry(item["path"], item["size"], f"{item['size']}-{item['version']}")
-                    )
+            entries = self.remote_entries(model)
+        else:
+            entries = []
         if not entries:
             raise HubError("RepoNotFound", "Repository files were not found.")
-        entries.sort(key=lambda entry: entry.path)
         return RepoSnapshot(model=model, entries=tuple(entries), local_root=root)
+
+    def remote_entries(self, model: dict[str, Any]) -> list[RepoEntry]:
+        storage = self.storages.for_model(model)
+        return remote_entries(storage.list_repository_entries(model["repo_id"]) or [])
 
     def check_revision(self, snapshot: RepoSnapshot, revision: str) -> None:
         if revision not in {"main", "HEAD", "refs/heads/main", snapshot.sha}:
@@ -279,7 +295,7 @@ class HubRepositories:
                     remaining -= len(chunk)
                     yield chunk
             return
-        yield from self.model_storage.iter_repository_file(
+        yield from self.storages.for_model(snapshot.model).iter_repository_file(
             snapshot.repo_id, entry.path, start, last
         )
 

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
+import logging
+from urllib.parse import quote
 import shutil
 import uuid
 from contextlib import asynccontextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
@@ -21,54 +24,110 @@ from .config import settings, validate_repo_id
 from .database import INTEGRITY_ERRORS, Database
 from .downloads import DownloadManager
 from .git_mirror import GitMirrors
-from .hub_api import HubError, HubRepositories, RepoEntry, RepoSnapshot, parse_range
+from .history import RepoHistory, public_commit
+from .hub_api import (
+    HubError,
+    HubRepositories,
+    RepoEntry,
+    RepoSnapshot,
+    parse_range,
+    remote_entries,
+)
 from .hub_service import HubService
 from .indexer import LocalModelIndexer
 from .runtimes import RuntimeManager
-from .storage import create_model_storage
+from .storage import create_storage_registry
 from .uploads import UploadManager
 
 
+logger = logging.getLogger("hugginghack")
 database = Database(settings.database_target)
 hub = HubService(settings)
 indexer = LocalModelIndexer(settings, database)
-model_storage = create_model_storage(settings)
-downloads = DownloadManager(settings, database, hub, indexer, model_storage)
+storages = create_storage_registry(settings)
+hub_repositories = HubRepositories(settings, database, storages)
+history = RepoHistory(database, hub_repositories)
+downloads = DownloadManager(settings, database, hub, indexer, storages, history)
 auth = AuthService(settings, database)
-uploads = UploadManager(settings, database, indexer, model_storage)
+uploads = UploadManager(settings, database, indexer, storages, history)
 runtimes = RuntimeManager(settings, database)
-catalog = LocalCatalog(settings, model_storage)
-hub_repositories = HubRepositories(settings, database, model_storage)
+catalog = LocalCatalog(settings, storages)
 git_mirrors = GitMirrors(hub_repositories)
+
+
+# Repositories found in more than one storage target during the last scan.
+storage_conflicts: list[dict[str, str]] = []
+storage_errors: dict[str, str] = {}
+
+
+def record_history(model: dict[str, Any], entries: list[RepoEntry] | None = None) -> None:
+    try:
+        history.record_scan(model, entries)
+    except Exception:
+        # History must never block indexing; the next scan retries.
+        logger.exception("Could not record history for %s", model.get("repo_id"))
 
 
 def refresh_model_index() -> dict[str, Any]:
     result = indexer.scan()
-    remote_models: list[dict[str, Any]] = []
-    remote_error = None
-    if model_storage.remote:
+    owners = {model["repo_id"]: model["storage_target"] for model in database.list_local_models()}
+    conflicts: list[dict[str, str]] = []
+    errors: dict[str, str] = {}
+    remote_count = 0
+    for storage in storages.remotes:
+        status = storage.health()
+        if not status.get("connected"):
+            # Skip the slower, retrying listing for a bucket that is down.
+            errors[storage.id] = (status.get("error") or "Storage is unreachable.")[:500]
+            continue
         try:
-            remote_models = model_storage.discover_repositories()
-            for model in remote_models:
-                if model.get("source") == "user-upload":
-                    owner_id = model.get("owner_id")
-                    if (
-                        not owner_id
-                        or not database.get_owned_repository(model["repo_id"], owner_id)
-                    ):
-                        continue
-                indexer.index_remote(model)
+            discovered = storage.discover_repositories()
         except Exception as error:
-            remote_error = (str(error).strip() or error.__class__.__name__)[:500]
+            # Keep the existing index for a target that is temporarily unreachable.
+            errors[storage.id] = (str(error).strip() or error.__class__.__name__)[:500]
+            continue
+        found: set[str] = set()
+        for model in discovered:
+            repo_id = model["repo_id"]
+            if model.get("source") == "user-upload":
+                owner_id = model.get("owner_id")
+                if not owner_id or not database.get_owned_repository(repo_id, owner_id):
+                    continue
+            owner = owners.get(repo_id)
+            if owner is not None and owner != storage.id:
+                conflicts.append(
+                    {"repo_id": repo_id, "kept_target": owner, "skipped_target": storage.id}
+                )
+                continue
+            indexed = indexer.index_remote(model)
+            owners[repo_id] = storage.id
+            found.add(repo_id)
+            if indexed:
+                record_history(indexed, remote_entries(model.get("entries") or []))
+        database.prune_remote_models(storage.id, found)
+        remote_count += len(found)
+    database.prune_unknown_targets(set(storages.ids()))
+    for model in database.list_local_models():
+        if model["storage_target"] == storages.local.id:
+            record_history(model)
+    storage_conflicts[:] = conflicts
+    storage_errors.clear()
+    storage_errors.update(errors)
     models = database.list_local_models()
     return {
         "count": len(models),
         "models": models,
         "local_count": result["count"],
-        "remote_count": len(remote_models),
-        "remote_error": remote_error,
+        "remote_count": remote_count,
+        "remote_error": "; ".join(f"{key}: {value}" for key, value in errors.items()) or None,
+        "conflicts": conflicts,
         "scanned_at": result["scanned_at"],
     }
+
+
+def log_startup_scan(task: "asyncio.Task[Any]") -> None:
+    if not task.cancelled() and task.exception():
+        logger.error("Startup library scan failed", exc_info=task.exception())
 
 
 @asynccontextmanager
@@ -77,7 +136,10 @@ async def lifespan(_: FastAPI):
     database.initialize()
     database.fail_unfinished_runtime_jobs(utc_iso())
     auth.ensure_local_user()
-    await run_in_threadpool(refresh_model_index)
+    # Index in the background so the server answers immediately, even when a
+    # bucket is offline or a large library records its first history.
+    startup_scan = asyncio.create_task(run_in_threadpool(refresh_model_index))
+    startup_scan.add_done_callback(log_startup_scan)
     downloads.resume_unfinished()
     yield
     downloads.shutdown()
@@ -145,6 +207,7 @@ class DownloadRequest(BaseModel):
     allow_patterns: list[str] = Field(default_factory=list, max_length=50)
     ignore_patterns: list[str] = Field(default_factory=list, max_length=50)
     mode: Literal["full", "safetensors", "gguf", "metadata", "custom"] = "full"
+    storage_target: str | None = Field(default=None, max_length=40)
 
     @field_validator("repo_id")
     @classmethod
@@ -185,6 +248,7 @@ class RepositoryRequest(BaseModel):
     slug: str = Field(min_length=1, max_length=96)
     description: str = Field(default="", max_length=500)
     visibility: Literal["private", "shared"] = "private"
+    storage_target: str | None = Field(default=None, max_length=40)
 
 
 class RepositoryUpdateRequest(BaseModel):
@@ -239,6 +303,16 @@ def require_admin(
 
 
 CurrentUser = Annotated[dict[str, Any], Depends(require_user)]
+
+
+def require_admin_reader(user: CurrentUser) -> dict[str, Any]:
+    # Read-only admin views: GET requests carry no CSRF token.
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Administrator access is required.")
+    return user
+
+
+AdminReader = Annotated[dict[str, Any], Depends(require_admin_reader)]
 WriteUser = Annotated[dict[str, Any], Depends(require_write_user)]
 AdminUser = Annotated[dict[str, Any], Depends(require_admin)]
 
@@ -268,7 +342,7 @@ def auth_payload(session: dict[str, Any] | None = None) -> dict[str, Any]:
 def health() -> dict:
     settings.ensure_directories()
     usage = shutil.disk_usage(settings.model_storage)
-    object_storage = model_storage.health()
+    object_storage = storages.default.health()
     return {
         "status": "ok" if object_storage["connected"] else "degraded",
         "app": settings.app_name,
@@ -506,7 +580,7 @@ def library_listing(model: dict[str, Any]) -> dict[str, Any]:
     if model["storage_backend"] == "s3" and (not model["cached"] or not root.is_dir()):
         database.set_local_model_cached(model["repo_id"], False)
         model["cached"] = False
-        listing = model_storage.list_repository_files(model["repo_id"])
+        listing = storages.for_model(model).list_repository_files(model["repo_id"])
     else:
         listing = indexer.files_for_model(model["repo_id"])
     if not listing:
@@ -563,13 +637,197 @@ async def library_asset(
     )
 
 
+@app.get("/api/library/file")
+def library_file(
+    request: Request,
+    user: CurrentUser,
+    repo_id: Annotated[str, Query(max_length=200)],
+    path: Annotated[str, Query(max_length=500)],
+) -> Response:
+    """Download one file with the signed-in user's visibility, including private repos."""
+    model = visible_model(repo_id, user["id"])
+    snapshot = hub_repositories.snapshot_for_model(model)
+    entry = snapshot.entry(path)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="File not found in this model.")
+    name = PurePosixPath(entry.path).name
+    fallback = "".join(
+        character if character.isascii() and character.isprintable() and character not in '"\\' else "_"
+        for character in name
+    )
+    return repository_file_response(
+        request,
+        snapshot,
+        entry,
+        {
+            "Content-Disposition": (
+                f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(name, safe="")}'
+            )
+        },
+    )
+
+
+class ChangeStartRequest(BaseModel):
+    repo_id: str
+
+    @field_validator("repo_id")
+    @classmethod
+    def repo_is_valid(cls, value: str) -> str:
+        return validate_repo_id(value)
+
+
+class ChangeCommitRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=5000)
+    deletions: list[str] = Field(default_factory=list, max_length=10000)
+
+
+class FinalizeRequest(BaseModel):
+    message: str = Field(default="", max_length=200)
+    description: str = Field(default="", max_length=5000)
+
+
+@app.get("/api/library/commits")
+def library_commits(
+    user: CurrentUser,
+    repo_id: Annotated[str, Query(max_length=200)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict:
+    model = visible_model(repo_id, user["id"])
+    return {
+        "items": database.list_commits(model["repo_id"], limit, offset),
+        "total": database.count_commits(model["repo_id"]),
+    }
+
+
+@app.get("/api/library/commit")
+def library_commit(
+    user: CurrentUser,
+    repo_id: Annotated[str, Query(max_length=200)],
+    commit_id: Annotated[str, Query(min_length=40, max_length=40)],
+) -> dict:
+    model = visible_model(repo_id, user["id"])
+    commit = database.get_commit(model["repo_id"], commit_id)
+    if not commit:
+        raise HTTPException(status_code=404, detail="Commit not found.")
+    result = public_commit(commit)
+    result["changes"] = [history.diff(change) for change in commit["changes"]]
+    return result
+
+
+def change_errors(error: Exception) -> HTTPException:
+    if isinstance(error, PermissionError):
+        return HTTPException(status_code=403, detail=str(error))
+    if isinstance(error, FileNotFoundError):
+        return HTTPException(status_code=404, detail=str(error))
+    if isinstance(error, (FileExistsError, RuntimeError)):
+        return HTTPException(status_code=409, detail=str(error))
+    return HTTPException(status_code=400, detail=str(error))
+
+
+@app.post("/api/repos/changes", status_code=201)
+def start_repository_change(payload: ChangeStartRequest, user: WriteUser) -> dict:
+    visible_model(payload.repo_id, user["id"])
+    try:
+        return uploads.start_change(payload.repo_id, user)
+    except (PermissionError, FileNotFoundError, ValueError, OSError) as error:
+        raise change_errors(error) from error
+
+
+@app.get("/api/repos/changes/{session_id}/files/status")
+def repository_change_file_status(
+    session_id: str, user: CurrentUser, path: Annotated[str, Query(max_length=500)]
+) -> dict:
+    try:
+        return uploads.change_file_status(session_id, user, path)
+    except (FileNotFoundError, ValueError) as error:
+        raise change_errors(error) from error
+
+
+async def read_upload_chunk(request: Request) -> tuple[int, int, bytes]:
+    try:
+        offset = int(request.headers.get("Upload-Offset", "-1"))
+        total = int(request.headers.get("Upload-Length", "-1"))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail="Upload headers are invalid.") from error
+    limit = settings.upload_chunk_mb * 1024**2
+    chunks: list[bytes] = []
+    received = 0
+    async for chunk in request.stream():
+        received += len(chunk)
+        if received > limit:
+            raise HTTPException(status_code=413, detail="Upload chunk is too large.")
+        chunks.append(chunk)
+    return offset, total, b"".join(chunks)
+
+
+@app.put("/api/repos/changes/{session_id}/files")
+async def repository_change_chunk(
+    session_id: str,
+    request: Request,
+    user: WriteUser,
+    path: Annotated[str, Query(max_length=500)],
+) -> dict:
+    offset, total, payload = await read_upload_chunk(request)
+    try:
+        return await run_in_threadpool(
+            uploads.change_chunk, session_id, user, path, offset, total, payload
+        )
+    except (FileNotFoundError, FileExistsError, RuntimeError, ValueError, OSError) as error:
+        raise change_errors(error) from error
+
+
+@app.post("/api/repos/changes/{session_id}/commit")
+async def commit_repository_change(
+    session_id: str, payload: ChangeCommitRequest, user: WriteUser
+) -> dict:
+    try:
+        result = await run_in_threadpool(
+            uploads.commit_change,
+            session_id,
+            user,
+            payload.message,
+            payload.description,
+            payload.deletions,
+        )
+    except (PermissionError, FileNotFoundError, ValueError, OSError) as error:
+        raise change_errors(error) from error
+    return {
+        "model": result["model"],
+        "commit": public_commit(result["commit"]) if result["commit"] else None,
+    }
+
+
+@app.delete("/api/repos/changes/{session_id}")
+def abort_repository_change(session_id: str, user: WriteUser) -> dict:
+    try:
+        uploads.abort_change(session_id, user)
+    except FileNotFoundError as error:
+        raise change_errors(error) from error
+    return {"status": "aborted"}
+
+
 @app.get("/api/library/models/{repo_id:path}")
 async def library_model(repo_id: str, user: CurrentUser) -> dict:
     model = visible_model(repo_id, user["id"])
     listing = await run_in_threadpool(library_listing, model)
-    return await run_in_threadpool(
+    details = await run_in_threadpool(
         catalog.details, model, listing, database.saved_repo_ids(user["id"])
     )
+    latest = database.latest_commit(model["repo_id"])
+    last_commits = await run_in_threadpool(
+        history.last_commits, model["repo_id"], [file["path"] for file in details["files"]]
+    )
+    for file in details["files"]:
+        file["last_commit"] = last_commits.get(file["path"])
+    details["latest_commit"] = public_commit(latest) if latest else None
+    details["commit_count"] = database.count_commits(model["repo_id"])
+    details["can_edit"] = uploads.can_edit(model["repo_id"], user)
+    owned = database.get_owned_repository(model["repo_id"])
+    details["visibility"] = owned["visibility"] if owned else "public"
+    details["description"] = owned["description"] if owned else ""
+    return details
 
 
 def can_access_download(download: dict[str, Any], user: dict[str, Any]) -> bool:
@@ -615,6 +873,7 @@ def start_download(payload: DownloadRequest, user: WriteUser) -> dict:
             payload.ignore_patterns,
             payload.mode,
             user_id=user["id"],
+            storage_target=payload.storage_target,
         )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -671,7 +930,9 @@ async def restore_local_model(repo_id: str, user: WriteUser) -> dict:
             detail="Wait for the active download to finish before restoring this cache.",
         )
     try:
-        root = await run_in_threadpool(model_storage.restore_repository, model["repo_id"])
+        root = await run_in_threadpool(
+            storages.for_model(model).restore_repository, model["repo_id"]
+        )
         await run_in_threadpool(indexer.index_path, root)
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
@@ -694,7 +955,9 @@ async def evict_local_model_cache(repo_id: str, user: WriteUser) -> dict:
             detail="Wait for the active download to finish before removing this cache.",
         )
     try:
-        await run_in_threadpool(model_storage.evict_repository_cache, model["repo_id"])
+        await run_in_threadpool(
+            storages.for_model(model).evict_repository_cache, model["repo_id"]
+        )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     updated = database.set_local_model_cached(model["repo_id"], False)
@@ -707,6 +970,82 @@ def local_model(repo_id: str, user: CurrentUser) -> dict:
     result = library_listing(model)
     result["model"] = database.get_local_model(model["repo_id"])
     return result
+
+
+@app.get("/api/storage/options")
+def storage_options(_: CurrentUser) -> dict:
+    """Targets an uploader can choose, without connection details."""
+    return {
+        "default": storages.default_id,
+        "items": [
+            {"id": storage.id, "name": storage.name, "kind": storage.backend}
+            for storage in storages.all()
+        ],
+    }
+
+
+def storage_model_summary(model: dict[str, Any]) -> dict[str, Any]:
+    owned = database.get_owned_repository(model["repo_id"])
+    return {
+        "repo_id": model["repo_id"],
+        "size_bytes": int(model.get("size_bytes") or 0),
+        "file_count": int(model.get("file_count") or 0),
+        "parameter_count": model.get("parameter_count"),
+        "formats": model.get("formats") or [],
+        "cached": bool(model.get("cached")),
+        "storage_backend": model.get("storage_backend"),
+        "modified_at": model.get("modified_at"),
+        "visibility": owned["visibility"] if owned else "public",
+    }
+
+
+@app.get("/api/storage/targets")
+async def storage_targets(_: AdminReader) -> dict:
+    models = database.list_local_models()
+    usage = shutil.disk_usage(settings.model_storage)
+    healths = await asyncio.gather(
+        *(run_in_threadpool(storage.health) for storage in storages.all())
+    )
+    targets = []
+    for storage, health_result in zip(storages.all(), healths):
+        items = [
+            storage_model_summary(model)
+            for model in models
+            if storages.for_model(model).id == storage.id
+        ]
+        items.sort(key=lambda item: -item["size_bytes"])
+        target = {
+            **storage.describe(),
+            "default": storage.id == storages.default_id,
+            "connected": bool(health_result.get("connected")),
+            "error": storage_errors.get(storage.id) or health_result.get("error"),
+            "model_count": len(items),
+            "total_bytes": sum(item["size_bytes"] for item in items),
+            "cached_count": sum(1 for item in items if item["cached"]),
+            "models": items,
+            "capacity": None,
+        }
+        if not storage.remote:
+            target["capacity"] = {
+                "total_bytes": usage.total,
+                "used_bytes": usage.used,
+                "free_bytes": usage.free,
+            }
+        targets.append(target)
+    cached = [model for model in models if model.get("cached")]
+    return {
+        "default": storages.default_id,
+        "cache": {
+            "path": str(settings.model_storage),
+            "total_bytes": usage.total,
+            "used_bytes": usage.used,
+            "free_bytes": usage.free,
+            "model_count": len(cached),
+            "model_bytes": sum(int(model.get("size_bytes") or 0) for model in cached),
+        },
+        "targets": targets,
+        "conflicts": storage_conflicts,
+    }
 
 
 def require_runtime_admin(user: dict[str, Any]) -> None:
@@ -904,7 +1243,11 @@ def list_upload_repositories(user: CurrentUser) -> dict:
 def create_upload_repository(payload: RepositoryRequest, user: WriteUser) -> dict:
     try:
         return uploads.create_repository(
-            user, payload.slug, payload.description, payload.visibility
+            user,
+            payload.slug,
+            payload.description,
+            payload.visibility,
+            payload.storage_target,
         )
     except (ValueError, FileExistsError, *INTEGRITY_ERRORS) as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -992,10 +1335,15 @@ async def upload_file_chunk(
 
 @app.post("/api/uploads/repositories/finalize")
 async def finalize_upload_repository(
-    user: WriteUser, repo_id: Annotated[str, Query(max_length=200)]
+    user: WriteUser,
+    repo_id: Annotated[str, Query(max_length=200)],
+    payload: FinalizeRequest | None = None,
 ) -> dict:
+    payload = payload or FinalizeRequest()
     try:
-        return await run_in_threadpool(uploads.finalize, repo_id, user["id"])
+        return await run_in_threadpool(
+            uploads.finalize, repo_id, user["id"], payload.message, payload.description
+        )
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
@@ -1145,7 +1493,9 @@ async def git_lfs_batch(owner: str, name: str, request: Request) -> Response:
             media_type=LFS_MEDIA_TYPE,
         )
     mirror = await run_in_threadpool(git_mirrors.ensure, repo_id)
-    base = settings.public_url or str(request.base_url).rstrip("/")
+    # Link back to the address this client used; PUBLIC_URL only affects the
+    # commands shown in the UI, so a stale value can never break a clone.
+    base = str(request.base_url).rstrip("/")
     objects = []
     for item in (payload.get("objects") or [])[:10000]:
         if not isinstance(item, dict):

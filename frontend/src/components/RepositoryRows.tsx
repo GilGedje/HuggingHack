@@ -10,7 +10,7 @@ import {
   RefreshCw,
   Rocket,
 } from 'lucide-react'
-import type { HubModel, LibraryModel, LocalModel, ModelFormat } from '../types'
+import type { HubModel, LibraryModel, ModelFormat } from '../types'
 import { formatBytes, formatNumber, initials, relativeTime, taskLabel } from '../utils'
 
 interface HubRowProps {
@@ -291,55 +291,6 @@ export function LibraryModelRow({ model, onOpen, onUse, onSave, saving }: Librar
             )}
           </button>
         </div>
-      </div>
-    </article>
-  )
-}
-
-interface LocalRowProps {
-  model: LocalModel
-  onOpen: (repoId: string) => void
-}
-
-export function LocalModelRow({ model, onOpen }: LocalRowProps) {
-  return (
-    <article
-      className="repo-row local-row"
-      onClick={() => onOpen(model.repo_id)}
-      tabIndex={0}
-      role="button"
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') onOpen(model.repo_id)
-      }}
-    >
-      <div className="repo-avatar local-avatar" aria-hidden="true">
-        {initials(model.repo_id)}
-      </div>
-      <div className="repo-main">
-        <div className="repo-title-line">
-          <h3>{model.repo_id}</h3>
-          {model.managed && <span className="local-badge">Managed</span>}
-          {model.storage_backend === 's3' && (
-            <span className="local-badge">
-              <Cloud size={11} /> {model.cached ? 'S3 cached' : 'S3 only'}
-            </span>
-          )}
-        </div>
-        <div className="repo-tags">
-          {model.pipeline_tag && <span className="task-tag">{taskLabel(model.pipeline_tag)}</span>}
-          {model.library_name && <span>{model.library_name}</span>}
-          {model.license && <span>{model.license}</span>}
-        </div>
-        <div className="repo-meta">
-          <span>
-            <FileBox size={13} /> {model.file_count} files
-          </span>
-          <span>{formatBytes(model.size_bytes)}</span>
-          <span>Indexed {relativeTime(model.modified_at)}</span>
-        </div>
-        <code className="repo-path">
-          {model.cached ? model.relative_path : model.remote_uri || model.relative_path}
-        </code>
       </div>
     </article>
   )

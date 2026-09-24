@@ -43,7 +43,7 @@ async function copyText(text: string): Promise<void> {
   }
 }
 
-function CopyButton({ text, label }: { text: string; label: string }) {
+export function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false)
   useEffect(() => {
     if (!copied) return

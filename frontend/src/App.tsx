@@ -9,9 +9,7 @@ import {
   CircleX,
   Clock3,
   Cloud,
-  Download,
   Filter,
-  HardDrive,
   KeyRound,
   ListFilter,
   LoaderCircle,
@@ -28,13 +26,15 @@ import {
   Navigate,
   Route,
   Routes,
+  useNavigate,
   useSearchParams,
 } from 'react-router-dom'
 import { api } from './api'
 import { AccountAdmin, AuthScreen, SavedPage, UploadsPage } from './components/AccountPages'
-import { LibraryModelDrawer, LocalDrawer } from './components/Drawers'
-import { UseModelDialog, type UseModelMode } from './components/UseModel'
-import { LibraryModelRow, LocalModelRow } from './components/RepositoryRows'
+import { LibraryModelRow } from './components/RepositoryRows'
+import { ModelPage } from './pages/ModelPage'
+import { StoragePage } from './pages/StoragePage'
+import { UploadProvider } from './uploads'
 import Shell from './components/Shell'
 import type {
   AuthStatus,
@@ -42,7 +42,6 @@ import type {
   Health,
   LibraryFacets,
   LibraryModel,
-  LocalModel,
   RuntimeJob,
   RuntimeTarget,
   User,
@@ -89,7 +88,7 @@ function FilterGroup({
   )
 }
 
-function ModelsPage({ onToast, user }: { onToast: ToastHandler; user: User }) {
+function ModelsPage({ onToast }: { onToast: ToastHandler }) {
   const [searchParams, setSearchParams] = useSearchParams()
   const [search, setSearch] = useState(searchParams.get('search') || '')
   const [task, setTask] = useState('')
@@ -106,40 +105,23 @@ function ModelsPage({ onToast, user }: { onToast: ToastHandler; user: User }) {
   const [error, setError] = useState('')
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
   const [saving, setSaving] = useState<string | null>(null)
-  // Mirrors Hugging Face deep links: ?model=owner/name&local-app=vllm or &clone=true.
-  const selected = searchParams.get('model')
-  const useMode: UseModelMode | null =
-    searchParams.get('local-app') === 'vllm'
-      ? 'vllm'
-      : searchParams.get('clone') === 'true'
-        ? 'clone'
-        : null
+  const navigate = useNavigate()
   const urlSearch = searchParams.get('search') || ''
+  const legacyModel = searchParams.get('model')
 
   useEffect(() => {
     setSearch(urlSearch)
   }, [urlSearch])
 
-  const updateModelParams = useCallback(
-    (repoId: string | null, mode: UseModelMode | null) => {
-      setSearchParams((current) => {
-        const next = new URLSearchParams(current)
-        next.delete('local-app')
-        next.delete('clone')
-        if (repoId) next.set('model', repoId)
-        else next.delete('model')
-        if (repoId && mode === 'vllm') next.set('local-app', 'vllm')
-        if (repoId && mode === 'clone') next.set('clone', 'true')
-        return next
-      })
-    },
-    [setSearchParams],
-  )
-  const setSelected = useCallback(
-    (repoId: string | null) => updateModelParams(repoId, null),
-    [updateModelParams],
-  )
-  const useTarget = selected && useMode ? models.find((model) => model.id === selected) : undefined
+  // Older links opened a drawer: #/models?model=owner/name&local-app=vllm or &clone=true.
+  useEffect(() => {
+    if (!legacyModel) return
+    const next = new URLSearchParams()
+    if (searchParams.get('local-app')) next.set('local-app', searchParams.get('local-app') || '')
+    if (searchParams.get('clone')) next.set('clone', searchParams.get('clone') || '')
+    const query = next.toString()
+    navigate(`/models/${legacyModel}${query ? `?${query}` : ''}`, { replace: true })
+  }, [legacyModel, navigate, searchParams])
 
   const fetchModels = useCallback(() => {
     const params = new URLSearchParams({ search, sort })
@@ -363,9 +345,9 @@ function ModelsPage({ onToast, user }: { onToast: ToastHandler; user: User }) {
                 <LibraryModelRow
                   key={model.id}
                   model={model}
-                  onOpen={setSelected}
+                  onOpen={(repoId) => navigate(`/models/${repoId}`)}
                   onUse={(item) =>
-                    updateModelParams(item.id, item.apps.includes('vllm') ? 'vllm' : 'clone')
+                    navigate(`/models/${item.id}?${item.apps.includes('vllm') ? 'local-app=vllm' : 'clone=true'}`)
                   }
                   onSave={toggleSaved}
                   saving={saving === model.id}
@@ -394,153 +376,6 @@ function ModelsPage({ onToast, user }: { onToast: ToastHandler; user: User }) {
           )}
         </section>
       </div>
-      <LibraryModelDrawer
-        repoId={selected}
-        onClose={() => setSelected(null)}
-        onUse={(mode) => selected && updateModelParams(selected, mode)}
-        onChanged={fetchModels}
-        onToast={onToast}
-        canManageRuntimes={user.role === 'admin'}
-      />
-      {useTarget && useMode && (
-        <UseModelDialog
-          repoId={useTarget.id}
-          pipelineTag={useTarget.pipeline_tag}
-          vllmSupported={useTarget.apps.includes('vllm')}
-          mode={useMode}
-          onModeChange={(mode) => updateModelParams(useTarget.id, mode)}
-          onClose={() => updateModelParams(useTarget.id, null)}
-        />
-      )}
-    </>
-  )
-}
-
-function LocalPage({ onToast, user }: { onToast: ToastHandler; user: User }) {
-  const [health, setHealth] = useState<Health | null>(null)
-  const [models, setModels] = useState<LocalModel[]>([])
-  const [totalBytes, setTotalBytes] = useState(0)
-  const [query, setQuery] = useState('')
-  const [scanning, setScanning] = useState(false)
-  const [selected, setSelected] = useState<string | null>(null)
-  const [error, setError] = useState('')
-
-  const load = useCallback(() => {
-    setError('')
-    Promise.all([api.health(), api.localModels(query)])
-      .then(([healthPayload, modelPayload]) => {
-        setHealth(healthPayload)
-        setModels(modelPayload.items)
-        setTotalBytes(modelPayload.total_bytes)
-      })
-      .catch((reason) => setError(reason.message))
-  }, [query])
-
-  useEffect(() => {
-    const timer = window.setTimeout(load, 250)
-    return () => window.clearTimeout(timer)
-  }, [load])
-
-  async function scan() {
-    setScanning(true)
-    try {
-      const result = await api.scanLocalModels()
-      onToast(`Storage scan complete: ${result.count} model${result.count === 1 ? '' : 's'} indexed.`)
-      load()
-    } catch (reason) {
-      onToast(reason instanceof Error ? reason.message : 'NAS scan failed', 'error')
-    } finally {
-      setScanning(false)
-    }
-  }
-
-  const capacityPercent = health
-    ? Math.min(100, ((health.storage.total_bytes - health.storage.free_bytes) / health.storage.total_bytes) * 100)
-    : 0
-
-  return (
-    <>
-      <div className="standard-page">
-        <div className="page-heading">
-          <div>
-            <span className="eyebrow">Indexed from local cache and durable storage</span>
-            <h1>Local library</h1>
-            <p>Browse models on disk, NAS, or S3 and restore remote copies only when you need them.</p>
-          </div>
-          <button className="secondary-button" onClick={scan} disabled={scanning}>
-            {scanning ? <LoaderCircle size={16} className="spin" /> : <RefreshCw size={16} />}
-            {scanning ? 'Scanning…' : 'Scan storage'}
-          </button>
-        </div>
-
-        <section className="storage-strip">
-          <div className="storage-icon">
-            {health?.object_storage.enabled ? <Cloud size={23} /> : <HardDrive size={23} />}
-          </div>
-          <div className="storage-main">
-            <div className="storage-title">
-              <strong>
-                {health?.object_storage.enabled
-                  ? health.object_storage.connected ? 'S3 storage online' : 'S3 storage needs attention'
-                  : health?.storage.writable ? 'Model storage online' : 'Model storage needs attention'}
-              </strong>
-              <code>
-                {health?.object_storage.enabled
-                  ? `s3://${health.object_storage.bucket}/${health.object_storage.prefix || ''}`
-                  : health?.storage.path || '/models'}
-              </code>
-            </div>
-            <div className="capacity-track" aria-label={`${capacityPercent.toFixed(0)} percent of volume used`}>
-              <span style={{ width: `${capacityPercent}%` }} />
-            </div>
-            <div className="storage-meta">
-              <span>{health ? `${formatBytes(health.storage.free_bytes)} free in local cache` : 'Reading volume…'}</span>
-              <span>{formatBytes(totalBytes)} indexed models</span>
-            </div>
-          </div>
-          <span className={
-            health?.storage.writable && health?.object_storage.connected
-              ? 'status-pill ok'
-              : 'status-pill danger'
-          }>
-            {health?.storage.writable && health?.object_storage.connected
-              ? <Check size={13} />
-              : <AlertCircle size={13} />}
-            {health?.object_storage.enabled
-              ? health.object_storage.connected ? 'Connected' : 'Offline'
-              : health?.storage.writable ? 'Writable' : 'Read only'}
-          </span>
-        </section>
-
-        <div className="local-tools">
-          <div className="catalog-search">
-            <Search size={18} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search local models" />
-          </div>
-          <span>{models.length} indexed</span>
-        </div>
-
-        {error && <div className="inline-error">{error}</div>}
-        <div className="repo-list bordered-list">
-          {models.map((model) => (
-            <LocalModelRow key={model.repo_id} model={model} onOpen={setSelected} />
-          ))}
-          {!error && models.length === 0 && (
-            <div className="empty-state spacious">
-              <HardDrive size={34} />
-              <h2>Your model library is empty</h2>
-              <p>Download a model, copy a repository into the cache, or connect an S3 bucket.</p>
-            </div>
-          )}
-        </div>
-      </div>
-      <LocalDrawer
-        repoId={selected}
-        onClose={() => setSelected(null)}
-        onChanged={load}
-        onToast={onToast}
-        canManageRuntimes={user.role === 'admin'}
-      />
     </>
   )
 }
@@ -1078,14 +913,22 @@ function Application({
   }
 
   return (
+    <UploadProvider onToast={showToast}>
     <Shell activeDownloads={activeDownloads} user={user} onLogout={logout}>
       <Routes>
         <Route path="/" element={<Navigate to="/models" replace />} />
         <Route
           path="/models"
-          element={<ModelsPage onToast={showToast} user={user} />}
+          element={<ModelsPage onToast={showToast} />}
         />
-        <Route path="/local" element={<LocalPage onToast={showToast} user={user} />} />
+        <Route
+          path="/models/:owner/:name/*"
+          element={<ModelPage user={user} onToast={showToast} />}
+        />
+        <Route path="/local" element={<Navigate to={user.role === 'admin' ? '/storage' : '/models'} replace />} />
+        {user.role === 'admin' && (
+          <Route path="/storage" element={<StoragePage onToast={showToast} />} />
+        )}
         <Route path="/saved" element={<SavedPage onToast={showToast} />} />
         <Route path="/uploads" element={<UploadsPage user={user} onToast={showToast} />} />
         <Route
@@ -1116,6 +959,7 @@ function Application({
         </div>
       )}
     </Shell>
+    </UploadProvider>
   )
 }
 

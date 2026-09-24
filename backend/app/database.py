@@ -192,7 +192,8 @@ class Database:
                     cached INTEGER NOT NULL DEFAULT 1,
                     remote_uri TEXT,
                     parameter_count BIGINT,
-                    formats_json TEXT NOT NULL DEFAULT '[]'
+                    formats_json TEXT NOT NULL DEFAULT '[]',
+                    storage_target TEXT NOT NULL DEFAULT 'local'
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_local_models_modified
@@ -277,6 +278,29 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_owned_repositories_owner
                     ON owned_repositories(owner_id, updated_at DESC);
 
+                CREATE TABLE IF NOT EXISTS repo_commits (
+                    id TEXT PRIMARY KEY,
+                    repo_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    parent_id TEXT,
+                    author_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+                    author_name TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    snapshot_json TEXT NOT NULL,
+                    changes_json TEXT NOT NULL,
+                    UNIQUE(repo_id, sequence)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_repo_commits_repo
+                    ON repo_commits(repo_id, sequence DESC);
+
+                CREATE TABLE IF NOT EXISTS text_blobs (
+                    sha256 TEXT PRIMARY KEY,
+                    content TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS file_digests (
                     repo_id TEXT NOT NULL,
                     path TEXT NOT NULL,
@@ -310,6 +334,15 @@ class Database:
                 connection.execute(
                     "ALTER TABLE local_models ADD COLUMN formats_json "
                     "TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "storage_target" not in local_model_columns:
+                connection.execute(
+                    "ALTER TABLE local_models ADD COLUMN storage_target "
+                    "TEXT NOT NULL DEFAULT 'local'"
+                )
+                # Rows from before storage targets belong to the single S3 bucket.
+                connection.execute(
+                    "UPDATE local_models SET storage_target = 's3' WHERE storage_backend = 's3'"
                 )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_downloads_user_created "
@@ -643,7 +676,12 @@ class Database:
             )
 
     def upsert_local_model(self, record: dict[str, Any]) -> None:
-        record = {"parameter_count": None, "formats_json": "[]", **record}
+        record = {
+            "parameter_count": None,
+            "formats_json": "[]",
+            "storage_target": "s3" if record.get("storage_backend") == "s3" else "local",
+            **record,
+        }
         with self._write_lock, self.connect() as connection:
             connection.execute(
                 """
@@ -651,12 +689,14 @@ class Database:
                     repo_id, relative_path, size_bytes, file_count, modified_at,
                     downloaded_at, revision, sha, pipeline_tag, library_name,
                     license, tags_json, config_json, source_url, managed,
-                    storage_backend, cached, remote_uri, parameter_count, formats_json
+                    storage_backend, cached, remote_uri, parameter_count, formats_json,
+                    storage_target
                 ) VALUES (
                     :repo_id, :relative_path, :size_bytes, :file_count, :modified_at,
                     :downloaded_at, :revision, :sha, :pipeline_tag, :library_name,
                     :license, :tags_json, :config_json, :source_url, :managed,
-                    :storage_backend, :cached, :remote_uri, :parameter_count, :formats_json
+                    :storage_backend, :cached, :remote_uri, :parameter_count, :formats_json,
+                    :storage_target
                 )
                 ON CONFLICT(repo_id) DO UPDATE SET
                     relative_path = excluded.relative_path,
@@ -677,7 +717,8 @@ class Database:
                     cached = excluded.cached,
                     remote_uri = excluded.remote_uri,
                     parameter_count = excluded.parameter_count,
-                    formats_json = excluded.formats_json
+                    formats_json = excluded.formats_json,
+                    storage_target = excluded.storage_target
                 """,
                 record,
             )
@@ -717,6 +758,33 @@ class Database:
             connection.executemany(
                 "DELETE FROM local_models WHERE relative_path = ?",
                 ((path,) for path in stale),
+            )
+
+    def prune_remote_models(self, storage_target: str, repo_ids: set[str]) -> None:
+        """Drop uncached rows of a target whose repositories are gone from its bucket."""
+        with self._write_lock, self.connect() as connection:
+            rows = connection.execute(
+                "SELECT repo_id FROM local_models WHERE storage_target = ? AND cached = 0",
+                (storage_target,),
+            ).fetchall()
+            connection.executemany(
+                "DELETE FROM local_models WHERE repo_id = ?",
+                ((row["repo_id"],) for row in rows if row["repo_id"] not in repo_ids),
+            )
+
+    def prune_unknown_targets(self, storage_targets: set[str]) -> None:
+        """Drop uncached rows whose storage target is no longer configured."""
+        with self._write_lock, self.connect() as connection:
+            rows = connection.execute(
+                "SELECT repo_id, storage_target FROM local_models WHERE cached = 0"
+            ).fetchall()
+            connection.executemany(
+                "DELETE FROM local_models WHERE repo_id = ?",
+                (
+                    (row["repo_id"],)
+                    for row in rows
+                    if row["storage_target"] not in storage_targets
+                ),
             )
 
     def set_local_model_cached(self, repo_id: str, cached: bool) -> dict[str, Any] | None:
@@ -797,6 +865,95 @@ class Database:
                 (repo_id,),
             ).fetchone()
         return self._decode_row(row)
+
+    @staticmethod
+    def _decode_commit(row: Any, full: bool) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        result = dict(row)
+        snapshot = result.pop("snapshot_json", None)
+        changes = json.loads(result.pop("changes_json", None) or "[]")
+        result["summary"] = {
+            kind: sum(1 for change in changes if change["change"] == kind)
+            for kind in ("added", "modified", "deleted")
+        }
+        if full:
+            result["changes"] = changes
+            result["snapshot"] = json.loads(snapshot or "[]")
+        return result
+
+    def latest_commit(self, repo_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM repo_commits WHERE repo_id = ? ORDER BY sequence DESC LIMIT 1",
+                (repo_id,),
+            ).fetchone()
+        return self._decode_commit(row, full=True)
+
+    def create_commit(self, record: dict[str, Any]) -> dict[str, Any]:
+        with self._write_lock, self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO repo_commits (
+                    id, repo_id, sequence, parent_id, author_id, author_name, message,
+                    description, created_at, snapshot_json, changes_json
+                ) VALUES (
+                    :id, :repo_id, :sequence, :parent_id, :author_id, :author_name, :message,
+                    :description, :created_at, :snapshot_json, :changes_json
+                )
+                """,
+                record,
+            )
+        return self.get_commit(record["repo_id"], record["id"])
+
+    def get_commit(self, repo_id: str, commit_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM repo_commits WHERE repo_id = ? AND id = ?",
+                (repo_id, commit_id),
+            ).fetchone()
+        return self._decode_commit(row, full=True)
+
+    def list_commits(
+        self, repo_id: str, limit: int = 50, offset: int = 0, full: bool = False
+    ) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM repo_commits WHERE repo_id = ? "
+                "ORDER BY sequence DESC LIMIT ? OFFSET ?",
+                (repo_id, limit, offset),
+            ).fetchall()
+        return [self._decode_commit(row, full=full) for row in rows]
+
+    def count_commits(self, repo_id: str) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM repo_commits WHERE repo_id = ?", (repo_id,)
+            ).fetchone()
+        return int(row["count"])
+
+    def delete_commits(self, repo_id: str) -> None:
+        with self._write_lock, self.connect() as connection:
+            connection.execute("DELETE FROM repo_commits WHERE repo_id = ?", (repo_id,))
+
+    def put_text_blob(self, sha256: str, content: str) -> None:
+        with self._write_lock, self.connect() as connection:
+            connection.execute(
+                "INSERT INTO text_blobs (sha256, content) VALUES (?, ?) "
+                "ON CONFLICT(sha256) DO NOTHING",
+                (sha256, content),
+            )
+
+    def get_text_blob(self, sha256: str) -> str | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT content FROM text_blobs WHERE sha256 = ?", (sha256,)
+            ).fetchone()
+        return row["content"] if row else None
+
+    def delete_file_digests(self, repo_id: str) -> None:
+        with self._write_lock, self.connect() as connection:
+            connection.execute("DELETE FROM file_digests WHERE repo_id = ?", (repo_id,))
 
     def get_file_digest(self, repo_id: str, path: str, version: str) -> str | None:
         with self.connect() as connection:

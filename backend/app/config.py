@@ -60,6 +60,8 @@ class Settings:
     s3_storage_class: str | None = os.getenv("S3_STORAGE_CLASS") or None
     s3_max_concurrency: int = _positive_int("S3_MAX_CONCURRENCY", 4, 32)
     s3_multipart_chunk_mb: int = _positive_int("S3_MULTIPART_CHUNK_MB", 64, 512)
+    storage_targets_json: str = os.getenv("STORAGE_TARGETS_JSON", "[]")
+    default_storage_target: str | None = (os.getenv("DEFAULT_STORAGE_TARGET") or "").strip() or None
     hub_api_enabled: bool = _boolean("HUB_API_ENABLED", True)
     public_url: str | None = (os.getenv("PUBLIC_URL") or "").strip().rstrip("/") or None
 

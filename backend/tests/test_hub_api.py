@@ -26,7 +26,7 @@ from app.database import Database
 from app.git_mirror import GitMirrors, gitattributes_pattern
 from app.hub_api import HubRepositories
 from app.indexer import LocalModelIndexer
-from app.storage import FilesystemModelStorage, S3ModelStorage
+from app.storage import FilesystemModelStorage, S3ModelStorage, StorageRegistry
 from app.uploads import UploadManager
 
 
@@ -79,7 +79,7 @@ def hub_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "settings": settings,
         "database": database,
         "indexer": indexer,
-        "model_storage": model_storage,
+        "storages": StorageRegistry.wrap(model_storage, settings),
         "hub_repositories": repositories,
         "git_mirrors": GitMirrors(repositories),
     }.items():

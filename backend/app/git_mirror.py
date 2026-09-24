@@ -170,17 +170,32 @@ class GitMirrors:
                 "blob", ("\n".join(attributes) + "\n").encode("utf-8")
             )
         tree_sha = writer.tree(tree)
-        timestamp = _timestamp(snapshot.model.get("modified_at"))
         parent = f"parent {previous.commit}\n" if previous else ""
+        # Reuse the repository's latest recorded commit so `git log` matches the
+        # Commits page; weights of older commits are not kept, so only the newest
+        # state becomes a git commit.
+        latest = self.repositories.database.latest_commit(snapshot.repo_id)
+        if latest:
+            timestamp = _timestamp(latest["created_at"])
+            author_name = re.sub(r"[<>\n]", "", latest["author_name"]) or "HuggingHack"
+            author = f"{author_name} <hugginghack@localhost>"
+            message = latest["message"]
+            if latest.get("description"):
+                message += f"\n\n{latest['description']}"
+            message += f"\n\nHuggingHack-Commit: {latest['id']}"
+        else:
+            timestamp = _timestamp(snapshot.model.get("modified_at"))
+            author = COMMITTER
+            message = f"Snapshot of {snapshot.repo_id} from HuggingHack"
         commit = writer.write(
             "commit",
             (
                 f"tree {tree_sha}\n"
                 f"{parent}"
-                f"author {COMMITTER} {timestamp} +0000\n"
+                f"author {author} {timestamp} +0000\n"
                 f"committer {COMMITTER} {timestamp} +0000\n"
                 "\n"
-                f"Snapshot of {snapshot.repo_id} from HuggingHack\n"
+                f"{message}\n"
             ).encode("utf-8"),
         )
         _atomic_write(root / "objects" / "info" / "packs", b"")

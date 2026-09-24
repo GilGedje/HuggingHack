@@ -2,19 +2,137 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import threading
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 from urllib.parse import urlsplit, urlunsplit
 
 from .config import Settings, repository_path, validate_repo_id
-from .indexer import UNSAFE_EXTENSIONS, model_formats, repository_facts
+from .indexer import (
+    LEGACY_S3_TARGET_ID,
+    LOCAL_TARGET_ID,
+    UNSAFE_EXTENSIONS,
+    manifest_target,
+    model_formats,
+    repository_facts,
+)
 
 
 MANIFEST_NAME = ".hugginghack.json"
 PART_SUFFIXES = (".hugginghack-part", ".hugginghack-s3-part")
+TARGET_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+
+
+@dataclass(frozen=True)
+class S3TargetConfig:
+    """One S3-compatible bucket (and prefix) that holds complete repositories."""
+
+    id: str
+    name: str
+    bucket: str
+    prefix: str = "models"
+    endpoint_url: str | None = None
+    region: str | None = None
+    access_key_id: str | None = field(default=None, repr=False)
+    secret_access_key: str | None = field(default=None, repr=False)
+    session_token: str | None = field(default=None, repr=False)
+    use_ssl: bool = True
+    verify_ssl: bool = True
+    addressing_style: str = "auto"
+    storage_class: str | None = None
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> "S3TargetConfig":
+        """The single bucket configured through MODEL_STORAGE_BACKEND=s3 and S3_*."""
+        return cls(
+            id=LEGACY_S3_TARGET_ID,
+            name=f"S3 bucket {settings.s3_bucket}" if settings.s3_bucket else "S3 bucket",
+            bucket=settings.s3_bucket or "",
+            prefix=settings.s3_prefix,
+            endpoint_url=settings.s3_endpoint_url,
+            region=settings.s3_region,
+            access_key_id=settings.s3_access_key_id,
+            secret_access_key=settings.s3_secret_access_key,
+            session_token=settings.s3_session_token,
+            use_ssl=settings.s3_use_ssl,
+            verify_ssl=settings.s3_verify_ssl,
+            addressing_style=settings.s3_addressing_style,
+            storage_class=settings.s3_storage_class,
+        )
+
+    @property
+    def secrets(self) -> tuple[str, ...]:
+        return tuple(
+            value
+            for value in (self.access_key_id, self.secret_access_key, self.session_token)
+            if value
+        )
+
+
+def _env_value(item: dict[str, Any], key: str) -> str | None:
+    name = item.get(key)
+    if name is None:
+        return None
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", name):
+        raise ValueError(f"{key} must be an environment variable name.")
+    return os.getenv(name) or None
+
+
+def parse_storage_targets(raw: str) -> list[S3TargetConfig]:
+    """Parse STORAGE_TARGETS_JSON. Credentials are referenced by env var name only."""
+    try:
+        items = json.loads(raw or "[]")
+    except json.JSONDecodeError as error:
+        raise ValueError("STORAGE_TARGETS_JSON must be a JSON list.") from error
+    if not isinstance(items, list):
+        raise ValueError("STORAGE_TARGETS_JSON must be a JSON list.")
+    targets: list[S3TargetConfig] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("Each storage target must be a JSON object.")
+        target_id = str(item.get("id") or "")
+        if not TARGET_ID_PATTERN.fullmatch(target_id) or target_id == LOCAL_TARGET_ID:
+            raise ValueError(
+                f"Storage target id {target_id!r} must be 1-40 lowercase letters, digits, "
+                "or hyphens, and cannot be 'local'."
+            )
+        if target_id in seen:
+            raise ValueError(f"Storage target id {target_id!r} is used twice.")
+        seen.add(target_id)
+        if (item.get("kind") or "s3") != "s3":
+            raise ValueError(f"Storage target {target_id} must have kind 's3'.")
+        bucket = str(item.get("bucket") or "").strip()
+        if not bucket:
+            raise ValueError(f"Storage target {target_id} needs a bucket.")
+        addressing_style = str(item.get("addressing_style") or "auto").lower()
+        if addressing_style not in {"auto", "path", "virtual"}:
+            raise ValueError(f"Storage target {target_id} addressing_style is invalid.")
+        target = S3TargetConfig(
+            id=target_id,
+            name=str(item.get("name") or target_id)[:80],
+            bucket=bucket,
+            prefix=str(item.get("prefix", "models") or "").strip().strip("/"),
+            endpoint_url=item.get("endpoint_url") or None,
+            region=item.get("region") or None,
+            access_key_id=_env_value(item, "access_key_env"),
+            secret_access_key=_env_value(item, "secret_key_env"),
+            session_token=_env_value(item, "session_token_env"),
+            use_ssl=bool(item.get("use_ssl", True)),
+            verify_ssl=bool(item.get("verify_ssl", True)),
+            addressing_style=addressing_style,
+            storage_class=item.get("storage_class") or None,
+        )
+        if bool(target.access_key_id) != bool(target.secret_access_key):
+            raise ValueError(
+                f"Storage target {target_id} needs both access_key_env and secret_key_env values."
+            )
+        targets.append(target)
+    return targets
 
 
 def _iso(value: Any) -> str:
@@ -52,9 +170,23 @@ def _public_endpoint(value: str | None) -> str | None:
 class FilesystemModelStorage:
     backend = "filesystem"
     remote = False
+    id = LOCAL_TARGET_ID
+    name = "Local disk"
 
     def __init__(self, settings: Settings):
         self.settings = settings
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "kind": self.backend,
+            "bucket": None,
+            "prefix": None,
+            "endpoint": None,
+            "region": None,
+            "path": str(self.settings.model_storage),
+        }
 
     def health(self) -> dict[str, Any]:
         return {
@@ -67,8 +199,19 @@ class FilesystemModelStorage:
             "error": None,
         }
 
-    def sync_repository(self, repo_id: str, root: Path) -> str | None:
+    def sync_repository(
+        self, repo_id: str, root: Path, changed: set[str] | None = None
+    ) -> str | None:
         return None
+
+    def apply_changes(
+        self,
+        repo_id: str,
+        files: dict[str, Path],
+        deletions: set[str],
+        manifest: dict[str, Any],
+    ) -> None:
+        raise ValueError("Filesystem repositories are changed in place.")
 
     def delete_repository(self, repo_id: str) -> None:
         return None
@@ -126,19 +269,24 @@ class S3ModelStorage(FilesystemModelStorage):
         settings: Settings,
         client: Any | None = None,
         transfer_config: Any | None = None,
+        target: S3TargetConfig | None = None,
     ):
         super().__init__(settings)
-        if not settings.s3_bucket:
+        target = target or S3TargetConfig.from_settings(settings)
+        if not target.bucket:
             raise ValueError("S3_BUCKET is required when MODEL_STORAGE_BACKEND=s3.")
-        if settings.s3_addressing_style not in {"auto", "path", "virtual"}:
+        if target.addressing_style not in {"auto", "path", "virtual"}:
             raise ValueError("S3_ADDRESSING_STYLE must be auto, path, or virtual.")
-        if bool(settings.s3_access_key_id) != bool(settings.s3_secret_access_key):
+        if bool(target.access_key_id) != bool(target.secret_access_key):
             raise ValueError(
                 "S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY must be configured together."
             )
-        self.bucket = settings.s3_bucket
-        self.prefix = settings.s3_prefix
-        self.endpoint = settings.s3_endpoint_url
+        self.target = target
+        self.id = target.id
+        self.name = target.name
+        self.bucket = target.bucket
+        self.prefix = target.prefix
+        self.endpoint = target.endpoint_url
         self._lock = threading.RLock()
         if client is None:
             try:
@@ -151,26 +299,39 @@ class S3ModelStorage(FilesystemModelStorage):
                 ) from error
             client_options: dict[str, Any] = {
                 "service_name": "s3",
-                "use_ssl": settings.s3_use_ssl,
-                "verify": settings.s3_verify_ssl,
+                "use_ssl": target.use_ssl,
+                "verify": target.verify_ssl,
                 "config": Config(
                     connect_timeout=3,
                     read_timeout=10,
                     retries={"max_attempts": 5, "mode": "standard"},
-                    s3={"addressing_style": settings.s3_addressing_style},
+                    s3={"addressing_style": target.addressing_style},
                 ),
             }
-            if settings.s3_endpoint_url:
-                client_options["endpoint_url"] = settings.s3_endpoint_url
-            if settings.s3_region:
-                client_options["region_name"] = settings.s3_region
-            if settings.s3_access_key_id:
-                client_options["aws_access_key_id"] = settings.s3_access_key_id
-            if settings.s3_secret_access_key:
-                client_options["aws_secret_access_key"] = settings.s3_secret_access_key
-            if settings.s3_session_token:
-                client_options["aws_session_token"] = settings.s3_session_token
+            if target.endpoint_url:
+                client_options["endpoint_url"] = target.endpoint_url
+            if target.region:
+                client_options["region_name"] = target.region
+            if target.access_key_id:
+                client_options["aws_access_key_id"] = target.access_key_id
+            if target.secret_access_key:
+                client_options["aws_secret_access_key"] = target.secret_access_key
+            if target.session_token:
+                client_options["aws_session_token"] = target.session_token
             client = boto3.client(**client_options)
+            # Status checks fail fast so the Storage page stays responsive when a
+            # bucket is unreachable; transfers keep the patient retrying client.
+            self.health_client = boto3.client(
+                **{
+                    **client_options,
+                    "config": Config(
+                        connect_timeout=2,
+                        read_timeout=5,
+                        retries={"max_attempts": 1, "mode": "standard"},
+                        s3={"addressing_style": target.addressing_style},
+                    ),
+                }
+            )
             chunk_bytes = settings.s3_multipart_chunk_mb * 1024**2
             transfer_config = TransferConfig(
                 multipart_threshold=chunk_bytes,
@@ -179,6 +340,8 @@ class S3ModelStorage(FilesystemModelStorage):
                 use_threads=True,
             )
         self.client = client
+        if not hasattr(self, "health_client"):
+            self.health_client = client
         self.transfer_config = transfer_config
 
     def _prefix(self, value: str = "") -> str:
@@ -223,15 +386,27 @@ class S3ModelStorage(FilesystemModelStorage):
 
     def _upload_options(self) -> dict[str, Any]:
         options = self._transfer_options()
-        if self.settings.s3_storage_class:
-            options["ExtraArgs"] = {"StorageClass": self.settings.s3_storage_class}
+        if self.target.storage_class:
+            options["ExtraArgs"] = {"StorageClass": self.target.storage_class}
         return options
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "kind": self.backend,
+            "bucket": self.bucket,
+            "prefix": self.prefix,
+            "endpoint": _public_endpoint(self.endpoint),
+            "region": self.target.region,
+            "path": None,
+        }
 
     def health(self) -> dict[str, Any]:
         error = None
         connected = False
         try:
-            self.client.list_objects_v2(
+            self.health_client.list_objects_v2(
                 Bucket=self.bucket,
                 Prefix=self._prefix(),
                 MaxKeys=1,
@@ -239,13 +414,8 @@ class S3ModelStorage(FilesystemModelStorage):
             connected = True
         except Exception as exception:
             error = str(exception).strip() or exception.__class__.__name__
-            for secret in (
-                self.settings.s3_access_key_id,
-                self.settings.s3_secret_access_key,
-                self.settings.s3_session_token,
-            ):
-                if secret:
-                    error = error.replace(secret, "[redacted]")
+            for secret in self.target.secrets:
+                error = error.replace(secret, "[redacted]")
             error = error[:300]
         return {
             "backend": self.backend,
@@ -275,7 +445,14 @@ class S3ModelStorage(FilesystemModelStorage):
                 files.append((path, path.relative_to(root).as_posix()))
         return files
 
-    def sync_repository(self, repo_id: str, root: Path) -> str:
+    def sync_repository(
+        self, repo_id: str, root: Path, changed: set[str] | None = None
+    ) -> str:
+        """Upload a complete repository, publishing its manifest last.
+
+        With `changed`, only those paths are uploaded; other objects keep their
+        timestamps so commit history does not see untouched files as modified.
+        """
         validated = validate_repo_id(repo_id)
         expected_root = repository_path(validated, self.settings.model_storage)
         if root.resolve() != expected_root:
@@ -296,6 +473,7 @@ class S3ModelStorage(FilesystemModelStorage):
         except (OSError, json.JSONDecodeError):
             config = {}
         manifest["storage_backend"] = "s3"
+        manifest["storage_target"] = self.id
         manifest["remote_uri"] = self.remote_uri(validated)
         manifest["config"] = {
             "architectures": config.get("architectures"),
@@ -317,6 +495,8 @@ class S3ModelStorage(FilesystemModelStorage):
             for path, relative in local_files:
                 if relative == MANIFEST_NAME:
                     continue
+                if changed is not None and relative not in changed:
+                    continue
                 self.client.upload_file(
                     str(path),
                     self.bucket,
@@ -332,6 +512,36 @@ class S3ModelStorage(FilesystemModelStorage):
                 **self._upload_options(),
             )
         return self.remote_uri(validated)
+
+    def apply_changes(
+        self,
+        repo_id: str,
+        files: dict[str, Path],
+        deletions: set[str],
+        manifest: dict[str, Any],
+    ) -> None:
+        """Change a repository that has no local cache, directly in the bucket."""
+        validated = validate_repo_id(repo_id)
+        repo_prefix = self._repo_prefix(validated)
+        with self._lock:
+            self._delete_keys([self._manifest_key(validated)])
+            for relative, path in files.items():
+                key = f"{repo_prefix}{_safe_relative_key(relative).as_posix()}"
+                self.client.upload_file(str(path), self.bucket, key, **self._upload_options())
+            self._delete_keys(
+                f"{repo_prefix}{_safe_relative_key(relative).as_posix()}" for relative in deletions
+            )
+            manifest = {
+                **manifest,
+                "storage_backend": "s3",
+                "storage_target": self.id,
+                "remote_uri": self.remote_uri(validated),
+            }
+            self.client.put_object(
+                Bucket=self.bucket,
+                Key=self._manifest_key(validated),
+                Body=json.dumps(manifest, indent=2).encode("utf-8"),
+            )
 
     def delete_repository(self, repo_id: str) -> None:
         with self._lock:
@@ -359,6 +569,7 @@ class S3ModelStorage(FilesystemModelStorage):
         records: list[dict[str, Any]] = []
         manifests: list[tuple[str, dict[str, Any]]] = []
         repository_keys: dict[str, list[str]] = {}
+        repository_entries: dict[str, list[dict[str, Any]]] = {}
         for item in self._objects(root_prefix):
             key = item.get("Key") or ""
             relative_key = key[len(root_prefix) :] if root_prefix else key
@@ -370,6 +581,13 @@ class S3ModelStorage(FilesystemModelStorage):
                 manifests.append((repo_id, item))
             else:
                 repository_keys.setdefault(repo_id, []).append(parts[-1])
+                repository_entries.setdefault(repo_id, []).append(
+                    {
+                        "path": "/".join(parts[2:]),
+                        "size": int(item.get("Size") or 0),
+                        "version": _iso(item.get("LastModified")),
+                    }
+                )
         for repo_id, item in manifests:
             try:
                 validate_repo_id(repo_id)
@@ -387,9 +605,10 @@ class S3ModelStorage(FilesystemModelStorage):
             cached = False
             if cached_manifest.is_file():
                 try:
+                    local_manifest = json.loads(cached_manifest.read_text(encoding="utf-8"))
                     cached = (
-                        json.loads(cached_manifest.read_text(encoding="utf-8")).get("status")
-                        == "complete"
+                        local_manifest.get("status") == "complete"
+                        and manifest_target(local_manifest) == self.id
                     )
                 except (OSError, json.JSONDecodeError):
                     cached = False
@@ -417,10 +636,12 @@ class S3ModelStorage(FilesystemModelStorage):
                     "owner_id": manifest.get("owner_id"),
                     "managed": True,
                     "storage_backend": "s3",
+                    "storage_target": self.id,
                     "cached": cached,
                     "remote_uri": self.remote_uri(repo_id),
                     "parameter_count": manifest.get("parameter_count"),
                     "formats": model_formats(repository_keys.get(repo_id, [])),
+                    "entries": repository_entries.get(repo_id, []),
                 }
             )
         return records
@@ -495,6 +716,15 @@ class S3ModelStorage(FilesystemModelStorage):
                     **self._transfer_options(),
                 )
                 partial.replace(target)
+            # The local copy belongs to this target even if the bucket manifest
+            # predates storage targets.
+            manifest_path = root / MANIFEST_NAME
+            try:
+                restored = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                restored = dict(manifest)
+            restored.update({"storage_backend": "s3", "storage_target": self.id})
+            manifest_path.write_text(json.dumps(restored, indent=2), encoding="utf-8")
         return root
 
     def read_repository_file(
@@ -611,9 +841,88 @@ class S3ModelStorage(FilesystemModelStorage):
                 shutil.rmtree(root)
 
 
-def create_model_storage(settings: Settings) -> FilesystemModelStorage:
-    if settings.model_storage_backend == "filesystem":
-        return FilesystemModelStorage(settings)
+class StorageRegistry:
+    """Every configured storage target, in priority order.
+
+    The local model folder is always present: it holds filesystem repositories and
+    is the working cache for every S3 target. When the same repository exists in
+    several targets, the earlier target wins.
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+        remotes: list[S3ModelStorage] | None = None,
+        default_target: str | None = None,
+        local: FilesystemModelStorage | None = None,
+    ):
+        self.settings = settings
+        self.local = local or FilesystemModelStorage(settings)
+        self._targets: dict[str, FilesystemModelStorage] = {self.local.id: self.local}
+        for remote in remotes or []:
+            if remote.id in self._targets:
+                raise ValueError(f"Storage target id {remote.id!r} is used twice.")
+            self._targets[remote.id] = remote
+        if default_target and default_target not in self._targets:
+            raise ValueError(f"DEFAULT_STORAGE_TARGET {default_target!r} is not configured.")
+        if default_target:
+            self.default_id = default_target
+        elif LEGACY_S3_TARGET_ID in self._targets:
+            self.default_id = LEGACY_S3_TARGET_ID
+        else:
+            self.default_id = self.local.id
+
+    @classmethod
+    def wrap(cls, storage: "FilesystemModelStorage | StorageRegistry | None", settings: Settings) -> "StorageRegistry":
+        """Accept a registry or one storage object (used by tests and simple setups)."""
+        if isinstance(storage, StorageRegistry):
+            return storage
+        if isinstance(storage, S3ModelStorage):
+            return cls(settings, [storage])
+        return cls(settings, local=storage)
+
+    @property
+    def default(self) -> FilesystemModelStorage:
+        return self._targets[self.default_id]
+
+    @property
+    def remotes(self) -> list[S3ModelStorage]:
+        return [target for target in self._targets.values() if target.remote]  # type: ignore[misc]
+
+    def all(self) -> list[FilesystemModelStorage]:
+        return list(self._targets.values())
+
+    def ids(self) -> list[str]:
+        return list(self._targets)
+
+    def get(self, target_id: str | None) -> FilesystemModelStorage:
+        if not target_id:
+            return self.default
+        try:
+            return self._targets[target_id]
+        except KeyError as error:
+            raise ValueError(f"Storage target {target_id!r} is not configured.") from error
+
+    def for_model(self, model: dict[str, Any]) -> FilesystemModelStorage:
+        target = model.get("storage_target")
+        if target in self._targets:
+            return self._targets[target]
+        if model.get("storage_backend") == "s3" and self.remotes:
+            return self.remotes[0]
+        return self.local
+
+    def for_manifest(self, manifest: dict[str, Any] | None) -> FilesystemModelStorage:
+        return self.get(manifest_target(manifest or {}))
+
+
+def create_storage_registry(settings: Settings) -> StorageRegistry:
+    if settings.model_storage_backend not in {"filesystem", "s3"}:
+        raise ValueError("MODEL_STORAGE_BACKEND must be filesystem or s3.")
+    remotes: list[S3ModelStorage] = []
     if settings.model_storage_backend == "s3":
-        return S3ModelStorage(settings)
-    raise ValueError("MODEL_STORAGE_BACKEND must be filesystem or s3.")
+        remotes.append(S3ModelStorage(settings))
+    for target in parse_storage_targets(settings.storage_targets_json):
+        if target.id == LEGACY_S3_TARGET_ID and remotes:
+            raise ValueError("Storage target id 's3' is reserved for MODEL_STORAGE_BACKEND=s3.")
+        remotes.append(S3ModelStorage(settings, target=target))
+    return StorageRegistry(settings, remotes, settings.default_storage_target)

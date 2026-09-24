@@ -14,7 +14,7 @@ from typing import Any
 from .config import Settings
 from .hub_service import parse_gguf_range, validate_gguf_filename
 from .indexer import UNSAFE_EXTENSIONS
-from .storage import FilesystemModelStorage
+from .storage import FilesystemModelStorage, StorageRegistry
 
 
 MODEL_CARD_MAX_BYTES = 120_000
@@ -97,6 +97,7 @@ def catalog_item(model: dict[str, Any], saved_ids: set[str]) -> dict[str, Any]:
         "sha": model.get("sha"),
         "managed": bool(model.get("managed")),
         "storage_backend": model.get("storage_backend") or "filesystem",
+        "storage_target": model.get("storage_target") or "local",
         "cached": bool(model.get("cached")),
         "saved": repo_id in saved_ids,
     }
@@ -208,9 +209,11 @@ def search_catalog(
 
 
 class LocalCatalog:
-    def __init__(self, settings: Settings, model_storage: FilesystemModelStorage):
+    def __init__(
+        self, settings: Settings, model_storage: FilesystemModelStorage | StorageRegistry
+    ):
         self.settings = settings
-        self.model_storage = model_storage
+        self.storages = StorageRegistry.wrap(model_storage, settings)
 
     def _local_root(self, model: dict[str, Any]) -> Path | None:
         if not model.get("cached"):
@@ -256,7 +259,7 @@ class LocalCatalog:
                 handle.seek(start)
                 return handle.read(length), total
         if model.get("storage_backend") == "s3":
-            result = self.model_storage.read_repository_file(
+            result = self.storages.for_model(model).read_repository_file(
                 model["repo_id"], relative.as_posix(), start, end, max_bytes
             )
             if result is not None:
