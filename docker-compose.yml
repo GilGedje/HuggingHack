@@ -2,6 +2,7 @@ name: hugginghack
 
 services:
   hugginghack:
+    image: hugginghack:local
     build:
       context: .
       dockerfile: Dockerfile
@@ -30,6 +31,8 @@ services:
       RUNTIME_WORKERS: "${RUNTIME_WORKERS:-2}"
       RUNTIME_API_TOKEN: "${RUNTIME_API_TOKEN:-}"
       VLLM_AGENT_TOKEN: "${VLLM_AGENT_TOKEN:-}"
+      HUB_API_ENABLED: "${HUB_API_ENABLED:-true}"
+      PUBLIC_URL: "${PUBLIC_URL:-}"
       S3_BUCKET: "${S3_BUCKET:-}"
       S3_PREFIX: "${S3_PREFIX:-models}"
       S3_REGION: "${S3_REGION:-}"

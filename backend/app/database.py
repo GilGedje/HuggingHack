@@ -190,7 +190,9 @@ class Database:
                     managed INTEGER NOT NULL DEFAULT 0,
                     storage_backend TEXT NOT NULL DEFAULT 'filesystem',
                     cached INTEGER NOT NULL DEFAULT 1,
-                    remote_uri TEXT
+                    remote_uri TEXT,
+                    parameter_count BIGINT,
+                    formats_json TEXT NOT NULL DEFAULT '[]'
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_local_models_modified
@@ -274,6 +276,14 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_owned_repositories_owner
                     ON owned_repositories(owner_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS file_digests (
+                    repo_id TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    PRIMARY KEY(repo_id, path)
+                );
                 """
             )
             columns = self._column_names(connection, "downloads")
@@ -294,6 +304,13 @@ class Database:
                 )
             if "remote_uri" not in local_model_columns:
                 connection.execute("ALTER TABLE local_models ADD COLUMN remote_uri TEXT")
+            if "parameter_count" not in local_model_columns:
+                connection.execute("ALTER TABLE local_models ADD COLUMN parameter_count BIGINT")
+            if "formats_json" not in local_model_columns:
+                connection.execute(
+                    "ALTER TABLE local_models ADD COLUMN formats_json "
+                    "TEXT NOT NULL DEFAULT '[]'"
+                )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_downloads_user_created "
                 "ON downloads(user_id, created_at DESC)"
@@ -326,14 +343,15 @@ class Database:
         if row is None:
             return None
         result = dict(row)
-        for key in ("payload_json", "metadata_json", "tags_json", "config_json"):
+        list_keys = {"tags_json", "formats_json"}
+        for key in ("payload_json", "metadata_json", "tags_json", "config_json", "formats_json"):
             if key in result:
                 raw = result.pop(key)
                 output_key = key.removesuffix("_json")
                 try:
-                    result[output_key] = json.loads(raw or "{}")
+                    result[output_key] = json.loads(raw or ("[]" if key in list_keys else "{}"))
                 except (TypeError, json.JSONDecodeError):
-                    result[output_key] = {} if key != "tags_json" else []
+                    result[output_key] = [] if key in list_keys else {}
         if "managed" in result:
             result["managed"] = bool(result["managed"])
         if "cached" in result:
@@ -625,6 +643,7 @@ class Database:
             )
 
     def upsert_local_model(self, record: dict[str, Any]) -> None:
+        record = {"parameter_count": None, "formats_json": "[]", **record}
         with self._write_lock, self.connect() as connection:
             connection.execute(
                 """
@@ -632,12 +651,12 @@ class Database:
                     repo_id, relative_path, size_bytes, file_count, modified_at,
                     downloaded_at, revision, sha, pipeline_tag, library_name,
                     license, tags_json, config_json, source_url, managed,
-                    storage_backend, cached, remote_uri
+                    storage_backend, cached, remote_uri, parameter_count, formats_json
                 ) VALUES (
                     :repo_id, :relative_path, :size_bytes, :file_count, :modified_at,
                     :downloaded_at, :revision, :sha, :pipeline_tag, :library_name,
                     :license, :tags_json, :config_json, :source_url, :managed,
-                    :storage_backend, :cached, :remote_uri
+                    :storage_backend, :cached, :remote_uri, :parameter_count, :formats_json
                 )
                 ON CONFLICT(repo_id) DO UPDATE SET
                     relative_path = excluded.relative_path,
@@ -656,7 +675,9 @@ class Database:
                     managed = excluded.managed,
                     storage_backend = excluded.storage_backend,
                     cached = excluded.cached,
-                    remote_uri = excluded.remote_uri
+                    remote_uri = excluded.remote_uri,
+                    parameter_count = excluded.parameter_count,
+                    formats_json = excluded.formats_json
                 """,
                 record,
             )
@@ -757,6 +778,46 @@ class Database:
                 (repo_id, user_id),
             ).fetchone()
         return self._decode_row(row)
+
+    def get_public_local_model(self, repo_id: str) -> dict[str, Any] | None:
+        """Return a model anyone on the network may pull: never a private upload."""
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT local_models.*
+                FROM local_models
+                LEFT JOIN owned_repositories
+                    ON owned_repositories.repo_id = local_models.repo_id
+                WHERE local_models.repo_id = ?
+                  AND (
+                    owned_repositories.id IS NULL
+                    OR owned_repositories.visibility = 'shared'
+                  )
+                """,
+                (repo_id,),
+            ).fetchone()
+        return self._decode_row(row)
+
+    def get_file_digest(self, repo_id: str, path: str, version: str) -> str | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT sha256 FROM file_digests WHERE repo_id = ? AND path = ? AND version = ?",
+                (repo_id, path, version),
+            ).fetchone()
+        return row["sha256"] if row else None
+
+    def set_file_digest(self, repo_id: str, path: str, version: str, sha256: str) -> None:
+        with self._write_lock, self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO file_digests (repo_id, path, version, sha256)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(repo_id, path) DO UPDATE SET
+                    version = excluded.version,
+                    sha256 = excluded.sha256
+                """,
+                (repo_id, path, version, sha256),
+            )
 
     def create_collection(self, record: dict[str, Any]) -> dict[str, Any]:
         with self._write_lock, self.connect() as connection:

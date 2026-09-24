@@ -6,6 +6,8 @@ import type {
   Health,
   HubModel,
   HubModelDetails,
+  LibraryModelDetails,
+  LibrarySearchResult,
   LocalModel,
   LocalModelDetails,
   OwnedRepository,
@@ -78,6 +80,10 @@ export const api = {
     request<{ items: HubModel[]; count: number }>(`/api/hub/models?${params.toString()}`),
   modelDetails: (repoId: string) =>
     request<HubModelDetails>(`/api/hub/models/${repoPath(repoId)}`),
+  libraryModels: (params: URLSearchParams) =>
+    request<LibrarySearchResult>(`/api/library/models?${params.toString()}`),
+  libraryModelDetails: (repoId: string) =>
+    request<LibraryModelDetails>(`/api/library/models/${repoPath(repoId)}`),
   downloads: () => request<{ items: DownloadJob[]; active: number }>('/api/downloads'),
   startDownload: (payload: {
     repo_id: string

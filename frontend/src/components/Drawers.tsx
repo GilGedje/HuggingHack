@@ -26,6 +26,7 @@ import {
   ExternalLink,
   File,
   FileJson,
+  GitBranch,
   HardDrive,
   LoaderCircle,
   LockKeyhole,
@@ -36,17 +37,21 @@ import {
   X,
 } from 'lucide-react'
 import { api } from '../api'
+import { LIBRARY_GGUF_ENDPOINT } from '../gguf'
 import {
   modelCardHeadingId,
   modelCardSanitizeSchema,
   prepareModelCardMarkdown,
+  resolveLocalModelCardUrl,
   resolveModelCardUrl,
 } from '../modelCard'
 import { GgufInspector } from './GgufInspector'
+import { formatLabels } from './RepositoryRows'
 import type {
   DownloadMode,
   HubFile,
   HubModelDetails,
+  LibraryModelDetails,
   LocalModelDetails,
   RuntimeJob,
   RuntimeTarget,
@@ -193,10 +198,12 @@ const ModelCardDocument = memo(function ModelCardDocument({
   source,
   sourceUrl,
   revision,
+  localRepoId,
 }: {
   source: string
   sourceUrl: string
   revision: string
+  localRepoId?: string
 }) {
   const preparedSource = useMemo(() => prepareModelCardMarkdown(source), [source])
   return (
@@ -209,7 +216,9 @@ const ModelCardDocument = memo(function ModelCardDocument({
           rehypeKatex,
         ]}
         urlTransform={(url, attribute) => {
-          const resolved = resolveModelCardUrl(url, attribute, sourceUrl, revision)
+          const resolved = localRepoId
+            ? resolveLocalModelCardUrl(url, attribute, localRepoId)
+            : resolveModelCardUrl(url, attribute, sourceUrl, revision)
           return resolved === null ? null : defaultUrlTransform(resolved)
         }}
         components={modelCardComponents}
@@ -537,24 +546,27 @@ export function ModelDrawer({ repoId, onClose, onQueued }: ModelDrawerProps) {
   )
 }
 
-interface LocalDrawerProps {
-  repoId: string | null
-  onClose: () => void
-  onChanged: () => void
-  onToast: (message: string, tone?: 'success' | 'error') => void
-  canManageRuntimes: boolean
-}
-
 const activeRuntimeStatuses = ['queued', 'preparing', 'transferring', 'loading']
 
-export function LocalDrawer({
+interface ModelActionsProps {
+  repoId: string
+  storageBackend: 'filesystem' | 's3'
+  cached: boolean
+  files: HubFile[]
+  canManageRuntimes: boolean
+  onCacheChanged: () => void
+  onToast: (message: string, tone?: 'success' | 'error') => void
+}
+
+function ModelActions({
   repoId,
-  onClose,
-  onChanged,
-  onToast,
+  storageBackend,
+  cached,
+  files,
   canManageRuntimes,
-}: LocalDrawerProps) {
-  const [details, setDetails] = useState<LocalModelDetails | null>(null)
+  onCacheChanged,
+  onToast,
+}: ModelActionsProps) {
   const [error, setError] = useState('')
   const [changingCache, setChangingCache] = useState(false)
   const [runtimeTargets, setRuntimeTargets] = useState<RuntimeTarget[]>([])
@@ -565,28 +577,14 @@ export function LocalDrawer({
   const [dispatching, setDispatching] = useState(false)
 
   useEffect(() => {
-    let ignore = false
-    setDetails(null)
     setError('')
     setRuntimeJob(null)
-    setRuntimeModelName(repoId ? repoId.replace('/', '-').toLowerCase() : '')
+    setRuntimeModelName(repoId.replace('/', '-').toLowerCase())
     setRuntimeSourceFile('')
-    if (!repoId) return
-    api
-      .localModelDetails(repoId)
-      .then((payload) => {
-        if (!ignore) setDetails(payload)
-      })
-      .catch((reason) => {
-        if (!ignore) setError(reason.message)
-      })
-    return () => {
-      ignore = true
-    }
   }, [repoId])
 
   useEffect(() => {
-    if (!repoId || !canManageRuntimes) {
+    if (!canManageRuntimes) {
       setRuntimeTargets([])
       setRuntimeTargetId('')
       return
@@ -622,28 +620,30 @@ export function LocalDrawer({
     return () => window.clearTimeout(timer)
   }, [onToast, runtimeJob])
 
+  const ggufFiles = files.filter((file) => file.path.toLowerCase().endsWith('.gguf'))
+  const selectedTarget = runtimeTargets.find((target) => target.id === runtimeTargetId)
+  const needsSourceFile = selectedTarget?.kind === 'ollama' && ggufFiles.length > 1
+  const runtimeBusy = Boolean(runtimeJob && activeRuntimeStatuses.includes(runtimeJob.status))
+
   async function changeCache() {
-    if (!details || details.model.storage_backend !== 's3') return
+    if (storageBackend !== 's3') return
     if (
-      details.model.cached
+      cached
       && !window.confirm(
-        `Remove the local cache for ${details.model.repo_id}? The complete S3 copy will remain.`,
+        `Remove the local cache for ${repoId}? The complete S3 copy will remain.`,
       )
     ) return
     setChangingCache(true)
     setError('')
     try {
-      if (details.model.cached) {
-        await api.evictLocalModelCache(details.model.repo_id)
-        const remoteDetails = await api.localModelDetails(details.model.repo_id)
-        setDetails(remoteDetails)
-        onToast(`${details.model.repo_id} is now stored in S3 only.`)
+      if (cached) {
+        await api.evictLocalModelCache(repoId)
+        onToast(`${repoId} is now stored in S3 only.`)
       } else {
-        const restored = await api.restoreLocalModel(details.model.repo_id)
-        setDetails(restored)
-        onToast(`${details.model.repo_id} was restored to the local cache.`)
+        await api.restoreLocalModel(repoId)
+        onToast(`${repoId} was restored to the local cache.`)
       }
-      onChanged()
+      onCacheChanged()
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : 'Could not update the model cache.'
       setError(message)
@@ -654,17 +654,17 @@ export function LocalDrawer({
   }
 
   async function dispatchRuntime() {
-    if (!details || !runtimeTargetId || !runtimeModelName.trim()) return
+    if (!runtimeTargetId || !runtimeModelName.trim()) return
     setDispatching(true)
     setError('')
     try {
       const job = await api.loadRuntime(runtimeTargetId, {
-        repo_id: details.model.repo_id,
+        repo_id: repoId,
         runtime_model_name: runtimeModelName.trim(),
         ...(runtimeSourceFile ? { source_file: runtimeSourceFile } : {}),
       })
       setRuntimeJob(job)
-      onToast(`${details.model.repo_id} was queued for ${job.target_name}.`)
+      onToast(`${repoId} was queued for ${job.target_name}.`)
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : 'Could not send the model to the runtime.'
       setError(message)
@@ -673,6 +673,399 @@ export function LocalDrawer({
       setDispatching(false)
     }
   }
+
+  return (
+    <>
+      {error && <div className="inline-error">{error}</div>}
+      {storageBackend === 's3' && (
+        <div className="local-storage-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={changingCache}
+            onClick={changeCache}
+          >
+            {changingCache
+              ? <LoaderCircle size={16} className="spin" />
+              : cached ? <Trash2 size={16} /> : <CloudDownload size={16} />}
+            {changingCache
+              ? 'Working…'
+              : cached ? 'Remove local cache' : 'Restore to local cache'}
+          </button>
+          <p>
+            {cached
+              ? 'The durable S3 copy stays available.'
+              : 'Restore before loading this model in vLLM, llama.cpp, or another local runtime.'}
+          </p>
+        </div>
+      )}
+      {canManageRuntimes && runtimeTargets.length > 0 && (
+        <section className="runtime-dispatch">
+          <div className="runtime-dispatch-title">
+            <Server size={17} />
+            <div>
+              <strong>Send to runtime</strong>
+              <p>Transfer to Ollama or start this shared path through a vLLM agent.</p>
+            </div>
+          </div>
+          <div className="runtime-dispatch-form">
+            <label>
+              Destination
+              <select
+                value={runtimeTargetId}
+                onChange={(event) => {
+                  setRuntimeTargetId(event.target.value)
+                  setRuntimeSourceFile('')
+                }}
+              >
+                {runtimeTargets.map((target) => (
+                  <option key={target.id} value={target.id}>
+                    {target.name} · {target.kind}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Served model name
+              <input
+                value={runtimeModelName}
+                onChange={(event) => setRuntimeModelName(event.target.value)}
+                maxLength={128}
+              />
+            </label>
+            {needsSourceFile && (
+              <label className="runtime-source-field">
+                GGUF quantization
+                <select
+                  value={runtimeSourceFile}
+                  onChange={(event) => setRuntimeSourceFile(event.target.value)}
+                >
+                  <option value="">Choose a GGUF file</option>
+                  {ggufFiles.map((file) => (
+                    <option key={file.path} value={file.path}>
+                      {file.path} · {formatBytes(file.size)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <button
+              type="button"
+              className="download-button"
+              onClick={dispatchRuntime}
+              disabled={
+                dispatching
+                || !cached
+                || !runtimeTargetId
+                || !runtimeModelName.trim()
+                || (needsSourceFile && !runtimeSourceFile)
+                || runtimeBusy
+              }
+            >
+              {dispatching || runtimeBusy
+                ? <LoaderCircle size={16} className="spin" />
+                : <Rocket size={16} />}
+              {runtimeBusy && runtimeJob
+                ? runtimeJob.message
+                : dispatching ? 'Queuing…' : 'Load model'}
+            </button>
+          </div>
+          {runtimeJob && (
+            <div className={`runtime-job-inline ${runtimeJob.status}`}>
+              <div>
+                <span>{runtimeJob.message}</span>
+                <strong>{runtimeJob.progress.toFixed(0)}%</strong>
+              </div>
+              <div className="job-progress">
+                <span style={{ width: `${runtimeJob.progress}%` }} />
+              </div>
+              {runtimeJob.error && <p>{runtimeJob.error}</p>}
+            </div>
+          )}
+        </section>
+      )}
+    </>
+  )
+}
+
+interface LibraryModelDrawerProps {
+  repoId: string | null
+  onClose: () => void
+  onUse: (mode: 'vllm' | 'clone') => void
+  onChanged: () => void
+  onToast: (message: string, tone?: 'success' | 'error') => void
+  canManageRuntimes: boolean
+}
+
+export function LibraryModelDrawer({
+  repoId,
+  onClose,
+  onUse,
+  onChanged,
+  onToast,
+  canManageRuntimes,
+}: LibraryModelDrawerProps) {
+  const [model, setModel] = useState<LibraryModelDetails | null>(null)
+  const [error, setError] = useState('')
+  const [tab, setTab] = useState<'card' | 'files' | 'gguf'>('card')
+  const [reloadKey, setReloadKey] = useState(0)
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    setTab('card')
+  }, [repoId])
+
+  useEffect(() => {
+    let ignore = false
+    setModel(null)
+    setError('')
+    if (!repoId) return
+    api
+      .libraryModelDetails(repoId)
+      .then((payload) => {
+        if (!ignore) setModel(payload)
+      })
+      .catch((reason) => {
+        if (!ignore) setError(reason.message)
+      })
+    return () => {
+      ignore = true
+    }
+  }, [repoId, reloadKey])
+
+  useEffect(() => {
+    if (!repoId) return
+    closeButtonRef.current?.focus()
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onClose, repoId])
+
+  const ggufFiles = useMemo(
+    () => model?.files.filter((file) => file.path.toLowerCase().endsWith('.gguf')) || [],
+    [model],
+  )
+
+  if (!repoId) return null
+  const remoteOnly = model?.storage_backend === 's3' && !model.cached
+  const location = model ? (remoteOnly ? model.remote_uri || model.local_path : model.local_path) : ''
+
+  return (
+    <div className="drawer-backdrop" role="presentation" onMouseDown={onClose}>
+      <aside
+        className="drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Model details for ${repoId}`}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="drawer-header">
+          <div>
+            <span className="eyebrow">
+              {model?.storage_backend === 's3' ? 'S3-backed model' : 'Local model'}
+            </span>
+            <h2>{repoId}</h2>
+          </div>
+          <button ref={closeButtonRef} type="button" className="icon-button" onClick={onClose} aria-label="Close">
+            <X size={20} />
+          </button>
+        </div>
+
+        {!model && !error && (
+          <div className="drawer-loading">
+            <LoaderCircle size={24} className="spin" /> Reading the local library…
+          </div>
+        )}
+        {error && <div className="inline-error">{error}</div>}
+        {model && (
+          <>
+            <div className="drawer-summary">
+              <div className="drawer-tags">
+                {model.pipeline_tag && <span className="task-tag">{taskLabel(model.pipeline_tag)}</span>}
+                {model.formats.map((format) => (
+                  <span key={format}>{formatLabels[format] || format}</span>
+                ))}
+                {model.library_name && !model.formats.includes(model.library_name as never) && (
+                  <span>{model.library_name}</span>
+                )}
+                {model.license && <span>{model.license}</span>}
+                <span className="local-badge">
+                  {remoteOnly ? <Cloud size={12} /> : <Check size={12} />}
+                  {remoteOnly ? ' S3 only' : model.storage_backend === 's3' ? ' Cached from S3' : ' On disk'}
+                </span>
+              </div>
+              <div className="detail-metrics">
+                <span>
+                  <strong>
+                    {model.parameter_count ? formatNumber(model.parameter_count) : '—'}
+                  </strong>{' '}
+                  parameters
+                </span>
+                <span>
+                  <strong>{formatNumber(model.file_count)}</strong> files
+                </span>
+                <span>
+                  <strong>{formatBytes(model.size_bytes)}</strong> {remoteOnly ? 'in S3' : 'on disk'}
+                </span>
+              </div>
+              <span className="text-link" title={location}>
+                {remoteOnly ? <Cloud size={13} /> : <HardDrive size={13} />} {location}
+              </span>
+            </div>
+
+            <div className="download-box">
+              <div className="download-box-title">
+                <div>
+                  <h3>Use this model</h3>
+                  <p>
+                    Pull it from any machine on your network with vLLM, git, or the hf CLI.
+                    {remoteOnly ? ' Files stream straight from S3.' : ''}
+                  </p>
+                </div>
+                <Rocket size={20} />
+              </div>
+              <div className="use-model-actions">
+                {model.apps.includes('vllm') && (
+                  <button type="button" className="download-button" onClick={() => onUse('vllm')}>
+                    <Rocket size={16} /> Deploy with vLLM
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className={model.apps.includes('vllm') ? 'secondary-button' : 'download-button'}
+                  onClick={() => onUse('clone')}
+                >
+                  <GitBranch size={16} /> Clone repository
+                </button>
+              </div>
+              <div className="download-selection-summary">
+                <span>
+                  {model.revision ? `Revision ${model.revision}` : 'Local repository'}
+                  {model.sha ? ` · ${model.sha.slice(0, 10)}` : ''}
+                </span>
+                <strong>
+                  {model.downloaded_at
+                    ? `Added ${relativeTime(model.downloaded_at)}`
+                    : `Updated ${relativeTime(model.last_modified)}`}
+                </strong>
+              </div>
+              <ModelActions
+                repoId={model.id}
+                storageBackend={model.storage_backend}
+                cached={model.cached}
+                files={model.files}
+                canManageRuntimes={canManageRuntimes}
+                onCacheChanged={() => {
+                  setReloadKey((value) => value + 1)
+                  onChanged()
+                }}
+                onToast={onToast}
+              />
+              {model.unsafe_file_count > 0 ? (
+                <div className="security-note warning">
+                  <AlertTriangle size={16} />
+                  {model.unsafe_file_count} file{model.unsafe_file_count === 1 ? '' : 's'} may use
+                  pickle serialization. Do not load untrusted artifacts with code execution enabled.
+                </div>
+              ) : (
+                <div className="security-note">
+                  <ShieldCheck size={16} />
+                  No common pickle-compatible file extensions found in this repository.
+                </div>
+              )}
+            </div>
+
+            <div className="drawer-tabs" role="tablist" aria-label="Repository content">
+              <button id="model-card-tab" role="tab" aria-selected={tab === 'card'} aria-controls="model-card-panel" className={tab === 'card' ? 'active' : ''} onClick={() => setTab('card')}>
+                Model card
+              </button>
+              <button id="model-files-tab" role="tab" aria-selected={tab === 'files'} aria-controls="model-files-panel" className={tab === 'files' ? 'active' : ''} onClick={() => setTab('files')}>
+                Files <span>{model.files.length}{model.truncated ? '+' : ''}</span>
+              </button>
+              {ggufFiles.length > 0 && (
+                <button id="model-gguf-tab" role="tab" aria-selected={tab === 'gguf'} aria-controls="model-gguf-panel" className={tab === 'gguf' ? 'active' : ''} onClick={() => setTab('gguf')}>
+                  GGUF <span>{ggufFiles.length}</span>
+                </button>
+              )}
+            </div>
+            {tab === 'card' ? (
+              <section id="model-card-panel" role="tabpanel" aria-labelledby="model-card-tab">
+                {model.model_card ? (
+                  <ModelCardDocument
+                    source={model.model_card}
+                    sourceUrl=""
+                    revision={model.revision || 'main'}
+                    localRepoId={model.id}
+                  />
+                ) : (
+                  <div className="empty-compact">This repository does not include a README model card.</div>
+                )}
+              </section>
+            ) : tab === 'files' ? (
+              <div id="model-files-panel" role="tabpanel" aria-labelledby="model-files-tab" className="file-list">
+                {model.files.map((file) => (
+                  <div key={file.path} className="file-row">
+                    <File size={15} />
+                    <span title={file.path}>{file.path}</span>
+                    <small>{file.size ? formatBytes(file.size) : '—'}</small>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div id="model-gguf-panel" role="tabpanel" aria-labelledby="model-gguf-tab">
+                <GgufInspector
+                  repoId={model.id}
+                  revision={model.revision || 'main'}
+                  files={ggufFiles}
+                  endpoint={LIBRARY_GGUF_ENDPOINT}
+                />
+              </div>
+            )}
+          </>
+        )}
+      </aside>
+    </div>
+  )
+}
+
+interface LocalDrawerProps {
+  repoId: string | null
+  onClose: () => void
+  onChanged: () => void
+  onToast: (message: string, tone?: 'success' | 'error') => void
+  canManageRuntimes: boolean
+}
+
+export function LocalDrawer({
+  repoId,
+  onClose,
+  onChanged,
+  onToast,
+  canManageRuntimes,
+}: LocalDrawerProps) {
+  const [details, setDetails] = useState<LocalModelDetails | null>(null)
+  const [error, setError] = useState('')
+  const [reloadKey, setReloadKey] = useState(0)
+
+  useEffect(() => {
+    let ignore = false
+    setDetails(null)
+    setError('')
+    if (!repoId) return
+    api
+      .localModelDetails(repoId)
+      .then((payload) => {
+        if (!ignore) setDetails(payload)
+      })
+      .catch((reason) => {
+        if (!ignore) setError(reason.message)
+      })
+    return () => {
+      ignore = true
+    }
+  }, [repoId, reloadKey])
 
   if (!repoId) return null
   return (
@@ -720,120 +1113,18 @@ export function LocalDrawer({
                 </p>
               </div>
             </div>
-            {details.model.storage_backend === 's3' && (
-              <div className="local-storage-actions">
-                <button
-                  type="button"
-                  className="secondary-button"
-                  disabled={changingCache}
-                  onClick={changeCache}
-                >
-                  {changingCache
-                    ? <LoaderCircle size={16} className="spin" />
-                    : details.model.cached ? <Trash2 size={16} /> : <CloudDownload size={16} />}
-                  {changingCache
-                    ? 'Working…'
-                    : details.model.cached ? 'Remove local cache' : 'Restore to local cache'}
-                </button>
-                <p>
-                  {details.model.cached
-                    ? 'The durable S3 copy stays available.'
-                    : 'Restore before loading this model in vLLM, llama.cpp, or another local runtime.'}
-                </p>
-              </div>
-            )}
-            {canManageRuntimes && runtimeTargets.length > 0 && (
-              <section className="runtime-dispatch">
-                <div className="runtime-dispatch-title">
-                  <Server size={17} />
-                  <div>
-                    <strong>Send to runtime</strong>
-                    <p>Transfer to Ollama or start this shared path through a vLLM agent.</p>
-                  </div>
-                </div>
-                <div className="runtime-dispatch-form">
-                  <label>
-                    Destination
-                    <select
-                      value={runtimeTargetId}
-                      onChange={(event) => {
-                        setRuntimeTargetId(event.target.value)
-                        setRuntimeSourceFile('')
-                      }}
-                    >
-                      {runtimeTargets.map((target) => (
-                        <option key={target.id} value={target.id}>
-                          {target.name} · {target.kind}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    Served model name
-                    <input
-                      value={runtimeModelName}
-                      onChange={(event) => setRuntimeModelName(event.target.value)}
-                      maxLength={128}
-                    />
-                  </label>
-                  {runtimeTargets.find((target) => target.id === runtimeTargetId)?.kind === 'ollama'
-                    && details.files.filter((file) => file.path.toLowerCase().endsWith('.gguf')).length > 1 && (
-                      <label className="runtime-source-field">
-                        GGUF quantization
-                        <select
-                          value={runtimeSourceFile}
-                          onChange={(event) => setRuntimeSourceFile(event.target.value)}
-                        >
-                          <option value="">Choose a GGUF file</option>
-                          {details.files
-                            .filter((file) => file.path.toLowerCase().endsWith('.gguf'))
-                            .map((file) => (
-                              <option key={file.path} value={file.path}>
-                                {file.path} · {formatBytes(file.size)}
-                              </option>
-                            ))}
-                        </select>
-                      </label>
-                    )}
-                  <button
-                    type="button"
-                    className="download-button"
-                    onClick={dispatchRuntime}
-                    disabled={
-                      dispatching
-                      || !details.model.cached
-                      || !runtimeTargetId
-                      || !runtimeModelName.trim()
-                      || (
-                        runtimeTargets.find((target) => target.id === runtimeTargetId)?.kind === 'ollama'
-                        && details.files.filter((file) => file.path.toLowerCase().endsWith('.gguf')).length > 1
-                        && !runtimeSourceFile
-                      )
-                      || Boolean(runtimeJob && activeRuntimeStatuses.includes(runtimeJob.status))
-                    }
-                  >
-                    {dispatching || (runtimeJob && activeRuntimeStatuses.includes(runtimeJob.status))
-                      ? <LoaderCircle size={16} className="spin" />
-                      : <Rocket size={16} />}
-                    {runtimeJob && activeRuntimeStatuses.includes(runtimeJob.status)
-                      ? runtimeJob.message
-                      : dispatching ? 'Queuing…' : 'Load model'}
-                  </button>
-                </div>
-                {runtimeJob && (
-                  <div className={`runtime-job-inline ${runtimeJob.status}`}>
-                    <div>
-                      <span>{runtimeJob.message}</span>
-                      <strong>{runtimeJob.progress.toFixed(0)}%</strong>
-                    </div>
-                    <div className="job-progress">
-                      <span style={{ width: `${runtimeJob.progress}%` }} />
-                    </div>
-                    {runtimeJob.error && <p>{runtimeJob.error}</p>}
-                  </div>
-                )}
-              </section>
-            )}
+            <ModelActions
+              repoId={details.model.repo_id}
+              storageBackend={details.model.storage_backend}
+              cached={details.model.cached}
+              files={details.files}
+              canManageRuntimes={canManageRuntimes}
+              onCacheChanged={() => {
+                setReloadKey((value) => value + 1)
+                onChanged()
+              }}
+              onToast={onToast}
+            />
             {details.unsafe_file_count > 0 ? (
               <div className="security-note warning">
                 <AlertTriangle size={16} />

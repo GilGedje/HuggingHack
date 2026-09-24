@@ -83,8 +83,8 @@ export default function Shell({ children, activeDownloads, user, onLogout }: She
               ref={searchInput}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search models on the Hub"
-              aria-label="Search models on Hugging Face"
+              placeholder="Search your model library"
+              aria-label="Search the local model library"
             />
             <kbd>/</kbd>
           </form>
@@ -137,7 +137,7 @@ export default function Shell({ children, activeDownloads, user, onLogout }: She
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search the Hub"
+                placeholder="Search your library"
               />
             </form>
             {links.filter((link) => !link.adminOnly || user.role === 'admin').map(({ to, label, icon: Icon }) => (

@@ -30,6 +30,8 @@ export interface Health {
   max_upload_size_bytes: number
   runtime_target_count: number
   runtime_api_token_configured: boolean
+  hub_api_enabled?: boolean
+  public_url?: string | null
 }
 
 export interface User {
@@ -80,6 +82,55 @@ export interface HubModelDetails extends HubModel {
   total_bytes: number
   security_status?: unknown
   source_url: string
+  model_card?: string | null
+}
+
+export type ModelFormat = 'safetensors' | 'gguf' | 'pytorch' | 'onnx' | 'tensorflow' | 'flax'
+
+export interface LibraryModel {
+  id: string
+  author?: string | null
+  pipeline_tag?: string | null
+  library_name?: string | null
+  tags: string[]
+  license?: string | null
+  parameter_count?: number | null
+  formats: ModelFormat[]
+  apps: string[]
+  size_bytes: number
+  file_count: number
+  last_modified?: string | null
+  downloaded_at?: string | null
+  revision?: string | null
+  sha?: string | null
+  managed: boolean
+  storage_backend: 'filesystem' | 's3'
+  cached: boolean
+  saved: boolean
+}
+
+export interface LibraryFacets {
+  tasks: string[][]
+  libraries: string[][]
+  apps: string[][]
+}
+
+export interface LibrarySearchResult {
+  items: LibraryModel[]
+  count: number
+  total: number
+  total_bytes: number
+  facets: LibraryFacets
+}
+
+export interface LibraryModelDetails extends LibraryModel {
+  files: HubFile[]
+  total_bytes: number
+  truncated: boolean
+  unsafe_file_count: number
+  local_path: string
+  remote_uri?: string | null
+  source_url?: string | null
   model_card?: string | null
 }
 

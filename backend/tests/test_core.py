@@ -8,11 +8,17 @@ import httpx
 import pytest
 
 from app.auth import AuthService, verify_password
+from app.catalog import LocalCatalog, parse_parameter_range, search_catalog
 from app.config import Settings, repository_path, validate_repo_id
 from app.database import Database, _postgres_query
 from app.downloads import DownloadManager
 from app.hub_service import HubService, parse_gguf_range, validate_gguf_filename
-from app.indexer import LocalModelIndexer
+from app.indexer import (
+    LocalModelIndexer,
+    gguf_parameter_count,
+    repository_facts,
+    safetensors_parameter_count,
+)
 from app.runtimes import (
     RuntimeManager,
     ollama_files,
@@ -68,10 +74,19 @@ class FakeS3Client:
             self.objects.pop(item["Key"], None)
         return {}
 
-    def get_object(self, *, Bucket: str, Key: str):
+    def head_object(self, *, Bucket: str, Key: str):
         if Key not in self.objects:
             raise KeyError(Key)
-        return {"Body": BytesIO(self.objects[Key])}
+        return {"ContentLength": len(self.objects[Key])}
+
+    def get_object(self, *, Bucket: str, Key: str, Range: str | None = None):
+        if Key not in self.objects:
+            raise KeyError(Key)
+        payload = self.objects[Key]
+        if Range:
+            start, end = (int(value) for value in Range.removeprefix("bytes=").split("-"))
+            payload = payload[start : end + 1]
+        return {"Body": BytesIO(payload)}
 
 
 def test_repo_id_validation_rejects_path_traversal():
@@ -905,3 +920,372 @@ def test_vllm_agent_confines_requested_models_to_shared_root(tmp_path: Path):
     assert manager._validated_model_path(str(allowed)) == allowed
     with pytest.raises(ValueError, match="must stay inside"):
         manager._validated_model_path(str(outside))
+
+
+def safetensors_bytes(shapes: dict[str, list[int]]) -> bytes:
+    header: dict[str, object] = {"__metadata__": {"format": "pt"}}
+    offset = 0
+    for name, shape in shapes.items():
+        size = 4
+        for dimension in shape:
+            size *= dimension
+        header[name] = {"dtype": "F32", "shape": shape, "data_offsets": [offset, offset + size]}
+        offset += size
+    encoded = json.dumps(header).encode("utf-8")
+    return len(encoded).to_bytes(8, "little") + encoded + b"\0" * offset
+
+
+def gguf_bytes(tensors: dict[str, list[int]]) -> bytes:
+    def string(value: str) -> bytes:
+        encoded = value.encode("utf-8")
+        return len(encoded).to_bytes(8, "little") + encoded
+
+    output = bytearray(b"GGUF")
+    output += (3).to_bytes(4, "little")
+    output += len(tensors).to_bytes(8, "little")
+    output += (3).to_bytes(8, "little")
+    output += string("general.architecture") + (8).to_bytes(4, "little") + string("llama")
+    output += string("llama.context_length") + (4).to_bytes(4, "little") + (4096).to_bytes(4, "little")
+    output += string("tokenizer.ggml.tokens") + (9).to_bytes(4, "little")
+    output += (8).to_bytes(4, "little") + (2).to_bytes(8, "little") + string("<s>") + string("</s>")
+    for name, shape in tensors.items():
+        output += string(name) + len(shape).to_bytes(4, "little")
+        for dimension in shape:
+            output += dimension.to_bytes(8, "little")
+        output += (0).to_bytes(4, "little") + (0).to_bytes(8, "little")
+    return bytes(output)
+
+
+PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\0" * 16
+
+
+def test_indexer_counts_parameters_from_weight_headers(tmp_path: Path):
+    safetensors = tmp_path / "model.safetensors"
+    safetensors.write_bytes(safetensors_bytes({"embed": [4, 8], "head": [8, 2]}))
+    assert safetensors_parameter_count(safetensors) == 48
+
+    gguf = tmp_path / "model-Q4_K_M.gguf"
+    gguf.write_bytes(gguf_bytes({"token_embd.weight": [4, 5], "output.weight": [7]}))
+    assert gguf_parameter_count(gguf) == 27
+    (tmp_path / "broken.gguf").write_bytes(b"GGUF\x03\x00")
+    assert gguf_parameter_count(tmp_path / "broken.gguf") is None
+
+    # Root Transformers shards win over a duplicate consolidated checkpoint.
+    (tmp_path / "consolidated.safetensors").write_bytes(safetensors_bytes({"all": [48]}))
+    (tmp_path / "pytorch_model.bin").write_bytes(b"pickle")
+    facts = repository_facts(tmp_path)
+    assert facts == {
+        "parameter_count": 48,
+        "formats": ["gguf", "pytorch", "safetensors"],
+    }
+
+    gguf_only = tmp_path / "gguf-only"
+    gguf_only.mkdir()
+    for shard in (1, 2):
+        (gguf_only / f"big-Q8_0-0000{shard}-of-00002.gguf").write_bytes(
+            gguf_bytes({f"blk.{shard}.weight": [10, 10]})
+        )
+    (gguf_only / "big-Q4_0.gguf").write_bytes(gguf_bytes({"blk.weight": [10, 20]}))
+    (gguf_only / "mmproj-f16.gguf").write_bytes(gguf_bytes({"vision": [3]}))
+    assert repository_facts(gguf_only)["parameter_count"] == 200
+
+
+def test_database_migrates_local_models_for_catalog_facts(tmp_path: Path):
+    database_path = tmp_path / "hugginghack.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE local_models (
+                repo_id TEXT PRIMARY KEY,
+                relative_path TEXT NOT NULL UNIQUE,
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                file_count INTEGER NOT NULL DEFAULT 0,
+                modified_at TEXT NOT NULL,
+                downloaded_at TEXT,
+                revision TEXT,
+                sha TEXT,
+                pipeline_tag TEXT,
+                library_name TEXT,
+                license TEXT,
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                config_json TEXT NOT NULL DEFAULT '{}',
+                source_url TEXT,
+                managed INTEGER NOT NULL DEFAULT 0,
+                storage_backend TEXT NOT NULL DEFAULT 'filesystem',
+                cached INTEGER NOT NULL DEFAULT 1,
+                remote_uri TEXT
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO local_models (repo_id, relative_path, modified_at) "
+            "VALUES ('acme/model', 'acme/model', 'now')"
+        )
+
+    database = Database(database_path)
+    database.initialize()
+
+    legacy = database.get_local_model("acme/model")
+    assert legacy is not None
+    assert legacy["parameter_count"] is None
+    assert legacy["formats"] == []
+
+
+def test_catalog_search_filters_sorts_and_builds_facets():
+    models = [
+        {
+            "repo_id": "acme/chat-7b",
+            "relative_path": "acme/chat-7b",
+            "pipeline_tag": "text-generation",
+            "library_name": "transformers",
+            "tags": ["chat"],
+            "config": {"model_type": "llama", "architectures": ["LlamaForCausalLM"]},
+            "parameter_count": 7_000_000_000,
+            "formats": ["safetensors"],
+            "size_bytes": 14,
+            "file_count": 3,
+            "modified_at": "2026-07-01T00:00:00+00:00",
+            "storage_backend": "filesystem",
+            "cached": True,
+        },
+        {
+            "repo_id": "bartowski/tiny-GGUF",
+            "relative_path": "bartowski/tiny-GGUF",
+            # The indexer falls back to config.model_type, which is not a task.
+            "pipeline_tag": "qwen2",
+            "config": {"model_type": "qwen2"},
+            "parameter_count": 500_000_000,
+            "formats": ["gguf"],
+            "size_bytes": 20,
+            "file_count": 2,
+            "modified_at": "2026-08-01T00:00:00+00:00",
+            "storage_backend": "s3",
+            "cached": False,
+        },
+    ]
+
+    everything = search_catalog(models, {"acme/chat-7b"})
+    assert [item["id"] for item in everything["items"]] == ["bartowski/tiny-GGUF", "acme/chat-7b"]
+    assert everything["items"][0]["pipeline_tag"] is None
+    assert everything["items"][0]["apps"] == ["llama.cpp", "ollama", "lm-studio"]
+    assert everything["items"][1]["apps"] == ["vllm"]
+    assert everything["items"][1]["saved"] is True
+    assert everything["total_bytes"] == 34
+    assert everything["facets"]["tasks"] == [["text-generation", "Text Generation"]]
+    assert everything["facets"]["libraries"] == [
+        ["gguf", "GGUF"],
+        ["safetensors", "SafeTensors"],
+        ["transformers", "Transformers"],
+    ]
+    assert [app for app, _ in everything["facets"]["apps"]] == [
+        "vllm",
+        "llama.cpp",
+        "ollama",
+        "lm-studio",
+    ]
+
+    assert [item["id"] for item in search_catalog(models, set(), sort="size")["items"]] == [
+        "bartowski/tiny-GGUF",
+        "acme/chat-7b",
+    ]
+    assert search_catalog(models, set(), search="chat")["count"] == 1
+    assert search_catalog(models, set(), library="gguf")["items"][0]["id"] == "bartowski/tiny-GGUF"
+    assert search_catalog(models, set(), app="vllm")["items"][0]["id"] == "acme/chat-7b"
+    ranged = search_catalog(models, set(), parameters="min:1B,max:7B")
+    assert ranged["count"] == 0
+    assert search_catalog(models, set(), parameters="min:7B,max:32B")["count"] == 1
+    assert parse_parameter_range("max:1B") == (None, 1_000_000_000)
+    with pytest.raises(ValueError):
+        parse_parameter_range("lots")
+
+
+def test_library_api_serves_local_data_and_hides_private_uploads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from fastapi.testclient import TestClient
+
+    import app.main as main
+
+    storage = (tmp_path / "models").resolve()
+    settings = Settings(model_storage=storage, data_dir=(tmp_path / "data").resolve())
+    settings.ensure_directories()
+    database = Database(settings.database_path)
+    database.initialize()
+    auth = AuthService(settings, database)
+    owner = auth.create_user("owner", "Owner", "correct horse battery", "admin")
+    member = auth.create_user("member", "Member", "another secure phrase", "member")
+    indexer = LocalModelIndexer(settings, database)
+    model_storage = FilesystemModelStorage(settings)
+    uploads = UploadManager(settings, database, indexer, model_storage)
+
+    public = storage / "acme" / "tiny-GGUF"
+    public.mkdir(parents=True)
+    gguf_payload = gguf_bytes({"token_embd.weight": [4, 5], "output.weight": [7]})
+    (public / "tiny-Q4_K_M.gguf").write_bytes(gguf_payload)
+    (public / "README.md").write_text("# Tiny\n\n![chart](assets/chart.png)\n", encoding="utf-8")
+    (public / "assets").mkdir()
+    (public / "assets" / "chart.png").write_bytes(PNG_BYTES)
+    (public / "assets" / "evil.svg").write_text("<svg onload=alert(1)>", encoding="utf-8")
+
+    private = uploads.create_repository(owner, "secret-model", "", "private")
+    for path, payload in {
+        "README.md": b"# Secret",
+        "secret.gguf": gguf_payload,
+        "chart.png": PNG_BYTES,
+    }.items():
+        uploads.upload_chunk(private["repo_id"], owner["id"], path, 0, len(payload), payload)
+    uploads.finalize(private["repo_id"], owner["id"])
+    indexer.scan()
+
+    monkeypatch.setattr(main, "settings", settings)
+    monkeypatch.setattr(main, "database", database)
+    monkeypatch.setattr(main, "indexer", indexer)
+    monkeypatch.setattr(main, "model_storage", model_storage)
+    monkeypatch.setattr(main, "catalog", LocalCatalog(settings, model_storage))
+    current = {"user": member}
+    main.app.dependency_overrides[main.require_user] = lambda: current["user"]
+    try:
+        client = TestClient(main.app)
+        secret = private["repo_id"]
+
+        listing = client.get("/api/library/models").json()
+        assert [item["id"] for item in listing["items"]] == ["acme/tiny-GGUF"]
+        assert listing["items"][0]["parameter_count"] == 27
+        assert listing["items"][0]["formats"] == ["gguf"]
+        assert client.get(f"/api/library/models/{secret}").status_code == 404
+        assert client.get(
+            "/api/library/gguf-range",
+            params={"repo_id": secret, "filename": "secret.gguf"},
+            headers={"Range": "bytes=0-3"},
+        ).status_code == 404
+        assert client.get(
+            "/api/library/asset", params={"repo_id": secret, "path": "chart.png"}
+        ).status_code == 404
+
+        details = client.get("/api/library/models/acme/tiny-GGUF").json()
+        assert details["model_card"].startswith("# Tiny")
+        assert [file["path"] for file in details["files"]] == [
+            "README.md",
+            "assets/chart.png",
+            "assets/evil.svg",
+            "tiny-Q4_K_M.gguf",
+        ]
+        assert details["local_path"].endswith("/acme/tiny-GGUF")
+
+        header = client.get(
+            "/api/library/gguf-range",
+            params={"repo_id": "acme/tiny-GGUF", "filename": "tiny-Q4_K_M.gguf"},
+            headers={"Range": "bytes=0-3"},
+        )
+        assert header.status_code == 206
+        assert header.content == b"GGUF"
+        assert header.headers["content-range"] == f"bytes 0-3/{len(gguf_payload)}"
+        tail = client.get(
+            "/api/library/gguf-range",
+            params={"repo_id": "acme/tiny-GGUF", "filename": "tiny-Q4_K_M.gguf"},
+            headers={"Range": "bytes=0-2000000"},
+        )
+        assert tail.content == gguf_payload
+
+        image = client.get(
+            "/api/library/asset",
+            params={"repo_id": "acme/tiny-GGUF", "path": "assets/chart.png"},
+        )
+        assert image.status_code == 200
+        assert image.headers["content-type"] == "image/png"
+        assert image.content == PNG_BYTES
+        assert client.get(
+            "/api/library/asset",
+            params={"repo_id": "acme/tiny-GGUF", "path": "assets/evil.svg"},
+        ).status_code == 415
+        for path in ("../tiny-GGUF/assets/chart.png", ".hugginghack.json", "/etc/passwd.png"):
+            assert client.get(
+                "/api/library/asset", params={"repo_id": "acme/tiny-GGUF", "path": path}
+            ).status_code in {400, 415}
+
+        current["user"] = owner
+        owned = client.get("/api/library/models", params={"sort": "name"}).json()
+        assert [item["id"] for item in owned["items"]] == ["acme/tiny-GGUF", secret]
+        assert client.get(f"/api/library/models/{secret}").json()["model_card"] == "# Secret"
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_library_reads_s3_only_models_through_bounded_ranges(tmp_path: Path):
+    storage = (tmp_path / "models").resolve()
+    settings = Settings(
+        model_storage=storage,
+        data_dir=(tmp_path / "data").resolve(),
+        model_storage_backend="s3",
+        s3_bucket="model-bucket",
+    )
+    root = storage / "acme" / "tiny"
+    root.mkdir(parents=True)
+    gguf_payload = gguf_bytes({"weight": [3, 3]})
+    (root / "tiny.gguf").write_bytes(gguf_payload)
+    (root / "README.md").write_text("# Remote card", encoding="utf-8")
+    (root / ".hugginghack.json").write_text(
+        json.dumps({"status": "complete", "repo_id": "acme/tiny"}), encoding="utf-8"
+    )
+    fake = FakeS3Client()
+    model_storage = S3ModelStorage(settings, client=fake, transfer_config=object())
+    model_storage.sync_repository("acme/tiny", root)
+    remote_manifest = json.loads(fake.objects["models/acme/tiny/.hugginghack.json"])
+    assert remote_manifest["parameter_count"] == 9
+    assert remote_manifest["formats"] == ["gguf"]
+
+    model_storage.evict_repository_cache("acme/tiny")
+    discovered = model_storage.discover_repositories()[0]
+    assert discovered["cached"] is False
+    assert discovered["parameter_count"] == 9
+    assert discovered["formats"] == ["gguf"]
+
+    catalog = LocalCatalog(settings, model_storage)
+    model = {
+        "repo_id": "acme/tiny",
+        "relative_path": "acme/tiny",
+        "storage_backend": "s3",
+        "cached": False,
+    }
+    listing = model_storage.list_repository_files("acme/tiny")
+    details = catalog.details(model, listing, set())
+    assert details["model_card"] == "# Remote card"
+    assert [file["path"] for file in details["files"]] == ["README.md", "tiny.gguf"]
+    header = catalog.gguf_range(model, "tiny.gguf", "bytes=0-3")
+    assert header["content"] == b"GGUF"
+    assert header["headers"]["Content-Range"] == f"bytes 0-3/{len(gguf_payload)}"
+    with pytest.raises(ValueError):
+        catalog.read_bytes(model, ".hugginghack.json")
+    with pytest.raises(FileNotFoundError):
+        catalog.read_bytes(model, "missing.gguf")
+
+
+def test_indexer_reads_model_card_metadata_for_copied_folders(tmp_path: Path):
+    storage = (tmp_path / "models").resolve()
+    settings = Settings(model_storage=storage, data_dir=(tmp_path / "data").resolve())
+    settings.ensure_directories()
+    database = Database(settings.database_path)
+    database.initialize()
+    root = storage / "acme" / "copied-embedder"
+    root.mkdir(parents=True)
+    (root / "config.json").write_text(json.dumps({"model_type": "bert"}), encoding="utf-8")
+    (root / "model.safetensors").write_bytes(safetensors_bytes({"embed": [3, 4]}))
+    (root / "README.md").write_text(
+        "---\n"
+        "pipeline_tag: sentence-similarity\n"
+        "library_name: sentence-transformers\n"
+        "license: apache-2.0\n"
+        "tags:\n  - embeddings\n  - 42\n"
+        "---\n# Embedder\n",
+        encoding="utf-8",
+    )
+
+    model = LocalModelIndexer(settings, database).index_path(root)
+
+    assert model["pipeline_tag"] == "sentence-similarity"
+    assert model["library_name"] == "sentence-transformers"
+    assert model["license"] == "apache-2.0"
+    assert model["tags"] == ["embeddings"]
+    assert model["parameter_count"] == 12
+    assert model["formats"] == ["safetensors"]
+    assert model["managed"] is False

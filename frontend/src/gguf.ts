@@ -56,11 +56,15 @@ export function metadataPreview(value: MetadataValue): {
   }
 }
 
-function cacheKey(repoId: string, revision: string, file: HubFile): string {
-  return [repoId, revision, file.path, file.blob_id || 'no-blob'].join('\u0000')
+export const HUB_GGUF_ENDPOINT = '/api/hub/gguf-range'
+export const LIBRARY_GGUF_ENDPOINT = '/api/library/gguf-range'
+
+function cacheKey(endpoint: string, repoId: string, revision: string, file: HubFile): string {
+  return [endpoint, repoId, revision, file.path, file.blob_id || 'no-blob'].join('\u0000')
 }
 
 async function inspect(
+  endpoint: string,
   repoId: string,
   revision: string,
   file: HubFile,
@@ -76,7 +80,7 @@ async function inspect(
     revision,
     filename: file.path,
   })
-  const proxyUrl = `/api/hub/gguf-range?${params.toString()}`
+  const proxyUrl = `${endpoint}?${params.toString()}`
   let bytesRead = 0
   let rangeRequests = 0
 
@@ -163,11 +167,12 @@ export function inspectGguf(
   repoId: string,
   revision: string,
   file: HubFile,
+  endpoint = HUB_GGUF_ENDPOINT,
 ): Promise<GgufInspection> {
-  const key = cacheKey(repoId, revision, file)
+  const key = cacheKey(endpoint, repoId, revision, file)
   const cached = inspectionCache.get(key)
   if (cached) return cached
-  const pending = inspect(repoId, revision, file).catch((error) => {
+  const pending = inspect(endpoint, repoId, revision, file).catch((error) => {
     inspectionCache.delete(key)
     throw error
   })

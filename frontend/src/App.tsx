@@ -32,14 +32,16 @@ import {
 } from 'react-router-dom'
 import { api } from './api'
 import { AccountAdmin, AuthScreen, SavedPage, UploadsPage } from './components/AccountPages'
-import { LocalDrawer, ModelDrawer } from './components/Drawers'
-import { HubModelRow, LocalModelRow } from './components/RepositoryRows'
+import { LibraryModelDrawer, LocalDrawer } from './components/Drawers'
+import { UseModelDialog, type UseModelMode } from './components/UseModel'
+import { LibraryModelRow, LocalModelRow } from './components/RepositoryRows'
 import Shell from './components/Shell'
 import type {
   AuthStatus,
   DownloadJob,
   Health,
-  HubModel,
+  LibraryFacets,
+  LibraryModel,
   LocalModel,
   RuntimeJob,
   RuntimeTarget,
@@ -50,25 +52,6 @@ import { formatBytes, relativeTime } from './utils'
 type ToastTone = 'success' | 'error'
 type ToastHandler = (message: string, tone?: ToastTone) => void
 
-const taskOptions = [
-  ['text-generation', 'Text Generation'],
-  ['image-text-to-text', 'Image-Text-to-Text'],
-  ['text-to-image', 'Text-to-Image'],
-  ['feature-extraction', 'Embeddings'],
-  ['automatic-speech-recognition', 'Speech Recognition'],
-]
-const libraryOptions = [
-  ['transformers', 'Transformers'],
-  ['gguf', 'GGUF'],
-  ['diffusers', 'Diffusers'],
-  ['safetensors', 'Safetensors'],
-]
-const appOptions = [
-  ['vllm', 'vLLM'],
-  ['llama.cpp', 'llama.cpp'],
-  ['ollama', 'Ollama'],
-  ['lm-studio', 'LM Studio'],
-]
 const parameterOptions = [
   ['max:1B', '< 1B'],
   ['min:1B,max:7B', '1B – 7B'],
@@ -106,38 +89,60 @@ function FilterGroup({
   )
 }
 
-function ModelsPage({
-  onToast,
-  refreshDownloads,
-}: {
-  onToast: ToastHandler
-  refreshDownloads: () => void
-}) {
+function ModelsPage({ onToast, user }: { onToast: ToastHandler; user: User }) {
   const [searchParams, setSearchParams] = useSearchParams()
   const [search, setSearch] = useState(searchParams.get('search') || '')
   const [task, setTask] = useState('')
   const [library, setLibrary] = useState('')
   const [appFilter, setAppFilter] = useState('')
   const [parameters, setParameters] = useState('')
-  const [sort, setSort] = useState('trending')
-  const [models, setModels] = useState<HubModel[]>([])
+  const [sort, setSort] = useState('updated')
+  const [models, setModels] = useState<LibraryModel[]>([])
+  const [facets, setFacets] = useState<LibraryFacets>({ tasks: [], libraries: [], apps: [] })
+  const [libraryTotal, setLibraryTotal] = useState(0)
+  const [libraryBytes, setLibraryBytes] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [scanning, setScanning] = useState(false)
   const [error, setError] = useState('')
-  const [selected, setSelected] = useState<string | null>(null)
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
   const [saving, setSaving] = useState<string | null>(null)
+  // Mirrors Hugging Face deep links: ?model=owner/name&local-app=vllm or &clone=true.
+  const selected = searchParams.get('model')
+  const useMode: UseModelMode | null =
+    searchParams.get('local-app') === 'vllm'
+      ? 'vllm'
+      : searchParams.get('clone') === 'true'
+        ? 'clone'
+        : null
+  const urlSearch = searchParams.get('search') || ''
 
   useEffect(() => {
-    const next = searchParams.get('search') || ''
-    setSearch(next)
-  }, [searchParams])
+    setSearch(urlSearch)
+  }, [urlSearch])
+
+  const updateModelParams = useCallback(
+    (repoId: string | null, mode: UseModelMode | null) => {
+      setSearchParams((current) => {
+        const next = new URLSearchParams(current)
+        next.delete('local-app')
+        next.delete('clone')
+        if (repoId) next.set('model', repoId)
+        else next.delete('model')
+        if (repoId && mode === 'vllm') next.set('local-app', 'vllm')
+        if (repoId && mode === 'clone') next.set('clone', 'true')
+        return next
+      })
+    },
+    [setSearchParams],
+  )
+  const setSelected = useCallback(
+    (repoId: string | null) => updateModelParams(repoId, null),
+    [updateModelParams],
+  )
+  const useTarget = selected && useMode ? models.find((model) => model.id === selected) : undefined
 
   const fetchModels = useCallback(() => {
-    const params = new URLSearchParams({
-      search,
-      sort,
-      limit: '30',
-    })
+    const params = new URLSearchParams({ search, sort })
     if (task) params.set('task', task)
     if (library) params.set('library', library)
     if (appFilter) params.set('app', appFilter)
@@ -145,14 +150,19 @@ function ModelsPage({
     setLoading(true)
     setError('')
     api
-      .searchModels(params)
-      .then((payload) => setModels(payload.items))
+      .libraryModels(params)
+      .then((payload) => {
+        setModels(payload.items)
+        setFacets(payload.facets)
+        setLibraryTotal(payload.total)
+        setLibraryBytes(payload.total_bytes)
+      })
       .catch((reason) => setError(reason.message))
       .finally(() => setLoading(false))
   }, [appFilter, library, parameters, search, sort, task])
 
   useEffect(() => {
-    const timer = window.setTimeout(fetchModels, 350)
+    const timer = window.setTimeout(fetchModels, 250)
     return () => window.clearTimeout(timer)
   }, [fetchModels])
 
@@ -163,9 +173,22 @@ function ModelsPage({
     setSearchParams(next)
   }
 
+  async function rescan() {
+    setScanning(true)
+    try {
+      const result = await api.scanLocalModels()
+      onToast(`Indexed ${result.count} model${result.count === 1 ? '' : 's'}.`)
+      fetchModels()
+    } catch (reason) {
+      onToast(reason instanceof Error ? reason.message : 'Library scan failed', 'error')
+    } finally {
+      setScanning(false)
+    }
+  }
+
   const activeFilters = [task, library, appFilter, parameters].filter(Boolean).length
 
-  async function toggleSaved(model: HubModel) {
+  async function toggleSaved(model: LibraryModel) {
     setSaving(model.id)
     try {
       if (model.saved) {
@@ -181,7 +204,7 @@ function ModelsPage({
             license: model.license,
             parameter_count: model.parameter_count,
             last_modified: model.last_modified,
-            local: model.local,
+            local: true,
           },
         })
         onToast(`${model.id} was saved for later.`)
@@ -215,14 +238,20 @@ function ModelsPage({
               <CircleX size={18} />
             </button>
           </div>
-          <FilterGroup title="Tasks" options={taskOptions} value={task} onChange={setTask} />
-          <FilterGroup
-            title="Libraries & formats"
-            options={libraryOptions}
-            value={library}
-            onChange={setLibrary}
-          />
-          <FilterGroup title="Local apps" options={appOptions} value={appFilter} onChange={setAppFilter} />
+          {facets.tasks.length > 0 && (
+            <FilterGroup title="Tasks" options={facets.tasks} value={task} onChange={setTask} />
+          )}
+          {facets.libraries.length > 0 && (
+            <FilterGroup
+              title="Libraries & formats"
+              options={facets.libraries}
+              value={library}
+              onChange={setLibrary}
+            />
+          )}
+          {facets.apps.length > 0 && (
+            <FilterGroup title="Runs with" options={facets.apps} value={appFilter} onChange={setAppFilter} />
+          )}
           <FilterGroup
             title="Parameters"
             options={parameterOptions}
@@ -247,13 +276,14 @@ function ModelsPage({
         <section className="catalog-content">
           <div className="page-heading catalog-heading">
             <div>
-              <span className="eyebrow">Live from the Hugging Face Hub</span>
+              <span className="eyebrow">Your offline model library</span>
               <h1>Explore models</h1>
-              <p>Compare useful metadata at a glance, then choose the exact files your local stack needs.</p>
+              <p>Everything here is served from your own storage. No internet connection required.</p>
             </div>
-            <a href="https://huggingface.co/models" target="_blank" rel="noreferrer" className="quiet-link">
-              View on Hugging Face
-            </a>
+            <button type="button" className="quiet-link" onClick={rescan} disabled={scanning}>
+              <RefreshCw size={14} className={scanning ? 'spin' : undefined} />
+              {scanning ? 'Scanning…' : 'Rescan library'}
+            </button>
           </div>
 
           <div className="catalog-tools">
@@ -265,7 +295,7 @@ function ModelsPage({
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') submitSearch()
                 }}
-                placeholder="Search model names, authors, and tags"
+                placeholder="Search model names, owners, tasks, and tags"
               />
               {search && (
                 <button type="button" onClick={() => setSearch('')} aria-label="Clear search">
@@ -276,10 +306,10 @@ function ModelsPage({
             <label className="sort-control">
               <SlidersHorizontal size={15} />
               <select value={sort} onChange={(event) => setSort(event.target.value)} aria-label="Sort models">
-                <option value="trending">Trending</option>
-                <option value="downloads">Most downloaded</option>
                 <option value="updated">Recently updated</option>
-                <option value="likes">Most liked</option>
+                <option value="name">Name</option>
+                <option value="size">Largest on disk</option>
+                <option value="parameters">Most parameters</option>
               </select>
               <ChevronDown size={14} />
             </label>
@@ -294,15 +324,21 @@ function ModelsPage({
           </div>
 
           <div className="results-line">
-            <span>{loading ? 'Contacting the Hub…' : `${models.length} models shown`}</span>
-            <span>Public metadata is read live from huggingface.co</span>
+            <span>
+              {loading
+                ? 'Reading the local library…'
+                : models.length === libraryTotal
+                  ? `${models.length} models`
+                  : `${models.length} of ${libraryTotal} models shown`}
+            </span>
+            <span>{formatBytes(libraryBytes)} stored locally</span>
           </div>
 
           {error && (
             <div className="page-error">
               <AlertCircle size={18} />
               <div>
-                <strong>Could not reach Hugging Face</strong>
+                <strong>Could not read the local library</strong>
                 <p>{error}</p>
               </div>
               <button onClick={fetchModels}>Retry</button>
@@ -324,11 +360,13 @@ function ModelsPage({
           ) : (
             <div className="model-card-grid">
               {models.map((model) => (
-                <HubModelRow
+                <LibraryModelRow
                   key={model.id}
                   model={model}
                   onOpen={setSelected}
-                  onDownload={setSelected}
+                  onUse={(item) =>
+                    updateModelParams(item.id, item.apps.includes('vllm') ? 'vllm' : 'clone')
+                  }
                   onSave={toggleSaved}
                   saving={saving === model.id}
                 />
@@ -336,22 +374,44 @@ function ModelsPage({
               {!error && models.length === 0 && (
                 <div className="empty-state">
                   <Box size={30} />
-                  <h2>No matching models</h2>
-                  <p>Clear a filter or try a broader repository name.</p>
+                  {libraryTotal === 0 ? (
+                    <>
+                      <h2>Your library is empty</h2>
+                      <p>
+                        Copy model folders into the models storage as owner/model-name, then
+                        rescan. You can also add models from the Uploads page.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <h2>No matching models</h2>
+                      <p>Clear a filter or try a broader repository name.</p>
+                    </>
+                  )}
                 </div>
               )}
             </div>
           )}
         </section>
       </div>
-      <ModelDrawer
+      <LibraryModelDrawer
         repoId={selected}
         onClose={() => setSelected(null)}
-        onQueued={(repoId) => {
-          onToast(`${repoId} was added to the download queue.`)
-          refreshDownloads()
-        }}
+        onUse={(mode) => selected && updateModelParams(selected, mode)}
+        onChanged={fetchModels}
+        onToast={onToast}
+        canManageRuntimes={user.role === 'admin'}
       />
+      {useTarget && useMode && (
+        <UseModelDialog
+          repoId={useTarget.id}
+          pipelineTag={useTarget.pipeline_tag}
+          vllmSupported={useTarget.apps.includes('vllm')}
+          mode={useMode}
+          onModeChange={(mode) => updateModelParams(useTarget.id, mode)}
+          onClose={() => updateModelParams(useTarget.id, null)}
+        />
+      )}
     </>
   )
 }
@@ -1023,7 +1083,7 @@ function Application({
         <Route path="/" element={<Navigate to="/models" replace />} />
         <Route
           path="/models"
-          element={<ModelsPage onToast={showToast} refreshDownloads={refreshDownloads} />}
+          element={<ModelsPage onToast={showToast} user={user} />}
         />
         <Route path="/local" element={<LocalPage onToast={showToast} user={user} />} />
         <Route path="/saved" element={<SavedPage onToast={showToast} />} />

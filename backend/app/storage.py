@@ -10,7 +10,7 @@ from typing import Any, Iterable
 from urllib.parse import urlsplit, urlunsplit
 
 from .config import Settings, repository_path, validate_repo_id
-from .indexer import UNSAFE_EXTENSIONS
+from .indexer import UNSAFE_EXTENSIONS, model_formats, repository_facts
 
 
 MANIFEST_NAME = ".hugginghack.json"
@@ -86,6 +86,32 @@ class FilesystemModelStorage:
 
     def restore_repository(self, repo_id: str) -> Path:
         raise ValueError("This model is not stored in S3.")
+
+    def read_repository_file(
+        self,
+        repo_id: str,
+        relative_path: str,
+        start: int = 0,
+        end: int | None = None,
+        max_bytes: int = 1_000_000,
+    ) -> tuple[bytes, int] | None:
+        return None
+
+    def list_repository_entries(self, repo_id: str) -> list[dict[str, Any]] | None:
+        return None
+
+    def stat_repository_file(self, repo_id: str, relative_path: str) -> dict[str, Any] | None:
+        return None
+
+    def iter_repository_file(
+        self,
+        repo_id: str,
+        relative_path: str,
+        start: int,
+        end: int,
+        chunk_size: int = 8 * 1024 * 1024,
+    ) -> Iterable[bytes]:
+        raise FileNotFoundError("This model is not stored in S3.")
 
     def evict_repository_cache(self, repo_id: str) -> None:
         raise ValueError("Filesystem models do not have a separate durable copy.")
@@ -279,6 +305,7 @@ class S3ModelStorage(FilesystemModelStorage):
         }
         if not manifest.get("pipeline_tag") and config.get("model_type"):
             manifest["pipeline_tag"] = config["model_type"]
+        manifest.update(repository_facts(root))
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
         with self._lock:
@@ -330,15 +357,20 @@ class S3ModelStorage(FilesystemModelStorage):
     def discover_repositories(self) -> list[dict[str, Any]]:
         root_prefix = f"{self._prefix()}/" if self._prefix() else ""
         records: list[dict[str, Any]] = []
+        manifests: list[tuple[str, dict[str, Any]]] = []
+        repository_keys: dict[str, list[str]] = {}
         for item in self._objects(root_prefix):
             key = item.get("Key") or ""
-            if not key.endswith(f"/{MANIFEST_NAME}"):
-                continue
             relative_key = key[len(root_prefix) :] if root_prefix else key
             parts = PurePosixPath(relative_key).parts
-            if len(parts) != 3 or parts[-1] != MANIFEST_NAME:
+            if len(parts) < 3:
                 continue
             repo_id = f"{parts[0]}/{parts[1]}"
+            if len(parts) == 3 and parts[-1] == MANIFEST_NAME:
+                manifests.append((repo_id, item))
+            else:
+                repository_keys.setdefault(repo_id, []).append(parts[-1])
+        for repo_id, item in manifests:
             try:
                 validate_repo_id(repo_id)
             except ValueError:
@@ -387,6 +419,8 @@ class S3ModelStorage(FilesystemModelStorage):
                     "storage_backend": "s3",
                     "cached": cached,
                     "remote_uri": self.remote_uri(repo_id),
+                    "parameter_count": manifest.get("parameter_count"),
+                    "formats": model_formats(repository_keys.get(repo_id, [])),
                 }
             )
         return records
@@ -462,6 +496,110 @@ class S3ModelStorage(FilesystemModelStorage):
                 )
                 partial.replace(target)
         return root
+
+    def read_repository_file(
+        self,
+        repo_id: str,
+        relative_path: str,
+        start: int = 0,
+        end: int | None = None,
+        max_bytes: int = 1_000_000,
+    ) -> tuple[bytes, int] | None:
+        """Read a bounded byte range of one repository object.
+
+        Returns the bytes and the object's total size, or None when it is missing.
+        """
+        relative = _safe_relative_key(relative_path)
+        if relative.name == MANIFEST_NAME:
+            return None
+        key = f"{self._repo_prefix(repo_id)}{relative.as_posix()}"
+        try:
+            head = self.client.head_object(Bucket=self.bucket, Key=key)
+        except Exception:
+            return None
+        total = int(head.get("ContentLength") or 0)
+        if start >= total:
+            return b"", total
+        last = min(total - 1, end if end is not None else total - 1)
+        if last - start + 1 > max_bytes:
+            raise ValueError("The requested file is too large to read.")
+        response = self.client.get_object(
+            Bucket=self.bucket,
+            Key=key,
+            Range=f"bytes={start}-{last}",
+        )
+        body = response["Body"]
+        try:
+            payload = body.read(max_bytes + 1)
+        finally:
+            close = getattr(body, "close", None)
+            if close:
+                close()
+        if len(payload) > max_bytes:
+            raise ValueError("The requested file is too large to read.")
+        return payload, total
+
+    def list_repository_entries(self, repo_id: str) -> list[dict[str, Any]] | None:
+        """List every object of a repository, without the browsing limit."""
+        prefix = self._repo_prefix(repo_id)
+        entries: list[dict[str, Any]] = []
+        for item in self._objects(prefix):
+            relative = (item.get("Key") or "")[len(prefix) :]
+            if not relative:
+                continue
+            _safe_relative_key(relative)
+            entries.append(
+                {
+                    "path": relative,
+                    "size": int(item.get("Size") or 0),
+                    "version": _iso(item.get("LastModified")),
+                }
+            )
+        return entries or None
+
+    def _object_key(self, repo_id: str, relative_path: str) -> str:
+        relative = _safe_relative_key(relative_path)
+        return f"{self._repo_prefix(repo_id)}{relative.as_posix()}"
+
+    def stat_repository_file(self, repo_id: str, relative_path: str) -> dict[str, Any] | None:
+        try:
+            head = self.client.head_object(
+                Bucket=self.bucket, Key=self._object_key(repo_id, relative_path)
+            )
+        except Exception:
+            return None
+        return {
+            "size": int(head.get("ContentLength") or 0),
+            "version": _iso(head.get("LastModified")),
+        }
+
+    def iter_repository_file(
+        self,
+        repo_id: str,
+        relative_path: str,
+        start: int,
+        end: int,
+        chunk_size: int = 8 * 1024 * 1024,
+    ) -> Iterable[bytes]:
+        """Stream an inclusive byte range of one object in bounded ranged requests."""
+        key = self._object_key(repo_id, relative_path)
+        position = start
+        while position <= end:
+            last = min(end, position + chunk_size - 1)
+            response = self.client.get_object(
+                Bucket=self.bucket, Key=key, Range=f"bytes={position}-{last}"
+            )
+            body = response["Body"]
+            try:
+                payload = body.read()
+            finally:
+                close = getattr(body, "close", None)
+                if close:
+                    close()
+            if not payload:
+                return
+            yield payload
+            position += len(payload)
 
     def evict_repository_cache(self, repo_id: str) -> None:
         with self._lock:

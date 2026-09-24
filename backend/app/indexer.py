@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import struct
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -23,6 +25,26 @@ WEIGHT_EXTENSIONS = {
 }
 UNSAFE_EXTENSIONS = {".bin", ".pt", ".pth", ".pkl", ".pickle", ".ckpt"}
 CONFIG_FILES = {"config.json", "model_index.json", "tokenizer.json", "params.json"}
+FORMAT_EXTENSIONS = {
+    ".safetensors": "safetensors",
+    ".gguf": "gguf",
+    ".bin": "pytorch",
+    ".pt": "pytorch",
+    ".pth": "pytorch",
+    ".ckpt": "pytorch",
+    ".onnx": "onnx",
+    ".h5": "tensorflow",
+    ".msgpack": "flax",
+}
+GGUF_SHARD_PATTERN = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
+SAFETENSORS_MAX_HEADER_BYTES = 100_000_000
+GGUF_MAX_STRING_BYTES = 16_000_000
+GGUF_MAX_ITEMS = 50_000_000
+# GGUF scalar value types mapped to their struct format.
+GGUF_SCALARS = {
+    0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i",
+    6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d",
+}
 
 
 def utc_now() -> str:
@@ -47,6 +69,212 @@ def directory_stats(path: Path, include_cache: bool = False) -> tuple[int, int, 
             count += 1
             latest = max(latest, stat.st_mtime)
     return size, count, latest
+
+
+def model_formats(relative_paths: Iterable[str]) -> list[str]:
+    formats = {
+        FORMAT_EXTENSIONS[suffix]
+        for suffix in (Path(value).suffix.lower() for value in relative_paths)
+        if suffix in FORMAT_EXTENSIONS
+    }
+    return sorted(formats)
+
+
+def safetensors_parameter_count(path: Path) -> int | None:
+    """Sum tensor element counts from a SafeTensors header without reading weights."""
+    try:
+        with path.open("rb") as handle:
+            raw_length = handle.read(8)
+            if len(raw_length) != 8:
+                return None
+            (length,) = struct.unpack("<Q", raw_length)
+            if length <= 0 or length > SAFETENSORS_MAX_HEADER_BYTES:
+                return None
+            header = json.loads(handle.read(length))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(header, dict):
+        return None
+    total = 0
+    for name, tensor in header.items():
+        if name == "__metadata__" or not isinstance(tensor, dict):
+            continue
+        shape = tensor.get("shape")
+        if not isinstance(shape, list):
+            continue
+        count = 1
+        for dimension in shape:
+            if not isinstance(dimension, int) or dimension < 0:
+                return None
+            count *= dimension
+        total += count
+    return total or None
+
+
+class _GgufReader:
+    def __init__(self, handle: Any):
+        self.handle = handle
+
+    def read(self, size: int) -> bytes:
+        data = self.handle.read(size)
+        if len(data) != size:
+            raise ValueError("Unexpected end of GGUF header.")
+        return data
+
+    def unpack(self, fmt: str) -> Any:
+        return struct.unpack(fmt, self.read(struct.calcsize(fmt)))[0]
+
+    def skip_string(self) -> None:
+        length = self.unpack("<Q")
+        if length > GGUF_MAX_STRING_BYTES:
+            raise ValueError("GGUF string is too large.")
+        self.handle.seek(length, os.SEEK_CUR)
+
+    def string(self) -> str:
+        length = self.unpack("<Q")
+        if length > GGUF_MAX_STRING_BYTES:
+            raise ValueError("GGUF string is too large.")
+        return self.read(length).decode("utf-8", errors="replace")
+
+    def skip_value(self, value_type: int) -> None:
+        if value_type in GGUF_SCALARS:
+            self.handle.seek(struct.calcsize(GGUF_SCALARS[value_type]), os.SEEK_CUR)
+        elif value_type == 8:
+            self.skip_string()
+        elif value_type == 9:
+            item_type = self.unpack("<I")
+            count = self.unpack("<Q")
+            if count > GGUF_MAX_ITEMS:
+                raise ValueError("GGUF array is too large.")
+            if item_type in GGUF_SCALARS:
+                size = struct.calcsize(GGUF_SCALARS[item_type]) * count
+                self.handle.seek(size, os.SEEK_CUR)
+            else:
+                for _ in range(count):
+                    self.skip_value(item_type)
+        else:
+            raise ValueError(f"Unknown GGUF value type {value_type}.")
+
+
+def gguf_parameter_count(path: Path) -> int | None:
+    """Sum tensor element counts from a GGUF header without reading weights."""
+    try:
+        with path.open("rb") as handle:
+            reader = _GgufReader(handle)
+            if reader.read(4) != b"GGUF":
+                return None
+            version = reader.unpack("<I")
+            count_format = "<I" if version == 1 else "<Q"
+            tensor_count = reader.unpack(count_format)
+            kv_count = reader.unpack(count_format)
+            if tensor_count > GGUF_MAX_ITEMS or kv_count > GGUF_MAX_ITEMS:
+                return None
+            for _ in range(kv_count):
+                reader.skip_string()
+                reader.skip_value(reader.unpack("<I"))
+            total = 0
+            for _ in range(tensor_count):
+                reader.skip_string()
+                dimensions = reader.unpack("<I")
+                if dimensions > 8:
+                    return None
+                count = 1
+                for _ in range(dimensions):
+                    count *= reader.unpack("<Q")
+                reader.unpack("<I")
+                reader.unpack("<Q")
+                total += count
+            return total or None
+    except (OSError, ValueError, struct.error):
+        return None
+
+
+def _gguf_candidates(ggufs: list[Path]) -> list[Path]:
+    """Pick one quantization (all of its shards) to represent the model's size."""
+    weights = [path for path in ggufs if "mmproj" not in path.name.lower()] or ggufs
+    first = sorted(weights, key=lambda path: path.as_posix())[0]
+    shard = GGUF_SHARD_PATTERN.match(first.name)
+    if not shard:
+        return [first]
+    prefix = shard.group(1)
+    return [
+        path
+        for path in weights
+        if path.parent == first.parent
+        and (match := GGUF_SHARD_PATTERN.match(path.name))
+        and match.group(1) == prefix
+    ]
+
+
+def repository_parameter_count(root: Path, files: Iterable[Path]) -> int | None:
+    safetensors: list[Path] = []
+    ggufs: list[Path] = []
+    for path in files:
+        suffix = path.suffix.lower()
+        if suffix == ".safetensors":
+            safetensors.append(path)
+        elif suffix == ".gguf":
+            ggufs.append(path)
+    if safetensors:
+        # Prefer root-level Transformers shards; Mistral-style repos also ship
+        # consolidated.safetensors with the same weights, which would double count.
+        selected = [path for path in safetensors if path.parent == root] or safetensors
+        standard = [path for path in selected if not path.name.startswith("consolidated")]
+        selected = standard or selected
+        counts = [safetensors_parameter_count(path) for path in selected]
+        if counts and all(count is not None for count in counts):
+            return sum(counts)
+    if ggufs:
+        counts = [gguf_parameter_count(path) for path in _gguf_candidates(ggufs)]
+        if counts and all(count is not None for count in counts):
+            return sum(counts)
+    return None
+
+
+def _repository_files(root: Path) -> list[Path]:
+    files: list[Path] = []
+    for current, directories, names in os.walk(root):
+        directories[:] = [
+            name
+            for name in directories
+            if name not in {".cache", "__pycache__"} and not name.startswith(".")
+        ]
+        for name in names:
+            path = Path(current) / name
+            if not path.is_symlink():
+                files.append(path)
+    return files
+
+
+def repository_facts(root: Path) -> dict[str, Any]:
+    files = _repository_files(root)
+    return {
+        "parameter_count": repository_parameter_count(root, files),
+        "formats": model_formats(path.name for path in files),
+    }
+
+
+def readme_metadata(path: Path) -> dict[str, Any]:
+    """Read model card YAML frontmatter (pipeline_tag, license, tags) from a local README."""
+    try:
+        if not path.is_file() or path.is_symlink() or path.stat().st_size > 1_000_000:
+            return {}
+        from huggingface_hub import metadata_load
+
+        metadata = metadata_load(path) or {}
+    except Exception:
+        return {}
+    result: dict[str, Any] = {}
+    for key in ("pipeline_tag", "library_name", "license"):
+        value = metadata.get(key)
+        if isinstance(value, list):
+            value = next((item for item in value if isinstance(item, str)), None)
+        if isinstance(value, str) and value.strip():
+            result[key] = value.strip()[:100]
+    tags = metadata.get("tags")
+    if isinstance(tags, list):
+        result["tags"] = [tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()][:50]
+    return result
 
 
 def parse_json(path: Path) -> dict[str, Any]:
@@ -110,7 +338,9 @@ class LocalModelIndexer:
                     "User-uploaded repositories require matching ownership metadata."
                 )
         size, file_count, latest = directory_stats(resolved)
-        tags = manifest.get("tags") or []
+        facts = repository_facts(resolved)
+        card = readme_metadata(resolved / "README.md")
+        tags = manifest.get("tags") or card.get("tags") or []
         record = {
             "repo_id": repo_id,
             "relative_path": relative,
@@ -120,9 +350,13 @@ class LocalModelIndexer:
             "downloaded_at": manifest.get("downloaded_at"),
             "revision": manifest.get("revision"),
             "sha": manifest.get("sha"),
-            "pipeline_tag": manifest.get("pipeline_tag") or config.get("model_type"),
-            "library_name": manifest.get("library_name"),
-            "license": manifest.get("license"),
+            "pipeline_tag": (
+                manifest.get("pipeline_tag")
+                or card.get("pipeline_tag")
+                or config.get("model_type")
+            ),
+            "library_name": manifest.get("library_name") or card.get("library_name"),
+            "license": manifest.get("license") or card.get("license"),
             "tags_json": json.dumps(tags),
             "config_json": json.dumps(
                 {
@@ -137,6 +371,8 @@ class LocalModelIndexer:
             "storage_backend": manifest.get("storage_backend") or "filesystem",
             "cached": 1,
             "remote_uri": manifest.get("remote_uri"),
+            "parameter_count": facts["parameter_count"],
+            "formats_json": json.dumps(facts["formats"]),
         }
         self.database.upsert_local_model(record)
         return self.database.get_local_model(repo_id)
@@ -161,6 +397,8 @@ class LocalModelIndexer:
             "storage_backend": "s3",
             "cached": int(bool(model.get("cached"))),
             "remote_uri": model.get("remote_uri"),
+            "parameter_count": model.get("parameter_count"),
+            "formats_json": json.dumps(model.get("formats") or []),
         }
         self.database.upsert_local_model(record)
         return self.database.get_local_model(model["repo_id"])

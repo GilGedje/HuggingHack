@@ -1550,3 +1550,84 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
   .password-change-form { grid-template-columns: 1fr; }
   .repository-actions button { width: 100%; justify-content: center; }
 }
+
+.download-box .inline-error { margin: 13px 0 0; }
+.download-box .local-storage-actions { margin: 13px 0 0; }
+.download-box .runtime-dispatch {
+  margin: 13px 0 0; padding: 13px 0 0;
+  border: 0; border-top: 1px solid var(--border); background: none;
+}
+.drawer-summary > .text-link {
+  white-space: normal; overflow-wrap: anywhere;
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+}
+.drawer-summary > .text-link:hover { color: var(--text-secondary); text-decoration: none; }
+button.quiet-link { padding: 0; border: 0; background: none; cursor: pointer; }
+button.quiet-link:disabled { cursor: progress; opacity: 0.7; }
+
+.use-model-actions { margin-bottom: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+.use-model-backdrop {
+  position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: 16px;
+  background: rgb(17 24 39 / 0.44);
+}
+.use-model-dialog {
+  width: min(720px, 100%); max-height: min(860px, calc(100vh - 32px)); overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--canvas); box-shadow: var(--shadow);
+  animation: toast-in 180ms ease-out;
+}
+.use-model-header {
+  padding: 20px 24px 14px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+}
+.use-model-header h2 {
+  margin-top: 3px; overflow-wrap: anywhere;
+  font-family: 'Bricolage Grotesque Variable', sans-serif; font-size: 20px; letter-spacing: -0.03em;
+}
+.use-model-body { padding: 18px 24px 24px; }
+.use-model-body > .security-note { margin: 12px 0 0; }
+.pull-endpoint {
+  padding: 11px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  border: 1px solid color-mix(in oklch, var(--brand-warm) 34%, var(--border));
+  background: color-mix(in oklch, var(--brand-primary) 7%, var(--canvas));
+}
+.pull-endpoint > div { min-width: 0; display: grid; gap: 3px; }
+.pull-endpoint span {
+  color: var(--text-muted); font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
+}
+.pull-endpoint code { overflow-wrap: anywhere; font-size: 12px; }
+.snippet-variants { margin-top: 18px; display: inline-flex; border: 1px solid var(--border); border-radius: 7px; }
+.snippet-variants button {
+  padding: 6px 12px; border: 0; background: transparent; color: var(--text-muted);
+  cursor: pointer; font-size: 12px;
+}
+.snippet-variants button + button { border-left: 1px solid var(--border); }
+.snippet-variants button.selected { background: var(--canvas-subtle); color: var(--text); font-weight: 600; }
+.snippet-heading {
+  margin-top: 20px; display: flex; align-items: center; gap: 7px; font-size: 13px;
+}
+.snippet-list {
+  margin: 12px 0 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr);
+  gap: 12px; list-style: none;
+}
+.snippet-list li { min-width: 0; }
+.snippet-list p { margin-bottom: 5px; color: var(--text-muted); font-family: 'IBM Plex Mono', monospace; font-size: 11px; }
+.snippet-code {
+  position: relative; border: 1px solid var(--border); border-radius: 7px; background: var(--canvas-subtle);
+}
+.snippet-code pre {
+  margin: 0; padding: 11px 44px 11px 13px; overflow-x: auto; tab-size: 2;
+  font-family: 'IBM Plex Mono', monospace; font-size: 12px; line-height: 1.6;
+}
+.snippet-copy {
+  position: absolute; top: 6px; right: 6px; width: 30px; height: 30px;
+  display: grid; place-items: center; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--canvas); color: var(--text-muted); cursor: pointer;
+}
+.snippet-copy:hover { color: var(--text); border-color: var(--border-strong); }
+.pull-endpoint .snippet-copy { position: static; flex: none; }
+.use-model-note { margin-top: 16px; color: var(--text-muted); font-size: 12px; }
+@media (max-width: 480px) {
+  .use-model-header, .use-model-body { padding-inline: 17px; }
+  .use-model-dialog .drawer-tabs { padding-inline: 17px; }
+}

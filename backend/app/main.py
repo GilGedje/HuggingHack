@@ -11,13 +11,17 @@ from typing import Annotated, Any, Literal
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 from .auth import AuthService, utc_iso
+from .catalog import LocalCatalog, search_catalog
 from .config import settings, validate_repo_id
 from .database import INTEGRITY_ERRORS, Database
 from .downloads import DownloadManager
+from .git_mirror import GitMirrors
+from .hub_api import HubError, HubRepositories, RepoEntry, RepoSnapshot, parse_range
 from .hub_service import HubService
 from .indexer import LocalModelIndexer
 from .runtimes import RuntimeManager
@@ -33,6 +37,9 @@ downloads = DownloadManager(settings, database, hub, indexer, model_storage)
 auth = AuthService(settings, database)
 uploads = UploadManager(settings, database, indexer, model_storage)
 runtimes = RuntimeManager(settings, database)
+catalog = LocalCatalog(settings, model_storage)
+hub_repositories = HubRepositories(settings, database, model_storage)
+git_mirrors = GitMirrors(hub_repositories)
 
 
 def refresh_model_index() -> dict[str, Any]:
@@ -107,6 +114,10 @@ async def security_headers(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "same-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if response.headers.get("content-type", "").startswith("text/html"):
+        # Asset names are content hashed; the page itself must be revalidated so a
+        # redeploy never leaves browsers on an old build.
+        response.headers["Cache-Control"] = "no-cache"
     return response
 
 
@@ -278,6 +289,8 @@ def health() -> dict:
         "max_upload_size_bytes": settings.max_upload_size_gb * 1024**3,
         "runtime_target_count": len(runtimes.targets),
         "runtime_api_token_configured": bool(settings.runtime_api_token),
+        "hub_api_enabled": settings.hub_api_enabled,
+        "public_url": settings.public_url,
     }
 
 
@@ -463,6 +476,102 @@ async def hub_model(repo_id: str, user: CurrentUser, revision: str = "main") -> 
         raise HTTPException(status_code=502, detail=f"Unable to load model: {error}") from error
 
 
+@app.get("/api/library/models")
+def search_library_models(
+    user: CurrentUser,
+    search: Annotated[str, Query(max_length=200)] = "",
+    sort: Literal["updated", "name", "size", "parameters"] = "updated",
+    task: Annotated[str, Query(max_length=100)] = "",
+    library: Annotated[str, Query(max_length=100)] = "",
+    app_filter: Annotated[str, Query(alias="app", max_length=100)] = "",
+    parameters: Annotated[str, Query(max_length=100)] = "",
+) -> dict:
+    try:
+        return search_catalog(
+            database.list_visible_local_models(user["id"]),
+            database.saved_repo_ids(user["id"]),
+            search,
+            sort,
+            task,
+            library,
+            app_filter,
+            parameters,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+def library_listing(model: dict[str, Any]) -> dict[str, Any]:
+    root = settings.model_storage / model["relative_path"]
+    if model["storage_backend"] == "s3" and (not model["cached"] or not root.is_dir()):
+        database.set_local_model_cached(model["repo_id"], False)
+        model["cached"] = False
+        listing = model_storage.list_repository_files(model["repo_id"])
+    else:
+        listing = indexer.files_for_model(model["repo_id"])
+    if not listing:
+        raise HTTPException(status_code=404, detail="Model files were not found.")
+    return listing
+
+
+@app.get("/api/library/gguf-range")
+async def library_gguf_range(
+    request: Request,
+    user: CurrentUser,
+    repo_id: Annotated[str, Query(max_length=200)],
+    filename: Annotated[str, Query(max_length=500)],
+) -> Response:
+    model = visible_model(repo_id, user["id"])
+    try:
+        result = await run_in_threadpool(
+            catalog.gguf_range, model, filename, request.headers.get("Range")
+        )
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=416, detail=str(error)) from error
+    return Response(
+        content=result["content"],
+        status_code=result["status_code"],
+        media_type="application/octet-stream",
+        headers=result["headers"],
+    )
+
+
+@app.get("/api/library/asset")
+async def library_asset(
+    user: CurrentUser,
+    repo_id: Annotated[str, Query(max_length=200)],
+    path: Annotated[str, Query(max_length=500)],
+) -> Response:
+    model = visible_model(repo_id, user["id"])
+    try:
+        content, content_type = await run_in_threadpool(catalog.asset, model, path)
+    except PermissionError as error:
+        raise HTTPException(status_code=415, detail=str(error)) from error
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+        },
+    )
+
+
+@app.get("/api/library/models/{repo_id:path}")
+async def library_model(repo_id: str, user: CurrentUser) -> dict:
+    model = visible_model(repo_id, user["id"])
+    listing = await run_in_threadpool(library_listing, model)
+    return await run_in_threadpool(
+        catalog.details, model, listing, database.saved_repo_ids(user["id"])
+    )
+
+
 def can_access_download(download: dict[str, Any], user: dict[str, Any]) -> bool:
     return (
         download.get("user_id") == user["id"]
@@ -595,17 +704,8 @@ async def evict_local_model_cache(repo_id: str, user: WriteUser) -> dict:
 @app.get("/api/local-models/{repo_id:path}")
 def local_model(repo_id: str, user: CurrentUser) -> dict:
     model = visible_model(repo_id, user["id"])
-    root = settings.model_storage / model["relative_path"]
-    if model["storage_backend"] == "s3" and (not model["cached"] or not root.is_dir()):
-        database.set_local_model_cached(model["repo_id"], False)
-        remote = model_storage.list_repository_files(model["repo_id"])
-        if not remote:
-            raise HTTPException(status_code=404, detail="S3 model files were not found.")
-        remote["model"] = database.get_local_model(model["repo_id"])
-        return remote
-    result = indexer.files_for_model(model["repo_id"])
-    if not result:
-        raise HTTPException(status_code=404, detail="Local model not found")
+    result = library_listing(model)
+    result["model"] = database.get_local_model(model["repo_id"])
     return result
 
 
@@ -917,6 +1017,172 @@ async def delete_upload_repository(
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return {"status": "deleted"}
+
+
+# Hugging Face Hub protocol for vLLM, Transformers, and the hf CLI (HF_ENDPOINT),
+# plus read-only git and Git LFS for `git clone`. Anonymous by design: only models
+# visible to every account are served, and private uploads never are.
+
+
+@app.exception_handler(HubError)
+async def hub_error_handler(_: Request, error: HubError) -> JSONResponse:
+    headers = {"X-Error-Code": error.code, "X-Error-Message": error.message}
+    if error.commit:
+        headers["X-Repo-Commit"] = error.commit
+    return JSONResponse({"error": error.message}, status_code=error.status_code, headers=headers)
+
+
+def repository_file_response(
+    request: Request,
+    snapshot: RepoSnapshot,
+    entry: RepoEntry,
+    headers: dict[str, str],
+) -> Response:
+    headers = {**headers, "Accept-Ranges": "bytes"}
+    local = hub_repositories.local_file(snapshot, entry)
+    if local is not None:
+        return FileResponse(local, headers=headers, media_type="application/octet-stream")
+    if request.method == "HEAD":
+        return Response(
+            headers={**headers, "Content-Length": str(entry.size)},
+            media_type="application/octet-stream",
+        )
+    byte_range = parse_range(request.headers.get("range"), entry.size)
+    start, end = byte_range or (0, entry.size - 1)
+    status_code = 200
+    if byte_range:
+        status_code = 206
+        headers["Content-Range"] = f"bytes {start}-{end}/{entry.size}"
+    headers["Content-Length"] = str(max(0, end - start + 1))
+    return StreamingResponse(
+        hub_repositories.iter_bytes(snapshot, entry, start, end),
+        status_code=status_code,
+        headers=headers,
+        media_type="application/octet-stream",
+    )
+
+
+@app.get("/api/models/{owner}/{name}")
+def hub_api_model_info(owner: str, name: str, blobs: bool = False) -> dict:
+    return hub_repositories.model_info(f"{owner}/{name}", "main", blobs)
+
+
+@app.get("/api/models/{owner}/{name}/revision/{revision:path}")
+def hub_api_model_revision(owner: str, name: str, revision: str, blobs: bool = False) -> dict:
+    return hub_repositories.model_info(f"{owner}/{name}", revision, blobs)
+
+
+@app.get("/api/models/{owner}/{name}/tree/{revision}")
+def hub_api_tree(owner: str, name: str, revision: str, recursive: bool = False) -> list:
+    return hub_repositories.tree(f"{owner}/{name}", revision, "", recursive)
+
+
+@app.get("/api/models/{owner}/{name}/tree/{revision}/{path:path}")
+def hub_api_tree_path(
+    owner: str, name: str, revision: str, path: str, recursive: bool = False
+) -> list:
+    return hub_repositories.tree(f"{owner}/{name}", revision, path, recursive)
+
+
+@app.api_route("/{owner}/{name}/resolve/{revision}/{path:path}", methods=["GET", "HEAD"])
+def hub_resolve(owner: str, name: str, revision: str, path: str, request: Request) -> Response:
+    snapshot, entry = hub_repositories.resolve(f"{owner}/{name}", revision, path)
+    return repository_file_response(
+        request,
+        snapshot,
+        entry,
+        {"X-Repo-Commit": snapshot.sha, "ETag": f'"{entry.oid}"'},
+    )
+
+
+def git_repo_id(owner: str, name: str) -> str:
+    return f"{owner}/{name.removesuffix('.git')}"
+
+
+def git_file(owner: str, name: str, relative: str) -> Response:
+    content = git_mirrors.read_file(git_repo_id(owner, name), relative)
+    if content is None:
+        raise HubError("EntryNotFound", "Git object not found.")
+    return Response(
+        content,
+        media_type="application/octet-stream" if relative.startswith("objects/") else "text/plain",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/{owner}/{name}/info/refs")
+def git_info_refs(owner: str, name: str) -> Response:
+    # Answering with text/plain, even for ?service=git-upload-pack, makes git use the
+    # dumb HTTP protocol, which only needs these static files.
+    git_mirrors.ensure(git_repo_id(owner, name))
+    return git_file(owner, name, "info/refs")
+
+
+@app.get("/{owner}/{name}/HEAD")
+def git_head(owner: str, name: str) -> Response:
+    return git_file(owner, name, "HEAD")
+
+
+@app.get("/{owner}/{name}/objects/{path:path}")
+def git_object(owner: str, name: str, path: str) -> Response:
+    return git_file(owner, name, f"objects/{path}")
+
+
+LFS_MEDIA_TYPE = "application/vnd.git-lfs+json"
+
+
+@app.post("/{owner}/{name}/info/lfs/objects/batch")
+async def git_lfs_batch(owner: str, name: str, request: Request) -> Response:
+    repo_id = git_repo_id(owner, name)
+    try:
+        payload = await request.json()
+    except ValueError:
+        payload = {}
+    if not isinstance(payload, dict) or payload.get("operation") != "download":
+        return JSONResponse(
+            {"message": "HuggingHack repositories are read-only."},
+            status_code=403,
+            media_type=LFS_MEDIA_TYPE,
+        )
+    mirror = await run_in_threadpool(git_mirrors.ensure, repo_id)
+    base = settings.public_url or str(request.base_url).rstrip("/")
+    objects = []
+    for item in (payload.get("objects") or [])[:10000]:
+        if not isinstance(item, dict):
+            continue
+        oid = str(item.get("oid") or "")
+        size = item.get("size")
+        if oid in mirror.lfs:
+            objects.append(
+                {
+                    "oid": oid,
+                    "size": size,
+                    "authenticated": True,
+                    "actions": {
+                        "download": {
+                            "href": f"{base}/{repo_id}.git/info/lfs/objects/{oid}",
+                            "expires_in": 86400,
+                        }
+                    },
+                }
+            )
+        else:
+            objects.append(
+                {"oid": oid, "size": size, "error": {"code": 404, "message": "Object does not exist."}}
+            )
+    return JSONResponse(
+        {"transfer": "basic", "objects": objects, "hash_algo": "sha256"},
+        media_type=LFS_MEDIA_TYPE,
+    )
+
+
+@app.get("/{owner}/{name}/info/lfs/objects/{oid}")
+def git_lfs_download(owner: str, name: str, oid: str, request: Request) -> Response:
+    found = git_mirrors.lfs_entry(git_repo_id(owner, name), oid)
+    if found is None:
+        raise HubError("EntryNotFound", "LFS object not found.")
+    snapshot, entry = found
+    return repository_file_response(request, snapshot, entry, {"ETag": f'"{oid}"'})
 
 
 app_directory = Path(__file__).resolve().parent

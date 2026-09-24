@@ -111,6 +111,40 @@ export function resolveModelCardUrl(
   }
 }
 
+/**
+ * Resolve model card URLs for a repository served from the local library.
+ *
+ * Relative images load through the library asset endpoint. External images are
+ * dropped because an air-gapped browser cannot reach them, and relative links to
+ * other repository files have no page to open, so they are removed too.
+ */
+export function resolveLocalModelCardUrl(
+  value: string,
+  attribute: string,
+  repoId: string,
+): string | null {
+  const url = value.trim()
+  if (!url) return ''
+  if (url.startsWith('#')) return url
+
+  const explicitScheme = url.match(/^([a-z][a-z\d+.-]*):/i)?.[1]?.toLowerCase()
+  if (explicitScheme || url.startsWith('//')) {
+    if (attribute === 'src') return null
+    return explicitScheme && ['http', 'https', 'mailto'].includes(explicitScheme) ? url : null
+  }
+  if (attribute !== 'src') return null
+
+  try {
+    const resolved = new URL(url, 'http://repository.invalid/')
+    const path = decodeURIComponent(resolved.pathname.replace(/^\/+/, ''))
+    if (!path) return null
+    const params = new URLSearchParams({ repo_id: repoId, path })
+    return `/api/library/asset?${params.toString()}`
+  } catch {
+    return null
+  }
+}
+
 export function modelCardHeadingId(value: string): string {
   return value
     .normalize('NFKD')

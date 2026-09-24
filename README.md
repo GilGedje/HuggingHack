@@ -33,6 +33,10 @@
 > [!NOTE]
 > HuggingHack is an unofficial, local-first project. It is not affiliated with or endorsed by Hugging Face.
 
+> [!TIP]
+> Running without internet access? Follow the [air-gapped setup guide](docs/AIRGAPPED.md)
+> to install HuggingHack offline, load models, and pull them with vLLM, `git clone`, or the `hf` CLI.
+
 <table>
   <tr>
     <td width="33%" valign="top"><strong>🔎 Discover</strong><br>Search the live model catalog and narrow it by task, format, local app, parameter count, or popularity.</td>
@@ -55,6 +59,7 @@
 - Private or locally shared user repositories with resumable, chunked model-folder uploads
 - Optional S3-compatible durable storage with a local working cache, remote browsing, restore, and cache eviction
 - Network runtime jobs: transfer models to Ollama or switch a remote vLLM rig through an authenticated manager
+- Offline Hub protocol: point vLLM, Transformers, or the `hf` CLI at `HF_ENDPOINT`, or `git clone` with Git LFS, straight from the library
 - Ownership-verified repository deletion with exact-name confirmation
 - Optional read-only `HF_TOKEN` support for private and gated models
 - Light/dark themes and responsive desktop/mobile layouts
@@ -409,6 +414,38 @@ repositories use the backend's `HF_TOKEN`; the token is never exposed to the bro
 
 Active downloads have a **Cancel download** action. Cancellation stops the isolated download worker, keeps already transferred files and Hugging Face local-directory metadata, and marks the job as cancelled in history. Starting the same repository again can reuse those partial files instead of discarding the completed work.
 
+## Pull models with vLLM, git, or the hf CLI
+
+HuggingHack speaks the Hugging Face Hub protocol, so any machine on the network can
+pull a model from the library without internet access. Open a model and choose
+**Use model**, then **Deploy with vLLM** or **Clone repository**, for copy-paste
+commands. Links use the same form as the Hub: `#/models?model=owner/name&local-app=vllm`
+and `#/models?model=owner/name&clone=true`.
+
+```bash
+# vLLM, Transformers, and the hf CLI all honor HF_ENDPOINT
+export HF_ENDPOINT=http://NAS-IP:7860
+vllm serve owner/model-name
+hf download owner/model-name
+
+# git clone with Git LFS for the weights
+git lfs install
+git clone http://NAS-IP:7860/owner/model-name
+```
+
+- Files stream from the model folder, or directly from S3 for S3-only models, with
+  byte-range support for resumed and parallel downloads.
+- `git clone` is served from a read-only mirror in `data/git-mirrors`. Weights become
+  Git LFS pointers whose SHA-256 is computed once per file and cached, so the first
+  clone of a large model waits while it is hashed. Weights are never copied into the mirror.
+- A model that changes gets a new commit on top of the previous one, so `git pull`
+  picks up the update.
+- Pulls are anonymous and read-only. Every model visible to all accounts can be pulled by
+  anyone who can reach the server; private uploads are never served. Set
+  `HUB_API_ENABLED=false` to turn pulling off.
+- Set `PUBLIC_URL=http://NAS-IP:7860` when the address in your browser (for example
+  `localhost`) is not the one other machines use.
+
 ## Manually added models
 
 Copy a model folder anywhere within the first few directory levels of the mounted model folder, then choose **Local library → Scan folder**. HuggingHack recognizes common configs and weight extensions such as:
@@ -429,6 +466,7 @@ Manually copied models are indexed but never modified.
 - Runtime dispatch is administrator-only in the UI. Optional bearer access is limited to runtime endpoints; use long random tokens and firewall Ollama and the vLLM agent to trusted LAN clients.
 - The vLLM agent rejects paths outside its configured model root and launches a fixed argument vector without a shell.
 - Use a read-only Hugging Face token.
+- The Hub-protocol pull endpoints are anonymous and read-only by design. Keep HuggingHack on a trusted network, or set `HUB_API_ENABLED=false`.
 
 ## Development
 

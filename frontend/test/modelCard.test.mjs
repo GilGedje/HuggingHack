@@ -12,6 +12,7 @@ import {
   modelCardHeadingId,
   modelCardSanitizeSchema,
   prepareModelCardMarkdown,
+  resolveLocalModelCardUrl,
   resolveModelCardUrl,
   stripModelCardFrontmatter,
 } from '../src/modelCard.ts'
@@ -83,4 +84,24 @@ test('sanitizes embedded HTML while preserving readable Markdown and math', () =
   assert.match(html, /<strong>Readable<\/strong>/)
   assert.match(html, /class="katex"/)
   assert.doesNotMatch(html, /<(?:iframe|form)\b/)
+})
+
+test('resolves local model card images through the library asset endpoint', () => {
+  assert.equal(
+    resolveLocalModelCardUrl('assets/chart.png', 'src', 'acme/model'),
+    '/api/library/asset?repo_id=acme%2Fmodel&path=assets%2Fchart.png',
+  )
+  assert.equal(
+    resolveLocalModelCardUrl('./docs/../img/a b.png', 'src', 'acme/model'),
+    '/api/library/asset?repo_id=acme%2Fmodel&path=img%2Fa+b.png',
+  )
+  assert.equal(resolveLocalModelCardUrl('https://img.shields.io/badge', 'src', 'acme/model'), null)
+  assert.equal(resolveLocalModelCardUrl('//cdn.example/x.png', 'src', 'acme/model'), null)
+  assert.equal(resolveLocalModelCardUrl('docs/usage.md', 'href', 'acme/model'), null)
+  assert.equal(resolveLocalModelCardUrl('#usage', 'href', 'acme/model'), '#usage')
+  assert.equal(
+    resolveLocalModelCardUrl('https://example.com/paper', 'href', 'acme/model'),
+    'https://example.com/paper',
+  )
+  assert.equal(resolveLocalModelCardUrl('javascript:alert(1)', 'href', 'acme/model'), null)
 })
