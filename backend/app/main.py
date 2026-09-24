@@ -880,14 +880,42 @@ def delete_token(token_id: str, user: TokenWriter) -> dict:
     return {"status": "revoked"}
 
 
+USER_PAGE_SIZES = (10, 25, 50, 100)
+
+
 @app.get("/api/admin/users")
-def admin_list_users(_: UserManager) -> dict:
-    activity = database.user_activity()
+def admin_list_users(
+    _: UserManager,
+    q: Annotated[str, Query(max_length=200)] = "",
+    role: Literal["", "admin", "member", "viewer"] = "",
+    status: Literal["", "active", "disabled"] = "",
+    sort: Literal["role", "name", "last_login", "newest"] = "role",
+    page: Annotated[int, Query(ge=1)] = 1,
+    per_page: Annotated[int, Query(ge=1, le=max(USER_PAGE_SIZES))] = 25,
+) -> dict:
+    filters = {"query": q, "role": role or None, "status": status or None, "sort": sort}
+    users, total, counts = database.search_users(
+        **filters, limit=per_page, offset=(page - 1) * per_page
+    )
+    pages = max(1, -(-total // per_page))
+    if page > pages:
+        # A deletion or a narrower filter can leave the requested page empty;
+        # answer with the last page that has accounts instead.
+        page = pages
+        users, total, counts = database.search_users(
+            **filters, limit=per_page, offset=(page - 1) * per_page
+        )
+    activity = database.user_activity([user["id"] for user in users])
     return {
         "items": [
             {**user, **{"sessions": 0, "tokens": 0, "repositories": 0}, **activity.get(user["id"], {})}
-            for user in database.list_users()
+            for user in users
         ],
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "pages": pages,
+        "counts": counts,
         "accounts_enabled": settings.accounts_enabled,
     }
 

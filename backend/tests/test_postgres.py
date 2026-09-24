@@ -193,3 +193,44 @@ def test_postgresql_database_crud_contract():
                 "DELETE FROM users WHERE id = ?",
                 (user_id,),
             )
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
+def test_postgresql_admin_user_search():
+    database = Database(POSTGRES_URL or "")
+    database.initialize()
+    prefix = f"pg{uuid.uuid4().hex[:8]}"
+    ids = []
+    try:
+        for index in range(12):
+            ids.append(uuid.uuid4().hex)
+            database.create_user(
+                {
+                    "id": ids[-1],
+                    "username": f"{prefix}{index:02d}",
+                    "display_name": f"Paged {index:02d}",
+                    "password_hash": "test-only",
+                    "role": "member" if index % 2 else "viewer",
+                    "created_at": f"2026-07-24T12:00:{index:02d}+00:00",
+                    "updated_at": "2026-07-24T12:00:00+00:00",
+                    "email": f"{prefix}{index:02d}@example.internal",
+                }
+            )
+        database.update_user(ids[3], disabled=1, last_login_at="2026-07-25T00:00:00+00:00")
+
+        rows, total, counts = database.search_users(query=prefix.upper(), sort="name", limit=5, offset=5)
+        assert total == 12 and [row["username"] for row in rows] == [f"{prefix}{n:02d}" for n in range(5, 10)]
+        assert counts == {"all": 12, "admin": 0, "member": 6, "viewer": 6, "active": 11, "disabled": 1}
+        _, total, _ = database.search_users(query=prefix, role="member", status="active")
+        assert total == 5
+        rows, _, _ = database.search_users(query=prefix, sort="last_login", limit=1)
+        assert rows[0]["id"] == ids[3]
+        rows, _, _ = database.search_users(query=prefix, sort="newest", limit=1)
+        assert rows[0]["id"] == ids[11]
+        assert database.search_users(query=f"{prefix}%")[1] == 0
+        assert database.search_users(query=f"{prefix}0_")[1] == 0
+        assert database.user_activity([]) == {}
+        assert database.user_activity(ids[:2]) == {}
+    finally:
+        for user_id in ids:
+            database.delete_user(user_id)

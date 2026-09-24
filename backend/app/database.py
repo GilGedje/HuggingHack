@@ -658,6 +658,67 @@ class Database:
             ).fetchall()
         return [self._public_user(row) for row in rows]
 
+    USER_SORTS = {
+        "role": "CASE role WHEN 'admin' THEN 0 WHEN 'member' THEN 1 ELSE 2 END, LOWER(username)",
+        "name": "LOWER(username)",
+        "last_login": "CASE WHEN last_login_at IS NULL THEN 1 ELSE 0 END, last_login_at DESC, LOWER(username)",
+        "newest": "created_at DESC, LOWER(username)",
+    }
+
+    def search_users(
+        self,
+        *,
+        query: str = "",
+        role: str | None = None,
+        status: str | None = None,
+        sort: str = "role",
+        limit: int = 25,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int, dict[str, int]]:
+        """One page of accounts for the admin list, the total that matched, and
+        per-role and per-status counts for the search text alone."""
+        search_clauses: list[str] = []
+        search_params: list[Any] = []
+        text = query.strip().lower()
+        if text:
+            # '!' escapes LIKE wildcards; the pattern travels as a parameter so the
+            # SQL itself never contains a literal percent sign.
+            escaped = text.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+            pattern = f"%{escaped}%"
+            search_clauses.append(
+                "(LOWER(username) LIKE ? ESCAPE '!' OR LOWER(display_name) LIKE ? ESCAPE '!' "
+                "OR LOWER(COALESCE(email, '')) LIKE ? ESCAPE '!')"
+            )
+            search_params += [pattern, pattern, pattern]
+        clauses, params = list(search_clauses), list(search_params)
+        if role:
+            clauses.append("role = ?")
+            params.append(role)
+        if status in {"active", "disabled"}:
+            clauses.append("disabled = ?")
+            params.append(1 if status == "disabled" else 0)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        search_where = f"WHERE {' AND '.join(search_clauses)}" if search_clauses else ""
+        order = self.USER_SORTS.get(sort, self.USER_SORTS["role"])
+        with self.connect() as connection:
+            total = int(
+                connection.execute(f"SELECT COUNT(*) AS count FROM users {where}", params).fetchone()["count"]
+            )
+            rows = connection.execute(
+                f"SELECT * FROM users {where} ORDER BY {order} LIMIT ? OFFSET ?",
+                [*params, limit, offset],
+            ).fetchall()
+            counts = {"all": 0, "admin": 0, "member": 0, "viewer": 0, "active": 0, "disabled": 0}
+            for row in connection.execute(
+                f"SELECT role, disabled, COUNT(*) AS count FROM users {search_where} GROUP BY role, disabled",
+                search_params,
+            ).fetchall():
+                count = int(row["count"])
+                counts["all"] += count
+                counts[row["role"]] = counts.get(row["role"], 0) + count
+                counts["disabled" if row["disabled"] else "active"] += count
+        return [self._public_user(row) for row in rows], total, counts
+
     USER_FIELDS = {
         "display_name", "email", "role", "disabled", "preferences_json",
         "last_login_at", "updated_at", "password_hash",
@@ -832,20 +893,24 @@ class Database:
         with self._write_lock, self.connect() as connection:
             connection.execute("DELETE FROM api_tokens WHERE user_id = ?", (user_id,))
 
-    def user_activity(self) -> dict[str, dict[str, int]]:
-        """Counts shown next to each account on the admin page."""
+    def user_activity(self, user_ids: list[str] | None = None) -> dict[str, dict[str, int]]:
+        """Counts shown next to each account on the admin page, optionally only
+        for the accounts on the current page."""
         activity: dict[str, dict[str, int]] = {}
+        if user_ids is not None and not user_ids:
+            return activity
+        only = f" WHERE {{column}} IN ({', '.join('?' for _ in user_ids)})" if user_ids else ""
         with self.connect() as connection:
-            for key, query in (
-                ("sessions", "SELECT user_id, COUNT(*) AS count FROM sessions GROUP BY user_id"),
-                ("tokens", "SELECT user_id, COUNT(*) AS count FROM api_tokens GROUP BY user_id"),
-                (
-                    "repositories",
-                    "SELECT owner_id AS user_id, COUNT(*) AS count "
-                    "FROM owned_repositories GROUP BY owner_id",
-                ),
+            for key, table, column in (
+                ("sessions", "sessions", "user_id"),
+                ("tokens", "api_tokens", "user_id"),
+                ("repositories", "owned_repositories", "owner_id"),
             ):
-                for row in connection.execute(query).fetchall():
+                query = (
+                    f"SELECT {column} AS user_id, COUNT(*) AS count FROM {table}"
+                    f"{only.format(column=column)} GROUP BY {column}"
+                )
+                for row in connection.execute(query, list(user_ids or [])).fetchall():
                     activity.setdefault(row["user_id"], {})[key] = int(row["count"])
         return activity
 

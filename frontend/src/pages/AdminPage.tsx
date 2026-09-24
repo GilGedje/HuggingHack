@@ -1,21 +1,30 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  CircleX,
   KeyRound,
   LoaderCircle,
   LogOut,
   Minus,
   Plus,
+  Search,
   ShieldAlert,
+  SlidersHorizontal,
   Trash2,
   UserCheck,
+  UserPlus,
   UserX,
   Wifi,
+  X,
 } from 'lucide-react'
-import { Link, NavLink, Navigate, useParams } from 'react-router-dom'
+import { Link, NavLink, Navigate, useParams, useSearchParams } from 'react-router-dom'
 import { useAccess } from '../access'
 import { api } from '../api'
-import type { AdminUser, Organization, PermissionMatrix, Role, ServerSettings } from '../types'
+import type { AdminUser, AdminUserPage, AdminUserQuery, AdminUserSort, Organization, PermissionMatrix, Role, ServerSettings } from '../types'
+import { pageList } from '../pagination'
 import { relativeTime } from '../utils'
 import { RuntimesPage } from './RuntimesPage'
 import { StoragePage } from './StoragePage'
@@ -28,27 +37,212 @@ function errorMessage(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback
 }
 
+const PAGE_SIZES = [10, 25, 50, 100]
+const PAGE_SIZE_KEY = 'hugginghack.admin.users.per-page'
+const SORT_LABELS: Record<AdminUserSort, string> = {
+  role: 'Role',
+  name: 'Name',
+  last_login: 'Last sign-in',
+  newest: 'Newest',
+}
+const ROLE_FILTERS: Array<{ id: '' | Role; label: string }> = [
+  { id: '', label: 'All' },
+  { id: 'admin', label: 'Administrators' },
+  { id: 'member', label: 'Members' },
+  { id: 'viewer', label: 'Viewers' },
+]
+
+function storedPageSize(): number {
+  try {
+    const value = Number(window.localStorage.getItem(PAGE_SIZE_KEY))
+    return PAGE_SIZES.includes(value) ? value : 25
+  } catch {
+    return 25
+  }
+}
+
+function readUserQuery(params: URLSearchParams): AdminUserQuery {
+  const role = params.get('role') || ''
+  const status = params.get('status') || ''
+  const sort = params.get('sort') || ''
+  const perPage = Number(params.get('per_page'))
+  return {
+    q: params.get('q') || '',
+    role: role in ROLE_LABELS ? (role as Role) : '',
+    status: status === 'active' || status === 'disabled' ? status : '',
+    sort: sort in SORT_LABELS ? (sort as AdminUserSort) : 'role',
+    page: Math.max(1, Math.floor(Number(params.get('page'))) || 1),
+    per_page: PAGE_SIZES.includes(perPage) ? perPage : storedPageSize(),
+  }
+}
+
+const EMPTY_ACCOUNT = { username: '', display_name: '', email: '', password: '', role: 'member' as Role }
+
+function AddUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (username: string) => void }) {
+  const [form, setForm] = useState(EMPTY_ACCOUNT)
+  const [creating, setCreating] = useState(false)
+  const [error, setError] = useState('')
+  const firstField = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    firstField.current?.focus()
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', escape)
+    return () => window.removeEventListener('keydown', escape)
+  }, [onClose])
+
+  async function create(event: FormEvent) {
+    event.preventDefault()
+    setCreating(true)
+    setError('')
+    try {
+      await api.createUser({ ...form, email: form.email.trim() || undefined })
+      onCreated(form.username)
+    } catch (reason) {
+      setError(errorMessage(reason, 'Could not create the account.'))
+      setCreating(false)
+    }
+  }
+
+  return (
+    <div className="use-model-backdrop" role="presentation" onMouseDown={onClose}>
+      <form
+        className="use-model-dialog add-user-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="add-user-title"
+        onMouseDown={(event) => event.stopPropagation()}
+        onSubmit={create}
+      >
+        <header className="use-model-header">
+          <div>
+            <span className="eyebrow">New account</span>
+            <h2 id="add-user-title">Add a user</h2>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">
+            <X size={20} />
+          </button>
+        </header>
+        <div className="use-model-body">
+          <div className="admin-create-user">
+            <label>
+              <span>Username</span>
+              <input ref={firstField} value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} autoComplete="off" required />
+            </label>
+            <label>
+              <span>Display name <small>optional</small></span>
+              <input value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} />
+            </label>
+            <label>
+              <span>Email <small>optional</small></span>
+              <input type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
+            </label>
+            <label>
+              <span>Role</span>
+              <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as Role })}>
+                {Object.entries(ROLE_LABELS).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+              </select>
+            </label>
+            <label className="wide">
+              <span>Temporary password <small>at least 12 characters</small></span>
+              <input type="password" autoComplete="new-password" minLength={12} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} required />
+            </label>
+          </div>
+          {error && <div className="inline-error add-user-error">{error}</div>}
+          <div className="add-user-footer">
+            <span>They can change the password after signing in.</span>
+            <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
+            <button type="submit" className="download-button" disabled={creating}>
+              {creating ? <LoaderCircle size={16} className="spin" /> : <UserPlus size={16} />} Create account
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  )
+}
+
 function UsersTab({ onToast }: { onToast: ToastHandler }) {
   const { user: me } = useAccess()
-  const [users, setUsers] = useState<AdminUser[]>([])
+  const [params, setParams] = useSearchParams()
+  const query = useMemo(() => readUserQuery(params), [params])
+  const [search, setSearch] = useState(query.q)
+  const [result, setResult] = useState<AdminUserPage | null>(null)
+  const [loading, setLoading] = useState(true)
   const [accountsEnabled, setAccountsEnabled] = useState(true)
   const [busy, setBusy] = useState<string | null>(null)
-  const [form, setForm] = useState({ username: '', display_name: '', email: '', password: '', role: 'member' as Role })
-  const [creating, setCreating] = useState(false)
+  const [adding, setAdding] = useState(false)
+  const latest = useRef(0)
+  const users = result?.items || []
+
+  const update = useCallback(
+    (changes: Partial<AdminUserQuery>, replace = false) => {
+      const next = { ...query, page: 1, ...changes }
+      const values = new URLSearchParams()
+      if (next.q.trim()) values.set('q', next.q.trim())
+      if (next.role) values.set('role', next.role)
+      if (next.status) values.set('status', next.status)
+      if (next.sort !== 'role') values.set('sort', next.sort)
+      if (next.page > 1) values.set('page', String(next.page))
+      if (next.per_page !== 25) values.set('per_page', String(next.per_page))
+      setParams(values, { replace })
+    },
+    [query, setParams],
+  )
 
   const load = useCallback(() => {
+    const request = ++latest.current
+    setLoading(true)
     api
-      .adminUsers()
+      .adminUsers(query)
       .then((payload) => {
-        setUsers(payload.items)
+        if (request !== latest.current) return
+        setResult(payload)
         setAccountsEnabled(payload.accounts_enabled)
+        // The server moves past-the-end pages back to the last one (after a delete, say).
+        if (payload.page !== query.page) update({ page: payload.page }, true)
       })
-      .catch((reason) => onToast(errorMessage(reason, 'Could not load accounts.'), 'error'))
-  }, [onToast])
+      .catch((reason) => {
+        if (request === latest.current) onToast(errorMessage(reason, 'Could not load accounts.'), 'error')
+      })
+      .finally(() => {
+        if (request === latest.current) setLoading(false)
+      })
+  }, [query, onToast, update])
 
   useEffect(() => {
     load()
   }, [load])
+
+  // The address is the source of truth: Back, Forward, or the Users tab link
+  // replace the search box text instead of the box re-applying an old search.
+  useEffect(() => {
+    setSearch((current) => (current.trim() === query.q ? current : query.q))
+  }, [query.q])
+
+  useEffect(() => {
+    if (search.trim() === query.q) return
+    const timer = window.setTimeout(() => update({ q: search }, true), 250)
+    return () => window.clearTimeout(timer)
+  }, [search, query.q, update])
+
+  function changePageSize(value: number) {
+    try {
+      window.localStorage.setItem(PAGE_SIZE_KEY, String(value))
+    } catch {
+      // Remembering the page size is a convenience only.
+    }
+    // Keep the first account on screen in view after the page size changes.
+    const firstIndex = (query.page - 1) * query.per_page
+    update({ per_page: value, page: Math.floor(firstIndex / value) + 1 })
+  }
+
+  function clearFilters() {
+    setSearch('')
+    update({ q: '', role: '', status: '' })
+  }
 
   async function act(user: AdminUser, action: () => Promise<unknown>, message: string) {
     setBusy(user.id)
@@ -80,34 +274,88 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
     act(user, () => api.adminDeleteUser(user.id), `${user.username} was deleted.`)
   }
 
-  async function create(event: FormEvent) {
-    event.preventDefault()
-    setCreating(true)
-    try {
-      await api.createUser({ ...form, email: form.email.trim() || undefined })
-      onToast(`${form.username} can now sign in.`)
-      setForm({ username: '', display_name: '', email: '', password: '', role: 'member' })
-      load()
-    } catch (reason) {
-      onToast(errorMessage(reason, 'Could not create the account.'), 'error')
-    } finally {
-      setCreating(false)
-    }
-  }
-
   return (
     <>
       <section className="settings-section admin-users">
         <div className="section-heading-line">
           <div>
-            <span className="eyebrow">{users.length} account{users.length === 1 ? '' : 's'}</span>
+            <span className="eyebrow">
+              {result ? `${result.counts.all} account${result.counts.all === 1 ? '' : 's'}${query.q ? ' match' : ''}` : 'Accounts'}
+            </span>
             <h2>Users</h2>
           </div>
+          {accountsEnabled && (
+            <button type="button" className="download-button compact" onClick={() => setAdding(true)}>
+              <UserPlus size={15} /> Add user
+            </button>
+          )}
         </div>
-        <div className="admin-user-table" role="table" aria-label="Accounts">
+        <div className="admin-user-toolbar">
+          <div className="catalog-search compact">
+            <Search size={16} />
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search name, username, or email"
+              aria-label="Search accounts"
+            />
+            {search && (
+              <button type="button" onClick={() => setSearch('')} aria-label="Clear search">
+                <CircleX size={15} />
+              </button>
+            )}
+          </div>
+          <label className="sort-control compact">
+            <select
+              value={query.status}
+              onChange={(event) => update({ status: event.target.value as AdminUserQuery['status'] })}
+              aria-label="Filter by status"
+            >
+              <option value="">Any status</option>
+              <option value="active">Active{result ? ` (${result.counts.active})` : ''}</option>
+              <option value="disabled">Disabled{result ? ` (${result.counts.disabled})` : ''}</option>
+            </select>
+            <ChevronDown size={14} />
+          </label>
+          <label className="sort-control compact">
+            <SlidersHorizontal size={14} />
+            <select
+              value={query.sort}
+              onChange={(event) => update({ sort: event.target.value as AdminUserSort })}
+              aria-label="Sort accounts"
+            >
+              {Object.entries(SORT_LABELS).map(([id, label]) => <option key={id} value={id}>Sort: {label}</option>)}
+            </select>
+            <ChevronDown size={14} />
+          </label>
+        </div>
+        <div className="role-filter" role="group" aria-label="Filter by role">
+          {ROLE_FILTERS.map((filter) => (
+            <button
+              key={filter.id || 'all'}
+              type="button"
+              className={query.role === filter.id ? 'selected' : undefined}
+              aria-pressed={query.role === filter.id}
+              onClick={() => update({ role: filter.id })}
+            >
+              {filter.label}
+              {result && <span>{filter.id ? result.counts[filter.id] : result.counts.all}</span>}
+            </button>
+          ))}
+        </div>
+        <div className={loading && result ? 'admin-user-table refreshing' : 'admin-user-table'} role="table" aria-label="Accounts" aria-busy={loading}>
           <div className="admin-user-row header" role="row">
             <span>Account</span><span>Role</span><span>Status</span><span>Last sign-in</span><span>Access</span><span />
           </div>
+          {!result && loading && (
+            <div className="admin-user-empty"><LoaderCircle size={20} className="spin" /></div>
+          )}
+          {result && users.length === 0 && (
+            <div className="admin-user-empty">
+              <strong>No accounts match these filters.</strong>
+              <button type="button" className="secondary-button compact" onClick={clearFilters}>Clear filters</button>
+            </div>
+          )}
           {users.map((user) => {
             const self = user.id === me.id
             return (
@@ -176,32 +424,57 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
             )
           })}
         </div>
-      </section>
-      {accountsEnabled && (
-        <section className="settings-section">
-          <div className="settings-section-title">
-            <Plus size={20} />
-            <div>
-              <h2>Add a user</h2>
-              <p>They can change their password after signing in.</p>
-            </div>
-          </div>
-          <form className="admin-create-user" onSubmit={create}>
-            <label>Username<input value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} required /></label>
-            <label>Display name<input value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} /></label>
-            <label>Email <small>optional</small><input type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label>
-            <label>
-              Role
-              <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as Role })}>
-                {Object.entries(ROLE_LABELS).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
-              </select>
+        {result && result.total > 0 && (
+          <div className="admin-user-pager">
+            <span className="admin-user-muted">
+              Showing {(result.page - 1) * result.per_page + 1}–{Math.min(result.page * result.per_page, result.total)} of {result.total}
+            </span>
+            <label className="pager-size">
+              Rows per page
+              <span className="sort-control compact">
+                <select value={query.per_page} onChange={(event) => changePageSize(Number(event.target.value))} aria-label="Rows per page">
+                  {PAGE_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}
+                </select>
+                <ChevronDown size={14} />
+              </span>
             </label>
-            <label>Temporary password<input type="password" autoComplete="new-password" minLength={12} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} required /></label>
-            <button className="download-button" disabled={creating}>
-              {creating ? <LoaderCircle size={16} className="spin" /> : <Plus size={16} />} Create account
-            </button>
-          </form>
-        </section>
+            {result.pages > 1 && (
+              <nav className="pager" aria-label="Account pages">
+                <button type="button" disabled={result.page <= 1} onClick={() => update({ page: result.page - 1 })} aria-label="Previous page">
+                  <ChevronLeft size={15} />
+                </button>
+                {pageList(result.page, result.pages).map((page, index) =>
+                  page === null ? (
+                    <span key={`gap-${index}`} className="pager-gap">…</span>
+                  ) : (
+                    <button
+                      key={page}
+                      type="button"
+                      className={page === result.page ? 'current' : undefined}
+                      aria-current={page === result.page ? 'page' : undefined}
+                      onClick={() => update({ page })}
+                    >
+                      {page}
+                    </button>
+                  ),
+                )}
+                <button type="button" disabled={result.page >= result.pages} onClick={() => update({ page: result.page + 1 })} aria-label="Next page">
+                  <ChevronRight size={15} />
+                </button>
+              </nav>
+            )}
+          </div>
+        )}
+      </section>
+      {adding && (
+        <AddUserDialog
+          onClose={() => setAdding(false)}
+          onCreated={(username) => {
+            setAdding(false)
+            onToast(`${username} can now sign in.`)
+            load()
+          }}
+        />
       )}
     </>
   )
