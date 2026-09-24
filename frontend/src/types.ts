@@ -34,19 +34,109 @@ export interface Health {
   public_url?: string | null
 }
 
+export type Role = 'admin' | 'member' | 'viewer'
+
+export interface UserPreferences {
+  theme?: 'system' | 'light' | 'dark'
+  catalog_sort?: 'updated' | 'name' | 'size' | 'parameters'
+  default_storage_target?: string
+}
+
 export interface User {
   id: string
   username: string
   display_name: string
-  role: 'admin' | 'member'
+  role: Role
   created_at: string
+  updated_at?: string
+  email?: string | null
+  disabled?: boolean
+  last_login_at?: string | null
+  preferences?: UserPreferences
+  auth_provider?: string
 }
 
 export interface AuthStatus {
   accounts_enabled: boolean
   setup_required: boolean
   user: User | null
+  capabilities: string[]
   csrf_token: string | null
+}
+
+export interface AccountOverview {
+  user: User
+  capabilities: Array<{ id: string; description: string }>
+  accounts_enabled: boolean
+  local_password: boolean
+  repositories: string[]
+  saved_count: number
+}
+
+export interface AccountSession {
+  id: string
+  created_at: string
+  expires_at: string
+  last_seen_at?: string | null
+  user_agent?: string | null
+  ip?: string | null
+  current: boolean
+}
+
+export interface ApiToken {
+  id: string
+  name: string
+  prefix: string
+  scope: 'read' | 'write'
+  created_at: string
+  last_used_at?: string | null
+  expires_at?: string | null
+  token?: string
+}
+
+export interface AdminUser extends User {
+  sessions: number
+  tokens: number
+  repositories: number
+}
+
+export interface PermissionMatrix {
+  roles: Array<{ id: Role; description: string; capabilities: string[] }>
+  capabilities: Array<{ id: string; description: string }>
+}
+
+export interface ServerSettings {
+  app: string
+  version: string
+  accounts: { enabled: boolean; secure_cookies: boolean; session_ttl_hours: number }
+  database: { backend: 'sqlite' | 'postgresql'; target: string }
+  storage: {
+    model_path: string
+    data_path: string
+    default_target: string
+    targets: Array<StorageTargetSummary>
+  }
+  uploads: { chunk_mb: number; max_file_gb: number }
+  pulls: { hub_api_enabled: boolean; public_url?: string | null }
+  hugging_face: {
+    endpoint: string
+    token_configured: boolean
+    max_concurrent_downloads: number
+    workers_per_download: number
+  }
+  runtimes: { targets: RuntimeTarget[]; api_token_configured: boolean }
+}
+
+export interface StorageTargetSummary {
+  id: string
+  name: string
+  kind: 'filesystem' | 's3'
+  bucket?: string | null
+  prefix?: string | null
+  endpoint?: string | null
+  region?: string | null
+  path?: string | null
+  credentials_configured: boolean
 }
 
 export interface HubFile {

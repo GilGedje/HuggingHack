@@ -4,6 +4,7 @@ import json
 import re
 import sqlite3
 import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -93,6 +94,27 @@ RUNTIME_JOB_FIELDS = {
 }
 
 
+ROLES = ("admin", "member", "viewer")
+USERS_COLUMNS = """
+                    id TEXT PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE,
+                    display_name TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK (role IN ('admin', 'member', 'viewer')),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    email TEXT,
+                    disabled INTEGER NOT NULL DEFAULT 0,
+                    last_login_at TEXT,
+                    preferences_json TEXT NOT NULL DEFAULT '{}',
+                    auth_provider TEXT NOT NULL DEFAULT 'local',
+                    external_subject TEXT
+""".strip("\n")
+LEGACY_USER_COLUMNS = (
+    "id", "username", "display_name", "password_hash", "role", "created_at", "updated_at"
+)
+
+
 class Database:
     def __init__(self, target: Path | str):
         value = str(target).strip()
@@ -123,17 +145,12 @@ class Database:
     def initialize(self) -> None:
         if self.path is not None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._migrate_users()
         with self._write_lock, self.connect() as connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS users (
-                    id TEXT PRIMARY KEY,
-                    username TEXT NOT NULL UNIQUE,
-                    display_name TEXT NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    role TEXT NOT NULL CHECK (role IN ('admin', 'member')),
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+{USERS_COLUMNS}
                 );
 
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_nocase
@@ -149,6 +166,21 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_sessions_expiry
                     ON sessions(expires_at);
+
+                CREATE TABLE IF NOT EXISTS api_tokens (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    prefix TEXT NOT NULL,
+                    scope TEXT NOT NULL CHECK (scope IN ('read', 'write')),
+                    created_at TEXT NOT NULL,
+                    last_used_at TEXT,
+                    expires_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_api_tokens_user
+                    ON api_tokens(user_id, created_at DESC);
 
                 CREATE TABLE IF NOT EXISTS downloads (
                     id TEXT PRIMARY KEY,
@@ -308,7 +340,7 @@ class Database:
                     sha256 TEXT NOT NULL,
                     PRIMARY KEY(repo_id, path)
                 );
-                """
+                """.replace("{USERS_COLUMNS}", USERS_COLUMNS)
             )
             columns = self._column_names(connection, "downloads")
             if "user_id" not in columns:
@@ -349,8 +381,90 @@ class Database:
                 "ON downloads(user_id, created_at DESC)"
             )
             connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_external_subject "
+                "ON users(auth_provider, external_subject) WHERE external_subject IS NOT NULL"
+            )
+            session_columns = self._column_names(connection, "sessions")
+            for column in ("id", "user_agent", "ip", "last_seen_at"):
+                if column not in session_columns:
+                    connection.execute(f"ALTER TABLE sessions ADD COLUMN {column} TEXT")
+            for row in connection.execute(
+                "SELECT token_hash FROM sessions WHERE id IS NULL"
+            ).fetchall():
+                connection.execute(
+                    "UPDATE sessions SET id = ? WHERE token_hash = ?",
+                    (uuid.uuid4().hex, row["token_hash"]),
+                )
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_id ON sessions(id)"
+            )
+            connection.execute(
                 "DELETE FROM sessions WHERE expires_at <= ?",
                 (datetime.now(timezone.utc).isoformat(),),
+            )
+
+    def _migrate_users(self) -> None:
+        """Bring a users table from before roles and external sign-in up to date.
+
+        SQLite cannot change a CHECK constraint, so the table is rebuilt with
+        foreign keys switched off, following SQLite's documented procedure.
+        """
+        with self.connect() as connection:
+            columns = self._column_names(connection, "users")
+        if not columns or "disabled" in columns:
+            return
+        if self.backend == "sqlite":
+            assert self.path is not None
+            connection = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+            try:
+                connection.execute("PRAGMA foreign_keys=OFF")
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    legacy = ", ".join(LEGACY_USER_COLUMNS)
+                    connection.execute(f"CREATE TABLE users_new ({USERS_COLUMNS})")
+                    connection.execute(
+                        f"INSERT INTO users_new ({legacy}) SELECT {legacy} FROM users"
+                    )
+                    connection.execute("DROP TABLE users")
+                    connection.execute("ALTER TABLE users_new RENAME TO users")
+                    connection.execute(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_nocase "
+                        "ON users(LOWER(username))"
+                    )
+                    problems = connection.execute("PRAGMA foreign_key_check").fetchall()
+                    if problems:
+                        raise RuntimeError(f"User migration broke references: {problems[:5]}")
+                    connection.execute("COMMIT")
+                except BaseException:
+                    connection.execute("ROLLBACK")
+                    raise
+            finally:
+                connection.execute("PRAGMA foreign_keys=ON")
+                connection.close()
+            return
+        with self._write_lock, self.connect() as connection:
+            for column in (
+                "email TEXT",
+                "disabled INTEGER NOT NULL DEFAULT 0",
+                "last_login_at TEXT",
+                "preferences_json TEXT NOT NULL DEFAULT '{}'",
+                "auth_provider TEXT NOT NULL DEFAULT 'local'",
+                "external_subject TEXT",
+            ):
+                connection.execute(f"ALTER TABLE users ADD COLUMN {column}")
+            checks = connection.execute(
+                """
+                SELECT conname FROM pg_constraint
+                WHERE conrelid = 'users'::regclass AND contype = 'c'
+                  AND pg_get_constraintdef(oid) LIKE ?
+                """,
+                ("%role%",),
+            ).fetchall()
+            for check in checks:
+                connection.execute(f'ALTER TABLE users DROP CONSTRAINT "{check["conname"]}"')
+            connection.execute(
+                "ALTER TABLE users ADD CONSTRAINT users_role_check "
+                "CHECK (role IN ('admin', 'member', 'viewer'))"
             )
 
     def _column_names(
@@ -392,12 +506,22 @@ class Database:
         return result
 
     @staticmethod
-    def _public_user(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | None:
+    def _user(row: sqlite3.Row | dict[str, Any] | None, include_secret: bool) -> dict[str, Any] | None:
         if row is None:
             return None
         result = dict(row)
-        result.pop("password_hash", None)
+        if not include_secret:
+            result.pop("password_hash", None)
+        try:
+            result["preferences"] = json.loads(result.pop("preferences_json", None) or "{}")
+        except (TypeError, json.JSONDecodeError):
+            result["preferences"] = {}
+        result["disabled"] = bool(result.get("disabled"))
         return result
+
+    @classmethod
+    def _public_user(cls, row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | None:
+        return cls._user(row, include_secret=False)
 
     def count_users(self) -> int:
         with self.connect() as connection:
@@ -405,13 +529,21 @@ class Database:
             return int(row["count"])
 
     def create_user(self, record: dict[str, Any]) -> dict[str, Any]:
+        record = {
+            "email": None,
+            "auth_provider": "local",
+            "external_subject": None,
+            **record,
+        }
         with self._write_lock, self.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO users (
-                    id, username, display_name, password_hash, role, created_at, updated_at
+                    id, username, display_name, password_hash, role, created_at, updated_at,
+                    email, auth_provider, external_subject
                 ) VALUES (
-                    :id, :username, :display_name, :password_hash, :role, :created_at, :updated_at
+                    :id, :username, :display_name, :password_hash, :role, :created_at,
+                    :updated_at, :email, :auth_provider, :external_subject
                 )
                 """,
                 record,
@@ -421,14 +553,14 @@ class Database:
     def get_user(self, user_id: str, include_secret: bool = True) -> dict[str, Any] | None:
         with self.connect() as connection:
             row = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-        return dict(row) if row and include_secret else self._public_user(row)
+        return self._user(row, include_secret)
 
     def get_user_by_username(self, username: str) -> dict[str, Any] | None:
         with self.connect() as connection:
             row = connection.execute(
                 "SELECT * FROM users WHERE LOWER(username) = LOWER(?)", (username,)
             ).fetchone()
-        return dict(row) if row else None
+        return self._user(row, include_secret=True)
 
     def list_users(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
@@ -437,26 +569,80 @@ class Database:
             ).fetchall()
         return [self._public_user(row) for row in rows]
 
+    USER_FIELDS = {
+        "display_name", "email", "role", "disabled", "preferences_json",
+        "last_login_at", "updated_at", "password_hash",
+    }
+
+    def update_user(self, user_id: str, **changes: Any) -> dict[str, Any] | None:
+        if not changes:
+            return self.get_user(user_id, include_secret=False)
+        unknown = set(changes) - self.USER_FIELDS
+        if unknown:
+            raise ValueError(f"Unknown user fields: {sorted(unknown)}")
+        assignments = ", ".join(f"{key} = :{key}" for key in changes)
+        with self._write_lock, self.connect() as connection:
+            connection.execute(
+                f"UPDATE users SET {assignments} WHERE id = :user_id",
+                {**changes, "user_id": user_id},
+            )
+        return self.get_user(user_id, include_secret=False)
+
+    def update_user_guarded(
+        self, user_id: str, changes: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Update a user unless it would leave no active administrator."""
+        with self._write_lock:
+            current = self.get_user(user_id, include_secret=False)
+            if not current:
+                return None
+            role = changes.get("role", current["role"])
+            disabled = bool(changes.get("disabled", current["disabled"]))
+            if current["role"] == "admin" and not current["disabled"] and (
+                role != "admin" or disabled
+            ):
+                if self.count_active_admins() <= 1:
+                    raise ValueError("At least one active administrator is required.")
+            return self.update_user(user_id, **changes)
+
+    def count_active_admins(self) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND disabled = 0"
+            ).fetchone()
+        return int(row["count"])
+
+    def delete_user(self, user_id: str) -> None:
+        with self._write_lock:
+            user = self.get_user(user_id, include_secret=False)
+            if user and user["role"] == "admin" and not user["disabled"]:
+                if self.count_active_admins() <= 1:
+                    raise ValueError("At least one active administrator is required.")
+            with self.connect() as connection:
+                connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
     def update_user_password(
         self, user_id: str, password_hash: str, updated_at: str
     ) -> None:
-        with self._write_lock, self.connect() as connection:
-            connection.execute(
-                """
-                UPDATE users SET password_hash = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (password_hash, updated_at, user_id),
-            )
+        self.update_user(user_id, password_hash=password_hash, updated_at=updated_at)
 
     def create_session(self, record: dict[str, Any]) -> None:
+        record = {
+            "id": uuid.uuid4().hex,
+            "user_agent": None,
+            "ip": None,
+            "last_seen_at": record.get("created_at"),
+            **record,
+        }
         with self._write_lock, self.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO sessions (
-                    token_hash, user_id, csrf_token, created_at, expires_at
+                    token_hash, user_id, csrf_token, created_at, expires_at,
+                    id, user_agent, ip, last_seen_at
                 ) VALUES (
-                    :token_hash, :user_id, :csrf_token, :created_at, :expires_at
+                    :token_hash, :user_id, :csrf_token, :created_at, :expires_at,
+                    :id, :user_agent, :ip, :last_seen_at
                 )
                 """,
                 record,
@@ -465,30 +651,39 @@ class Database:
     def get_session(self, token_hash: str) -> dict[str, Any] | None:
         with self.connect() as connection:
             row = connection.execute(
-                """
-                SELECT sessions.*, users.id AS user_record_id, users.username,
-                       users.display_name, users.role, users.created_at AS user_created_at
-                FROM sessions
-                JOIN users ON users.id = sessions.user_id
-                WHERE sessions.token_hash = ?
-                """,
-                (token_hash,),
+                "SELECT * FROM sessions WHERE token_hash = ?", (token_hash,)
             ).fetchone()
         if not row:
             return None
         result = dict(row)
-        result["user"] = {
-            "id": result.pop("user_record_id"),
-            "username": result.pop("username"),
-            "display_name": result.pop("display_name"),
-            "role": result.pop("role"),
-            "created_at": result.pop("user_created_at"),
-        }
-        return result
+        result["user"] = self.get_user(result["user_id"], include_secret=False)
+        return result if result["user"] else None
+
+    def list_sessions(self, user_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM sessions WHERE user_id = ? ORDER BY created_at DESC",
+                (user_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def touch_session(self, token_hash: str, seen_at: str) -> None:
+        with self._write_lock, self.connect() as connection:
+            connection.execute(
+                "UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?",
+                (seen_at, token_hash),
+            )
 
     def delete_session(self, token_hash: str) -> None:
         with self._write_lock, self.connect() as connection:
             connection.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+
+    def delete_session_by_id(self, user_id: str, session_id: str) -> bool:
+        with self._write_lock, self.connect() as connection:
+            result = connection.execute(
+                "DELETE FROM sessions WHERE user_id = ? AND id = ?", (user_id, session_id)
+            )
+            return bool(getattr(result, "rowcount", 1))
 
     def delete_other_sessions(self, user_id: str, keep_token_hash: str) -> None:
         with self._write_lock, self.connect() as connection:
@@ -496,6 +691,82 @@ class Database:
                 "DELETE FROM sessions WHERE user_id = ? AND token_hash != ?",
                 (user_id, keep_token_hash),
             )
+
+    def delete_user_sessions(self, user_id: str) -> None:
+        with self._write_lock, self.connect() as connection:
+            connection.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+
+    def create_api_token(self, record: dict[str, Any]) -> dict[str, Any]:
+        with self._write_lock, self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO api_tokens (
+                    id, user_id, name, token_hash, prefix, scope, created_at, expires_at
+                ) VALUES (
+                    :id, :user_id, :name, :token_hash, :prefix, :scope, :created_at, :expires_at
+                )
+                """,
+                record,
+            )
+        return next(token for token in self.list_api_tokens(record["user_id"]) if token["id"] == record["id"])
+
+    def list_api_tokens(self, user_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT id, user_id, name, prefix, scope, created_at, last_used_at, expires_at "
+                "FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC",
+                (user_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_api_token_by_hash(self, token_hash: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM api_tokens WHERE token_hash = ?", (token_hash,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def touch_api_token(self, token_id: str, used_at: str) -> None:
+        with self._write_lock, self.connect() as connection:
+            connection.execute(
+                "UPDATE api_tokens SET last_used_at = ? WHERE id = ?", (used_at, token_id)
+            )
+
+    def delete_api_token(self, user_id: str, token_id: str) -> bool:
+        with self._write_lock, self.connect() as connection:
+            result = connection.execute(
+                "DELETE FROM api_tokens WHERE user_id = ? AND id = ?", (user_id, token_id)
+            )
+            return bool(getattr(result, "rowcount", 1))
+
+    def delete_user_tokens(self, user_id: str) -> None:
+        with self._write_lock, self.connect() as connection:
+            connection.execute("DELETE FROM api_tokens WHERE user_id = ?", (user_id,))
+
+    def user_activity(self) -> dict[str, dict[str, int]]:
+        """Counts shown next to each account on the admin page."""
+        activity: dict[str, dict[str, int]] = {}
+        with self.connect() as connection:
+            for key, query in (
+                ("sessions", "SELECT user_id, COUNT(*) AS count FROM sessions GROUP BY user_id"),
+                ("tokens", "SELECT user_id, COUNT(*) AS count FROM api_tokens GROUP BY user_id"),
+                (
+                    "repositories",
+                    "SELECT owner_id AS user_id, COUNT(*) AS count "
+                    "FROM owned_repositories GROUP BY owner_id",
+                ),
+            ):
+                for row in connection.execute(query).fetchall():
+                    activity.setdefault(row["user_id"], {})[key] = int(row["count"])
+        return activity
+
+    def owned_repository_ids(self, owner_id: str) -> list[str]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT repo_id FROM owned_repositories WHERE owner_id = ? ORDER BY repo_id",
+                (owner_id,),
+            ).fetchall()
+        return [row["repo_id"] for row in rows]
 
     def create_download(self, record: dict[str, Any]) -> dict[str, Any]:
         params = {**record, "user_id": record.get("user_id")}

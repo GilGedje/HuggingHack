@@ -1949,3 +1949,131 @@ button.file-browser-name:hover { text-decoration: underline; text-underline-offs
 .storage-page .storage-title { align-items: flex-start; }
 .storage-page .storage-title strong { flex: none; }
 .storage-page .storage-title code { min-width: 0; overflow-wrap: anywhere; text-align: right; }
+
+/* Account and administration sections */
+.section-hero { border-bottom: 1px solid var(--border); background: linear-gradient(180deg, var(--canvas-subtle), var(--canvas)); }
+.section-hero-inner { width: min(1180px, calc(100% - 48px)); margin: 0 auto; padding: 30px 0 0; }
+.section-hero-inner > h1 {
+  margin-top: 4px; font-family: 'Bricolage Grotesque Variable', sans-serif; font-size: 30px; letter-spacing: -0.03em;
+}
+.section-body { width: min(1180px, calc(100% - 48px)); margin: 0 auto; padding: 28px 0 90px; display: grid; gap: 20px; }
+.admin-content > .standard-page { width: 100%; padding: 0; }
+.admin-content > .standard-page > .page-heading .eyebrow { display: none; }
+.admin-content > .standard-page > .page-heading h1 { font-size: 26px; }
+.account-identity { display: flex; align-items: center; gap: 16px; }
+.account-avatar {
+  width: 54px; height: 54px; display: grid; place-items: center; flex: none; border-radius: 50%;
+  background: var(--brand-primary); color: #111827; font-family: 'IBM Plex Mono', monospace; font-size: 17px; font-weight: 700;
+}
+.account-identity h1 { font-family: 'Bricolage Grotesque Variable', sans-serif; font-size: 27px; letter-spacing: -0.03em; }
+.account-identity p { margin-top: 2px; color: var(--text-muted); font-size: 13px; }
+.role-badge {
+  padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700;
+  background: var(--canvas-subtle); color: var(--text-secondary); border: 1px solid var(--border);
+}
+.role-badge.admin { background: color-mix(in oklch, var(--brand-primary) 30%, var(--canvas)); color: var(--text); border-color: color-mix(in oklch, var(--brand-warm) 40%, var(--border)); }
+.role-badge.member { background: var(--success-bg); color: var(--success); border-color: color-mix(in oklch, var(--success) 25%, var(--border)); }
+.account-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start; }
+.account-form { margin-top: 18px; display: grid; gap: 12px; }
+.account-form label, .token-form label, .admin-create-user label {
+  display: grid; gap: 5px; color: var(--text-secondary); font-size: 11px; font-weight: 600;
+}
+.account-form label small, .admin-create-user label small { color: var(--text-muted); font-weight: 400; }
+.account-form input, .account-form select, .token-form input, .token-form select,
+.admin-create-user input, .admin-create-user select, .admin-user-row select {
+  width: 100%; height: 37px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 6px;
+  outline: 0; background: var(--canvas); color: var(--text); font-size: 12px;
+}
+.account-form input:disabled { background: var(--canvas-subtle); color: var(--text-muted); }
+.account-form input:focus, .account-form select:focus, .token-form input:focus, .token-form select:focus,
+.admin-create-user input:focus, .admin-create-user select:focus { border-color: var(--brand-warm); }
+.account-form > button, .token-form > button { justify-self: start; }
+.account-note { margin-top: 14px; color: var(--text-muted); font-size: 12px; }
+.capability-list { margin: 16px 0 0; padding: 0; display: grid; gap: 7px; list-style: none; font-size: 13px; }
+.capability-list li { display: flex; align-items: flex-start; gap: 8px; color: var(--text-secondary); }
+.capability-list svg { margin-top: 3px; flex: none; color: var(--success); }
+.account-facts { margin-top: 18px; }
+.account-repo-link { display: block; }
+.account-repo-link:hover, .account-facts a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.session-list, .token-list { margin: 16px 0; padding: 0; display: grid; gap: 0; list-style: none; border: 1px solid var(--border); border-radius: 8px; }
+.session-list li, .token-list li {
+  padding: 11px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.session-list li:last-child, .token-list li:last-child { border-bottom: 0; }
+.session-list li > div, .token-list li > div { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.session-list strong, .token-list strong { font-size: 13px; }
+.session-list small, .token-list small { flex-basis: 100%; color: var(--text-muted); font-size: 11px; }
+.token-list code { color: var(--text-muted); font-size: 11px; }
+.token-list .empty-compact { display: block; margin: 0; border: 0; }
+.tokens-tab { display: grid; gap: 20px; }
+.token-form { margin-top: 18px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 140px auto; align-items: end; gap: 12px; }
+.new-token {
+  margin-top: 18px; padding: 16px; display: grid; gap: 10px;
+  border: 1px solid color-mix(in oklch, var(--brand-warm) 40%, var(--border)); border-radius: 8px;
+  background: color-mix(in oklch, var(--brand-primary) 8%, var(--canvas));
+}
+.new-token strong { font-size: 13px; }
+.new-token p { color: var(--text-muted); font-size: 12px; }
+.preferences .account-form { max-width: 420px; }
+.account-chip-link { min-width: 0; display: flex; align-items: center; gap: 7px; color: inherit; }
+.account-chip-link span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-chip-link:hover span { text-decoration: underline; text-underline-offset: 3px; }
+
+.admin-user-table { margin-top: 14px; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+.admin-user-row {
+  min-width: 900px; min-height: 54px; padding: 8px 14px; display: grid;
+  grid-template-columns: minmax(200px, 1.4fr) 150px 90px 110px minmax(180px, 1fr) 150px; align-items: center; gap: 12px;
+  border-bottom: 1px solid var(--border); font-size: 12px;
+}
+.admin-user-row:last-child { border-bottom: 0; }
+.admin-user-row.header {
+  min-height: 34px; background: var(--canvas-subtle); color: var(--text-muted);
+  font-size: 9px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+}
+.admin-user-row.disabled .admin-user-name { opacity: 0.6; }
+.admin-user-name { min-width: 0; display: grid; gap: 1px; }
+.admin-user-name small { overflow: hidden; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.admin-user-muted { color: var(--text-muted); font-size: 11px; }
+.admin-user-actions { display: flex; justify-content: flex-end; align-items: center; gap: 4px; }
+.admin-user-actions button {
+  width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--canvas); color: var(--text-secondary); cursor: pointer;
+}
+.admin-user-actions button:hover { border-color: var(--border-strong); color: var(--text); }
+.admin-user-actions button.danger-text { color: var(--danger); }
+.admin-create-user { margin-top: 18px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: end; gap: 12px; }
+.role-cards { margin-top: 16px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.role-card { padding: 14px; display: grid; gap: 8px; justify-items: start; align-content: start; border: 1px solid var(--border); border-radius: 8px; }
+.role-card p { color: var(--text-secondary); font-size: 12px; }
+.permission-table { margin-top: 16px; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+.permission-row {
+  min-width: 620px; min-height: 44px; padding: 7px 14px; display: grid;
+  grid-template-columns: minmax(280px, 1fr) repeat(3, 110px); align-items: center; gap: 12px;
+  border-bottom: 1px solid var(--border); font-size: 12px;
+}
+.permission-row:last-child { border-bottom: 0; }
+.permission-row.header {
+  min-height: 34px; background: var(--canvas-subtle); color: var(--text-muted);
+  font-size: 9px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+}
+.permission-row > span:first-child { display: grid; gap: 1px; }
+.permission-row code { color: var(--text-muted); font-size: 10px; }
+.permission-cell { text-align: center; }
+.permission-cell svg { margin: 0 auto; }
+.permission-denied { color: var(--border-strong); }
+.settings-columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+.settings-columns .settings-section h2 { font-size: 15px; }
+.server-note { margin-top: 0; }
+.server-note code { font-size: 11px; }
+
+@media (max-width: 1080px) {
+  .settings-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .token-form { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 780px) {
+  .account-grid, .settings-columns, .role-cards, .admin-create-user, .token-form { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 480px) {
+  .section-hero-inner, .section-body { width: calc(100% - 32px); }
+}

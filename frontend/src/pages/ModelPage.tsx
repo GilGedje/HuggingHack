@@ -21,6 +21,7 @@ import {
   Users,
 } from 'lucide-react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useAccess } from '../access'
 import { api } from '../api'
 import { ModelActions, ModelCardDocument } from '../components/Drawers'
 import { GgufInspector } from '../components/GgufInspector'
@@ -34,7 +35,6 @@ import type {
   LibraryFile,
   LibraryModelDetails,
   StorageOption,
-  User,
 } from '../types'
 import { formatBytes, formatNumber, initials, relativeTime, taskLabel } from '../utils'
 
@@ -391,7 +391,8 @@ function CommitSection({ model, commitId }: { model: LibraryModelDetails; commit
   )
 }
 
-export function ModelPage({ user, onToast }: { user: User; onToast: ToastHandler }) {
+export function ModelPage({ onToast }: { onToast: ToastHandler }) {
+  const { can } = useAccess()
   const params = useParams()
   const repoId = `${params.owner}/${params.name}`
   const rest = params['*'] || ''
@@ -692,7 +693,8 @@ export function ModelPage({ user, onToast }: { user: User; onToast: ToastHandler
                 storageBackend={model.storage_backend}
                 cached={model.cached}
                 files={model.files}
-                canManageRuntimes={user.role === 'admin'}
+                canManageRuntimes={can('runtimes.use')}
+                canManageCache={can('library.cache')}
                 onCacheChanged={() => setReloadKey((value) => value + 1)}
                 onToast={onToast}
               />

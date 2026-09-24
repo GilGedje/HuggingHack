@@ -123,13 +123,13 @@ class GitMirrors:
         except (OSError, json.JSONDecodeError):
             return None
 
-    def existing(self, repo_id: str) -> Mirror | None:
-        self.repositories.model(repo_id)
+    def existing(self, repo_id: str, user: dict[str, Any] | None = None) -> Mirror | None:
+        self.repositories.model(repo_id, user)
         return self._load(self._path(repo_id))
 
-    def ensure(self, repo_id: str) -> Mirror:
+    def ensure(self, repo_id: str, user: dict[str, Any] | None = None) -> Mirror:
         """Return an up-to-date mirror, rebuilding it when any file changed."""
-        snapshot = self.repositories.snapshot(repo_id)
+        snapshot = self.repositories.snapshot(repo_id, user)
         root = self._path(snapshot.repo_id)
         with self._lock(snapshot.repo_id):
             if self._metadata_sha(root) == snapshot.sha:
@@ -210,11 +210,13 @@ class GitMirrors:
         )
         return Mirror(root=root, commit=commit, lfs=lfs)
 
-    def read_file(self, repo_id: str, relative: str) -> bytes | None:
+    def read_file(
+        self, repo_id: str, relative: str, user: dict[str, Any] | None = None
+    ) -> bytes | None:
         """Read one dumb-protocol file from an already built mirror."""
         if relative not in {"HEAD", "info/refs", "objects/info/packs"} and not OBJECT_PATTERN.fullmatch(relative):
             return None
-        mirror = self.existing(repo_id)
+        mirror = self.existing(repo_id, user)
         if mirror is None:
             return None
         try:
@@ -222,14 +224,16 @@ class GitMirrors:
         except OSError:
             return None
 
-    def lfs_entry(self, repo_id: str, oid: str) -> tuple[RepoSnapshot, RepoEntry] | None:
+    def lfs_entry(
+        self, repo_id: str, oid: str, user: dict[str, Any] | None = None
+    ) -> tuple[RepoSnapshot, RepoEntry] | None:
         if not OID_PATTERN.fullmatch(oid):
             return None
-        mirror = self.ensure(repo_id)
+        mirror = self.ensure(repo_id, user)
         path = mirror.lfs.get(oid)
         if path is None:
             return None
-        snapshot = self.repositories.snapshot(repo_id)
+        snapshot = self.repositories.snapshot(repo_id, user)
         entry = snapshot.entry(path)
         return (snapshot, entry) if entry else None
 

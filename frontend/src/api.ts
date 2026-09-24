@@ -1,4 +1,11 @@
 import type {
+  AccountOverview,
+  AccountSession,
+  AdminUser,
+  ApiToken,
+  PermissionMatrix,
+  ServerSettings,
+  UserPreferences,
   AuthStatus,
   ChangeSession,
   CommitDetail,
@@ -73,8 +80,60 @@ export const api = {
       csrfToken = null
     }),
   users: () => request<{ items: User[] }>('/api/users'),
-  createUser: (payload: { username: string; display_name: string; password: string }) =>
-    request<User>('/api/users', { method: 'POST', body: JSON.stringify(payload) }),
+  createUser: (payload: {
+    username: string
+    display_name: string
+    password: string
+    role?: 'admin' | 'member' | 'viewer'
+    email?: string
+  }) => request<User>('/api/users', { method: 'POST', body: JSON.stringify(payload) }),
+  account: () => request<AccountOverview>('/api/account'),
+  updateProfile: (payload: { display_name: string; email?: string | null }) =>
+    request<User>('/api/account/profile', { method: 'PATCH', body: JSON.stringify(payload) }),
+  updatePreferences: (payload: Partial<Record<keyof UserPreferences, string | null>>) =>
+    request<UserPreferences>('/api/account/preferences', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  sessions: () => request<{ items: AccountSession[] }>('/api/account/sessions'),
+  revokeSession: (sessionId: string) =>
+    request<{ status: string }>(`/api/account/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+    }),
+  revokeOtherSessions: () =>
+    request<{ status: string }>('/api/account/sessions/revoke-others', { method: 'POST' }),
+  tokens: () => request<{ items: ApiToken[] }>('/api/account/tokens'),
+  createToken: (payload: { name: string; scope: 'read' | 'write'; expires_in_days: number | null }) =>
+    request<ApiToken>('/api/account/tokens', { method: 'POST', body: JSON.stringify(payload) }),
+  deleteToken: (tokenId: string) =>
+    request<{ status: string }>(`/api/account/tokens/${encodeURIComponent(tokenId)}`, {
+      method: 'DELETE',
+    }),
+  adminUsers: () => request<{ items: AdminUser[]; accounts_enabled: boolean }>('/api/admin/users'),
+  adminUpdateUser: (
+    userId: string,
+    payload: { role?: string; disabled?: boolean; display_name?: string; email?: string | null },
+  ) =>
+    request<User>(`/api/admin/users/${encodeURIComponent(userId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  adminResetPassword: (userId: string, newPassword: string) =>
+    request<{ status: string }>(`/api/admin/users/${encodeURIComponent(userId)}/password`, {
+      method: 'POST',
+      body: JSON.stringify({ new_password: newPassword }),
+    }),
+  adminRevoke: (userId: string, payload: { sessions: boolean; tokens: boolean }) =>
+    request<{ status: string }>(`/api/admin/users/${encodeURIComponent(userId)}/revoke`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  adminDeleteUser: (userId: string) =>
+    request<{ status: string }>(`/api/admin/users/${encodeURIComponent(userId)}`, {
+      method: 'DELETE',
+    }),
+  permissions: () => request<PermissionMatrix>('/api/admin/permissions'),
+  serverSettings: () => request<ServerSettings>('/api/admin/server'),
   changePassword: (payload: { current_password: string; new_password: string }) =>
     request<{ status: string }>('/api/account/password', {
       method: 'PATCH',

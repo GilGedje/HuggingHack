@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hmac
 import json
 import logging
-from urllib.parse import quote
+import re
+from urllib.parse import quote, urlsplit
 import shutil
 import uuid
 from contextlib import asynccontextmanager
@@ -18,13 +20,20 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from .auth import AuthService, utc_iso
+from .auth import (
+    API_TOKEN_PREFIX,
+    AuthService,
+    hash_password,
+    utc_iso,
+    validate_password,
+)
 from .catalog import LocalCatalog, search_catalog
 from .config import settings, validate_repo_id
 from .database import INTEGRITY_ERRORS, Database
 from .downloads import DownloadManager
 from .git_mirror import GitMirrors
 from .history import RepoHistory, public_commit
+from .permissions import CAPABILITIES, can, capabilities_for, permission_matrix
 from .hub_api import (
     HubError,
     HubRepositories,
@@ -193,7 +202,8 @@ class SetupRequest(CredentialsRequest):
 
 
 class CreateUserRequest(SetupRequest):
-    pass
+    role: Literal["admin", "member", "viewer"] = "member"
+    email: str | None = Field(default=None, max_length=254)
 
 
 class PasswordChangeRequest(BaseModel):
@@ -275,46 +285,116 @@ def session_for_request(request: Request) -> dict[str, Any] | None:
     return auth.session(request.cookies.get(auth.cookie_name))
 
 
+def resolve_principal(request: Request) -> dict[str, Any] | None:
+    """Who is calling: a personal API token or a browser session, never both.
+
+    When an Authorization header is present it is the only credential used, so a
+    token request can never ride on a cookie (and therefore needs no CSRF token).
+    """
+    authorization = request.headers.get("Authorization")
+    if authorization and settings.accounts_enabled:
+        scheme, _, credential = authorization.partition(" ")
+        credential = credential.strip()
+        if scheme.lower() != "bearer" or not credential.startswith(API_TOKEN_PREFIX):
+            return None
+        principal = auth.token_principal(credential)
+        if not principal:
+            raise HTTPException(
+                status_code=401, detail="The API token is invalid, expired, or revoked."
+            )
+        return {
+            "user": principal["user"],
+            "via": "token",
+            "scope": principal["token"]["scope"],
+        }
+    session = session_for_request(request)
+    if not session or not session.get("user"):
+        return None
+    return {"user": session["user"], "via": "session", "session": session}
+
+
 def require_user(request: Request) -> dict[str, Any]:
     if auth.setup_required():
         raise HTTPException(status_code=428, detail="Create the owner account first.")
-    session = session_for_request(request)
-    if not session or not session.get("user"):
+    principal = resolve_principal(request)
+    if not principal:
         raise HTTPException(status_code=401, detail="Sign in to continue.")
-    request.state.auth_session = session
-    return session["user"]
+    request.state.principal = principal
+    request.state.auth_session = principal.get("session")
+    return principal["user"]
 
 
 def require_write_user(
     request: Request, user: Annotated[dict[str, Any], Depends(require_user)]
 ) -> dict[str, Any]:
-    session = request.state.auth_session
-    if not auth.verify_csrf(session, request.headers.get("X-CSRF-Token")):
+    principal = request.state.principal
+    if principal["via"] == "token":
+        if principal["scope"] != "write":
+            raise HTTPException(status_code=403, detail="This API token is read-only.")
+        return user
+    if not auth.verify_csrf(principal["session"], request.headers.get("X-CSRF-Token")):
         raise HTTPException(status_code=403, detail="Security token is missing or expired.")
     return user
 
 
-def require_admin(
-    user: Annotated[dict[str, Any], Depends(require_write_user)]
-) -> dict[str, Any]:
-    if user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Administrator access is required.")
-    return user
+def require_session(request: Request) -> None:
+    if request.state.principal["via"] == "token":
+        raise HTTPException(
+            status_code=403,
+            detail="Sign in to the web interface for this action; API tokens cannot use it.",
+        )
+
+
+def requires(capability: str, *, write: bool = False, session_only: bool = False) -> Any:
+    """A dependency that allows only users whose role grants `capability`."""
+    base = require_write_user if write else require_user
+
+    # A default-value Depends, because string annotations cannot see `base`.
+    def dependency(request: Request, user: dict = Depends(base)) -> dict[str, Any]:  # noqa: B008
+        if session_only:
+            require_session(request)
+        if not can(user, capability):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Your role does not allow this: {CAPABILITIES[capability].lower()}.",
+            )
+        return user
+
+    dependency.capability = capability  # type: ignore[attr-defined]
+    return Annotated[dict[str, Any], Depends(dependency)]
+
+
+def personal(*, write: bool = False) -> Any:
+    """Account self-service: any role, browser session only."""
+    base = require_write_user if write else require_user
+
+    # A default-value Depends, because string annotations cannot see `base`.
+    def dependency(request: Request, user: dict = Depends(base)) -> dict[str, Any]:  # noqa: B008
+        require_session(request)
+        return user
+
+    dependency.personal = True  # type: ignore[attr-defined]
+    return Annotated[dict[str, Any], Depends(dependency)]
 
 
 CurrentUser = Annotated[dict[str, Any], Depends(require_user)]
-
-
-def require_admin_reader(user: CurrentUser) -> dict[str, Any]:
-    # Read-only admin views: GET requests carry no CSRF token.
-    if user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Administrator access is required.")
-    return user
-
-
-AdminReader = Annotated[dict[str, Any], Depends(require_admin_reader)]
 WriteUser = Annotated[dict[str, Any], Depends(require_write_user)]
-AdminUser = Annotated[dict[str, Any], Depends(require_admin)]
+Browser = requires("models.browse")
+Saver = requires("models.save", write=True)
+HubReader = requires("hub.download")
+HubWriter = requires("hub.download", write=True)
+Uploader = requires("repos.create", write=True)
+Editor = requires("repos.edit_own", write=True)
+Scanner = requires("library.scan", write=True)
+CacheManager = requires("library.cache", write=True)
+StorageViewer = requires("storage.view")
+UserManager = requires("users.manage", session_only=True)
+UserAdmin = requires("users.manage", write=True, session_only=True)
+SettingsViewer = requires("settings.view", session_only=True)
+TokenOwner = requires("tokens.manage", session_only=True)
+TokenWriter = requires("tokens.manage", write=True, session_only=True)
+SessionUser = personal()
+SessionWriter = personal(write=True)
 
 
 def set_session_cookie(response: Response, raw_token: str) -> None:
@@ -330,12 +410,21 @@ def set_session_cookie(response: Response, raw_token: str) -> None:
 
 
 def auth_payload(session: dict[str, Any] | None = None) -> dict[str, Any]:
+    user = session.get("user") if session else None
     return {
         "accounts_enabled": settings.accounts_enabled,
         "setup_required": auth.setup_required(),
-        "user": session.get("user") if session else None,
+        "user": user,
+        "capabilities": sorted(capabilities_for(user)),
         "csrf_token": session.get("csrf_token") if session else None,
     }
+
+
+def client_details(request: Request) -> tuple[str | None, str | None]:
+    return (
+        request.headers.get("User-Agent"),
+        request.client.host if request.client else None,
+    )
 
 
 @app.get("/api/health")
@@ -384,7 +473,7 @@ def auth_status(request: Request) -> dict:
 
 
 @app.post("/api/auth/setup", status_code=201)
-def setup_account(payload: SetupRequest, response: Response) -> dict:
+def setup_account(payload: SetupRequest, request: Request, response: Response) -> dict:
     if not settings.accounts_enabled:
         raise HTTPException(status_code=409, detail="Accounts are disabled.")
     if not auth.setup_required():
@@ -393,7 +482,7 @@ def setup_account(payload: SetupRequest, response: Response) -> dict:
         user = auth.create_owner(payload.username, payload.display_name, payload.password)
     except (ValueError, *INTEGRITY_ERRORS) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    raw_token, csrf_token = auth.create_session(user["id"])
+    raw_token, csrf_token = auth.create_session(user["id"], *client_details(request))
     set_session_cookie(response, raw_token)
     return auth_payload({"user": user, "csrf_token": csrf_token})
 
@@ -409,34 +498,37 @@ def login(payload: CredentialsRequest, request: Request, response: Response) -> 
         )
     except ValueError as error:
         raise HTTPException(status_code=429, detail=str(error)) from error
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
     if not user:
         raise HTTPException(status_code=401, detail="Username or password is incorrect.")
-    raw_token, csrf_token = auth.create_session(user["id"])
+    raw_token, csrf_token = auth.create_session(user["id"], *client_details(request))
     set_session_cookie(response, raw_token)
     public_user = database.get_user(user["id"], include_secret=False)
     return auth_payload({"user": public_user, "csrf_token": csrf_token})
 
 
 @app.post("/api/auth/logout")
-def logout(request: Request, response: Response, _: WriteUser) -> dict:
+def logout(request: Request, response: Response, _: SessionWriter) -> dict:
     auth.revoke(request.cookies.get(auth.cookie_name))
     response.delete_cookie(auth.cookie_name, path="/")
     return {"status": "signed_out"}
 
 
 @app.get("/api/users")
-def list_users(user: CurrentUser) -> dict:
-    if user["role"] != "admin":
-        return {"items": [user]}
+def list_users(user: UserManager) -> dict:
     return {"items": database.list_users()}
 
 
 @app.post("/api/users", status_code=201)
-def create_user(payload: CreateUserRequest, _: AdminUser) -> dict:
+def create_user(payload: CreateUserRequest, _: UserAdmin) -> dict:
     try:
-        return auth.create_user(
-            payload.username, payload.display_name, payload.password, role="member"
+        created = auth.create_user(
+            payload.username, payload.display_name, payload.password, role=payload.role
         )
+        if payload.email:
+            created = database.update_user(created["id"], email=clean_email(payload.email))
+        return created
     except (ValueError, *INTEGRITY_ERRORS) as error:
         detail = (
             "That username is already in use."
@@ -448,7 +540,7 @@ def create_user(payload: CreateUserRequest, _: AdminUser) -> dict:
 
 @app.patch("/api/account/password")
 def change_password(
-    payload: PasswordChangeRequest, request: Request, user: WriteUser
+    payload: PasswordChangeRequest, request: Request, user: SessionWriter
 ) -> dict:
     raw_token = request.cookies.get(auth.cookie_name)
     if not raw_token or not settings.accounts_enabled:
@@ -465,9 +557,332 @@ def change_password(
     return {"status": "password_changed"}
 
 
+EMAIL_PATTERN = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}$")
+THEMES = ("system", "light", "dark")
+CATALOG_SORTS = ("updated", "name", "size", "parameters")
+
+
+def clean_email(value: str | None) -> str | None:
+    email = (value or "").strip()
+    if not email:
+        return None
+    if not EMAIL_PATTERN.fullmatch(email):
+        raise HTTPException(status_code=400, detail="Enter a valid email address.")
+    return email
+
+
+def public_session(session: dict[str, Any], current_hash: str | None) -> dict[str, Any]:
+    return {
+        "id": session["id"],
+        "created_at": session["created_at"],
+        "expires_at": session["expires_at"],
+        "last_seen_at": session.get("last_seen_at"),
+        "user_agent": session.get("user_agent"),
+        "ip": session.get("ip"),
+        "current": session["token_hash"] == current_hash,
+    }
+
+
+def require_accounts() -> None:
+    if not settings.accounts_enabled:
+        raise HTTPException(
+            status_code=409, detail="Accounts are disabled; there is nothing to manage."
+        )
+
+
+class ProfileRequest(BaseModel):
+    display_name: str = Field(min_length=1, max_length=80)
+    email: str | None = Field(default=None, max_length=254)
+
+
+class PreferencesRequest(BaseModel):
+    theme: Literal["system", "light", "dark"] | None = None
+    catalog_sort: Literal["updated", "name", "size", "parameters"] | None = None
+    default_storage_target: str | None = Field(default=None, max_length=40)
+
+
+class TokenRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    scope: Literal["read", "write"] = "read"
+    expires_in_days: int | None = Field(default=90, ge=1, le=3650)
+
+
+class AdminUserUpdate(BaseModel):
+    role: Literal["admin", "member", "viewer"] | None = None
+    disabled: bool | None = None
+    display_name: str | None = Field(default=None, min_length=1, max_length=80)
+    email: str | None = Field(default=None, max_length=254)
+
+
+class AdminPasswordReset(BaseModel):
+    new_password: str = Field(min_length=12, max_length=256)
+
+
+class AdminRevokeRequest(BaseModel):
+    sessions: bool = True
+    tokens: bool = False
+
+
+@app.get("/api/account")
+def account_overview(user: SessionUser) -> dict:
+    owned = database.owned_repository_ids(user["id"])
+    return {
+        "user": user,
+        "capabilities": [
+            {"id": capability, "description": CAPABILITIES[capability]}
+            for capability in sorted(capabilities_for(user))
+        ],
+        "accounts_enabled": settings.accounts_enabled,
+        "local_password": user.get("auth_provider", "local") == "local" and settings.accounts_enabled,
+        "repositories": owned,
+        "saved_count": len(database.saved_repo_ids(user["id"])),
+    }
+
+
+@app.patch("/api/account/profile")
+def update_profile(payload: ProfileRequest, user: SessionWriter) -> dict:
+    require_accounts()
+    return database.update_user(
+        user["id"],
+        display_name=payload.display_name.strip(),
+        email=clean_email(payload.email),
+        updated_at=utc_iso(),
+    )
+
+
+@app.get("/api/account/preferences")
+def get_preferences(user: SessionUser) -> dict:
+    return user.get("preferences") or {}
+
+
+@app.patch("/api/account/preferences")
+def update_preferences(payload: PreferencesRequest, user: SessionWriter) -> dict:
+    preferences = dict(user.get("preferences") or {})
+    changes = payload.model_dump(exclude_unset=True)
+    if changes.get("default_storage_target"):
+        try:
+            storages.get(changes["default_storage_target"])
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+    for key, value in changes.items():
+        if value is None:
+            preferences.pop(key, None)
+        else:
+            preferences[key] = value
+    database.update_user(user["id"], preferences_json=json.dumps(preferences))
+    return preferences
+
+
+@app.get("/api/account/sessions")
+def list_account_sessions(request: Request, user: SessionUser) -> dict:
+    require_accounts()
+    current = (request.state.auth_session or {}).get("token_hash")
+    return {
+        "items": [
+            public_session(session, current) for session in database.list_sessions(user["id"])
+        ]
+    }
+
+
+@app.delete("/api/account/sessions/{session_id}")
+def revoke_account_session(session_id: str, user: SessionWriter) -> dict:
+    require_accounts()
+    if not database.delete_session_by_id(user["id"], session_id):
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return {"status": "revoked"}
+
+
+@app.post("/api/account/sessions/revoke-others")
+def revoke_other_sessions(request: Request, user: SessionWriter) -> dict:
+    require_accounts()
+    database.delete_other_sessions(user["id"], request.state.auth_session["token_hash"])
+    return {"status": "revoked"}
+
+
+@app.get("/api/account/tokens")
+def list_tokens(user: TokenOwner) -> dict:
+    require_accounts()
+    return {"items": database.list_api_tokens(user["id"])}
+
+
+@app.post("/api/account/tokens", status_code=201)
+def create_token(payload: TokenRequest, user: TokenWriter) -> dict:
+    require_accounts()
+    try:
+        raw_token, record = auth.create_api_token(
+            user["id"], payload.name, payload.scope, payload.expires_in_days
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {**record, "token": raw_token}
+
+
+@app.delete("/api/account/tokens/{token_id}")
+def delete_token(token_id: str, user: TokenWriter) -> dict:
+    require_accounts()
+    if not database.delete_api_token(user["id"], token_id):
+        raise HTTPException(status_code=404, detail="Token not found.")
+    return {"status": "revoked"}
+
+
+@app.get("/api/admin/users")
+def admin_list_users(_: UserManager) -> dict:
+    activity = database.user_activity()
+    return {
+        "items": [
+            {**user, **{"sessions": 0, "tokens": 0, "repositories": 0}, **activity.get(user["id"], {})}
+            for user in database.list_users()
+        ],
+        "accounts_enabled": settings.accounts_enabled,
+    }
+
+
+def admin_target(user_id: str) -> dict[str, Any]:
+    target = database.get_user(user_id, include_secret=False)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return target
+
+
+@app.patch("/api/admin/users/{user_id}")
+def admin_update_user(user_id: str, payload: AdminUserUpdate, admin: UserAdmin) -> dict:
+    target = admin_target(user_id)
+    changes: dict[str, Any] = {}
+    if payload.role is not None and payload.role != target["role"]:
+        if user_id == admin["id"]:
+            raise HTTPException(status_code=409, detail="You cannot change your own role.")
+        changes["role"] = payload.role
+    if payload.disabled is not None and payload.disabled != target["disabled"]:
+        if user_id == admin["id"]:
+            raise HTTPException(status_code=409, detail="You cannot disable your own account.")
+        changes["disabled"] = int(payload.disabled)
+    if payload.display_name is not None:
+        changes["display_name"] = payload.display_name.strip()
+    if payload.email is not None:
+        changes["email"] = clean_email(payload.email)
+    if not changes:
+        return target
+    changes["updated_at"] = utc_iso()
+    try:
+        updated = database.update_user_guarded(user_id, changes)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if changes.get("disabled"):
+        database.delete_user_sessions(user_id)
+    return updated
+
+
+@app.post("/api/admin/users/{user_id}/password")
+def admin_reset_password(user_id: str, payload: AdminPasswordReset, _: UserAdmin) -> dict:
+    require_accounts()
+    target = admin_target(user_id)
+    if target.get("auth_provider", "local") != "local":
+        raise HTTPException(
+            status_code=409, detail="This account signs in through an external provider."
+        )
+    try:
+        validate_password(payload.new_password)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    database.update_user_password(user_id, hash_password(payload.new_password), utc_iso())
+    database.delete_user_sessions(user_id)
+    return {"status": "password_reset"}
+
+
+@app.post("/api/admin/users/{user_id}/revoke")
+def admin_revoke(user_id: str, payload: AdminRevokeRequest, _: UserAdmin) -> dict:
+    admin_target(user_id)
+    if payload.sessions:
+        database.delete_user_sessions(user_id)
+    if payload.tokens:
+        database.delete_user_tokens(user_id)
+    return {"status": "revoked"}
+
+
+@app.delete("/api/admin/users/{user_id}")
+def admin_delete_user(user_id: str, admin: UserAdmin) -> dict:
+    admin_target(user_id)
+    if user_id == admin["id"]:
+        raise HTTPException(status_code=409, detail="You cannot delete your own account.")
+    owned = database.owned_repository_ids(user_id)
+    if owned:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This account owns {len(owned)} repositor{'y' if len(owned) == 1 else 'ies'} "
+                f"({', '.join(owned[:5])}). Disable the account instead, or delete them first."
+            ),
+        )
+    try:
+        database.delete_user(user_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {"status": "deleted"}
+
+
+@app.get("/api/admin/permissions")
+def admin_permissions(_: UserManager) -> dict:
+    return permission_matrix()
+
+
+def public_database_target() -> str:
+    if database.backend == "sqlite":
+        return str(settings.database_path)
+    parts = urlsplit(settings.database_url or "")
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return f"{parts.scheme}://{host}{parts.path}"
+
+
+@app.get("/api/admin/server")
+def admin_server(_: SettingsViewer) -> dict:
+    """Read-only configuration. Secret values are reported only as configured or not."""
+    return {
+        "app": settings.app_name,
+        "version": settings.app_version,
+        "accounts": {
+            "enabled": settings.accounts_enabled,
+            "secure_cookies": settings.secure_cookies,
+            "session_ttl_hours": settings.session_ttl_hours,
+        },
+        "database": {"backend": database.backend, "target": public_database_target()},
+        "storage": {
+            "model_path": str(settings.model_storage),
+            "data_path": str(settings.data_dir),
+            "default_target": storages.default_id,
+            "targets": [
+                {
+                    **storage.describe(),
+                    "credentials_configured": bool(getattr(getattr(storage, "target", None), "secrets", ())),
+                }
+                for storage in storages.all()
+            ],
+        },
+        "uploads": {
+            "chunk_mb": settings.upload_chunk_mb,
+            "max_file_gb": settings.max_upload_size_gb,
+        },
+        "pulls": {
+            "hub_api_enabled": settings.hub_api_enabled,
+            "public_url": settings.public_url,
+        },
+        "hugging_face": {
+            "endpoint": settings.hf_endpoint,
+            "token_configured": bool(settings.hf_token),
+            "max_concurrent_downloads": settings.max_concurrent_downloads,
+            "workers_per_download": settings.download_workers_per_job,
+        },
+        "runtimes": {
+            "targets": runtimes.public_targets(),
+            "api_token_configured": bool(settings.runtime_api_token),
+        },
+    }
+
+
 @app.get("/api/hub/models")
 async def search_hub_models(
-    user: CurrentUser,
+    user: HubReader,
     search: Annotated[str, Query(max_length=200)] = "",
     sort: Literal["trending", "downloads", "updated", "likes"] = "trending",
     task: Annotated[str, Query(max_length=100)] = "",
@@ -502,7 +917,7 @@ async def search_hub_models(
 @app.get("/api/hub/gguf-range")
 async def hub_gguf_range(
     request: Request,
-    _: CurrentUser,
+    _: HubReader,
     repo_id: Annotated[str, Query(max_length=200)],
     filename: Annotated[str, Query(max_length=500)],
     revision: Annotated[str, Query(max_length=200)] = "main",
@@ -534,7 +949,7 @@ async def hub_gguf_range(
 
 
 @app.get("/api/hub/models/{repo_id:path}")
-async def hub_model(repo_id: str, user: CurrentUser, revision: str = "main") -> dict:
+async def hub_model(repo_id: str, user: HubReader, revision: str = "main") -> dict:
     try:
         validated = validate_repo_id(repo_id)
         details = await run_in_threadpool(hub.model_details, validated, revision)
@@ -552,7 +967,7 @@ async def hub_model(repo_id: str, user: CurrentUser, revision: str = "main") -> 
 
 @app.get("/api/library/models")
 def search_library_models(
-    user: CurrentUser,
+    user: Browser,
     search: Annotated[str, Query(max_length=200)] = "",
     sort: Literal["updated", "name", "size", "parameters"] = "updated",
     task: Annotated[str, Query(max_length=100)] = "",
@@ -591,7 +1006,7 @@ def library_listing(model: dict[str, Any]) -> dict[str, Any]:
 @app.get("/api/library/gguf-range")
 async def library_gguf_range(
     request: Request,
-    user: CurrentUser,
+    user: Browser,
     repo_id: Annotated[str, Query(max_length=200)],
     filename: Annotated[str, Query(max_length=500)],
 ) -> Response:
@@ -614,7 +1029,7 @@ async def library_gguf_range(
 
 @app.get("/api/library/asset")
 async def library_asset(
-    user: CurrentUser,
+    user: Browser,
     repo_id: Annotated[str, Query(max_length=200)],
     path: Annotated[str, Query(max_length=500)],
 ) -> Response:
@@ -640,7 +1055,7 @@ async def library_asset(
 @app.get("/api/library/file")
 def library_file(
     request: Request,
-    user: CurrentUser,
+    user: Browser,
     repo_id: Annotated[str, Query(max_length=200)],
     path: Annotated[str, Query(max_length=500)],
 ) -> Response:
@@ -689,7 +1104,7 @@ class FinalizeRequest(BaseModel):
 
 @app.get("/api/library/commits")
 def library_commits(
-    user: CurrentUser,
+    user: Browser,
     repo_id: Annotated[str, Query(max_length=200)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -703,7 +1118,7 @@ def library_commits(
 
 @app.get("/api/library/commit")
 def library_commit(
-    user: CurrentUser,
+    user: Browser,
     repo_id: Annotated[str, Query(max_length=200)],
     commit_id: Annotated[str, Query(min_length=40, max_length=40)],
 ) -> dict:
@@ -727,7 +1142,7 @@ def change_errors(error: Exception) -> HTTPException:
 
 
 @app.post("/api/repos/changes", status_code=201)
-def start_repository_change(payload: ChangeStartRequest, user: WriteUser) -> dict:
+def start_repository_change(payload: ChangeStartRequest, user: Editor) -> dict:
     visible_model(payload.repo_id, user["id"])
     try:
         return uploads.start_change(payload.repo_id, user)
@@ -737,7 +1152,7 @@ def start_repository_change(payload: ChangeStartRequest, user: WriteUser) -> dic
 
 @app.get("/api/repos/changes/{session_id}/files/status")
 def repository_change_file_status(
-    session_id: str, user: CurrentUser, path: Annotated[str, Query(max_length=500)]
+    session_id: str, user: Browser, path: Annotated[str, Query(max_length=500)]
 ) -> dict:
     try:
         return uploads.change_file_status(session_id, user, path)
@@ -766,7 +1181,7 @@ async def read_upload_chunk(request: Request) -> tuple[int, int, bytes]:
 async def repository_change_chunk(
     session_id: str,
     request: Request,
-    user: WriteUser,
+    user: Editor,
     path: Annotated[str, Query(max_length=500)],
 ) -> dict:
     offset, total, payload = await read_upload_chunk(request)
@@ -780,7 +1195,7 @@ async def repository_change_chunk(
 
 @app.post("/api/repos/changes/{session_id}/commit")
 async def commit_repository_change(
-    session_id: str, payload: ChangeCommitRequest, user: WriteUser
+    session_id: str, payload: ChangeCommitRequest, user: Editor
 ) -> dict:
     try:
         result = await run_in_threadpool(
@@ -800,7 +1215,7 @@ async def commit_repository_change(
 
 
 @app.delete("/api/repos/changes/{session_id}")
-def abort_repository_change(session_id: str, user: WriteUser) -> dict:
+def abort_repository_change(session_id: str, user: Editor) -> dict:
     try:
         uploads.abort_change(session_id, user)
     except FileNotFoundError as error:
@@ -809,7 +1224,7 @@ def abort_repository_change(session_id: str, user: WriteUser) -> dict:
 
 
 @app.get("/api/library/models/{repo_id:path}")
-async def library_model(repo_id: str, user: CurrentUser) -> dict:
+async def library_model(repo_id: str, user: Browser) -> dict:
     model = visible_model(repo_id, user["id"])
     listing = await run_in_threadpool(library_listing, model)
     details = await run_in_threadpool(
@@ -833,14 +1248,14 @@ async def library_model(repo_id: str, user: CurrentUser) -> dict:
 def can_access_download(download: dict[str, Any], user: dict[str, Any]) -> bool:
     return (
         download.get("user_id") == user["id"]
-        or (user["role"] == "admin" and download.get("user_id") is None)
+        or (can(user, "users.manage") and download.get("user_id") is None)
     )
 
 
 @app.get("/api/downloads")
-def list_downloads(user: CurrentUser) -> dict:
+def list_downloads(user: HubReader) -> dict:
     items = database.list_downloads(
-        user_id=user["id"], include_unowned=user["role"] == "admin"
+        user_id=user["id"], include_unowned=can(user, "users.manage")
     )
     return {
         "items": items,
@@ -851,7 +1266,7 @@ def list_downloads(user: CurrentUser) -> dict:
 
 
 @app.get("/api/downloads/{download_id}")
-def get_download(download_id: str, user: CurrentUser) -> dict:
+def get_download(download_id: str, user: HubReader) -> dict:
     download = database.get_download(download_id)
     if not download or not can_access_download(download, user):
         raise HTTPException(status_code=404, detail="Download not found")
@@ -859,7 +1274,7 @@ def get_download(download_id: str, user: CurrentUser) -> dict:
 
 
 @app.post("/api/downloads", status_code=202)
-def start_download(payload: DownloadRequest, user: WriteUser) -> dict:
+def start_download(payload: DownloadRequest, user: HubWriter) -> dict:
     if database.get_owned_repository(payload.repo_id):
         raise HTTPException(
             status_code=409,
@@ -880,7 +1295,7 @@ def start_download(payload: DownloadRequest, user: WriteUser) -> dict:
 
 
 @app.post("/api/downloads/{download_id}/cancel")
-def cancel_download(download_id: str, user: WriteUser) -> dict:
+def cancel_download(download_id: str, user: HubWriter) -> dict:
     existing = database.get_download(download_id)
     if not existing or not can_access_download(existing, user):
         raise HTTPException(status_code=404, detail="Download not found")
@@ -893,7 +1308,7 @@ def cancel_download(download_id: str, user: WriteUser) -> dict:
 
 @app.get("/api/local-models")
 def local_models(
-    user: CurrentUser, query: Annotated[str, Query(max_length=200)] = ""
+    user: Browser, query: Annotated[str, Query(max_length=200)] = ""
 ) -> dict:
     items = database.list_visible_local_models(user["id"], query)
     return {
@@ -904,7 +1319,7 @@ def local_models(
 
 
 @app.post("/api/local-models/scan")
-async def scan_local_models(_: WriteUser) -> dict:
+async def scan_local_models(_: Scanner) -> dict:
     return await run_in_threadpool(refresh_model_index)
 
 
@@ -920,7 +1335,7 @@ def visible_model(repo_id: str, user_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/local-models/{repo_id:path}/restore")
-async def restore_local_model(repo_id: str, user: WriteUser) -> dict:
+async def restore_local_model(repo_id: str, user: CacheManager) -> dict:
     model = visible_model(repo_id, user["id"])
     if model["storage_backend"] != "s3":
         raise HTTPException(status_code=409, detail="This model is not backed by S3.")
@@ -945,7 +1360,7 @@ async def restore_local_model(repo_id: str, user: WriteUser) -> dict:
 
 
 @app.delete("/api/local-models/{repo_id:path}/cache")
-async def evict_local_model_cache(repo_id: str, user: WriteUser) -> dict:
+async def evict_local_model_cache(repo_id: str, user: CacheManager) -> dict:
     model = visible_model(repo_id, user["id"])
     if model["storage_backend"] != "s3":
         raise HTTPException(status_code=409, detail="Only S3-backed models have a removable cache.")
@@ -965,7 +1380,7 @@ async def evict_local_model_cache(repo_id: str, user: WriteUser) -> dict:
 
 
 @app.get("/api/local-models/{repo_id:path}")
-def local_model(repo_id: str, user: CurrentUser) -> dict:
+def local_model(repo_id: str, user: Browser) -> dict:
     model = visible_model(repo_id, user["id"])
     result = library_listing(model)
     result["model"] = database.get_local_model(model["repo_id"])
@@ -973,7 +1388,7 @@ def local_model(repo_id: str, user: CurrentUser) -> dict:
 
 
 @app.get("/api/storage/options")
-def storage_options(_: CurrentUser) -> dict:
+def storage_options(_: Browser) -> dict:
     """Targets an uploader can choose, without connection details."""
     return {
         "default": storages.default_id,
@@ -1000,7 +1415,7 @@ def storage_model_summary(model: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.get("/api/storage/targets")
-async def storage_targets(_: AdminReader) -> dict:
+async def storage_targets(_: StorageViewer) -> dict:
     models = database.list_local_models()
     usage = shutil.disk_usage(settings.model_storage)
     healths = await asyncio.gather(
@@ -1049,9 +1464,9 @@ async def storage_targets(_: AdminReader) -> dict:
 
 
 def require_runtime_admin(user: dict[str, Any]) -> None:
-    if user["role"] != "admin":
+    if not can(user, "runtimes.use"):
         raise HTTPException(
-            status_code=403, detail="Administrator access is required."
+            status_code=403, detail="Your role cannot use runtimes."
         )
 
 
@@ -1061,9 +1476,13 @@ def runtime_api_principal(request: Request) -> dict[str, Any] | None:
     if not expected or not authorization.startswith("Bearer "):
         return None
     supplied = authorization.removeprefix("Bearer ")
+    if supplied.startswith(API_TOKEN_PREFIX):
+        # A personal token: handled by the normal account and capability checks.
+        return None
     if not supplied or not hmac.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Invalid runtime API token.")
-    return {"id": None, "role": "admin", "runtime_api": True}
+    # The runtime automation token may only use runtimes, never anything else.
+    return {"id": None, "role": "runtime", "capabilities": {"runtimes.use"}, "runtime_api": True}
 
 
 def require_runtime_reader(request: Request) -> dict[str, Any]:
@@ -1079,10 +1498,7 @@ def require_runtime_writer(request: Request) -> dict[str, Any]:
     principal = runtime_api_principal(request)
     if principal:
         return principal
-    user = require_user(request)
-    session = request.state.auth_session
-    if not auth.verify_csrf(session, request.headers.get("X-CSRF-Token")):
-        raise HTTPException(status_code=403, detail="Security token is missing or expired.")
+    user = require_write_user(request, require_user(request))
     require_runtime_admin(user)
     return user
 
@@ -1142,12 +1558,12 @@ def load_runtime_model(
 
 
 @app.get("/api/collections")
-def list_collections(user: CurrentUser) -> dict:
+def list_collections(user: Browser) -> dict:
     return {"items": database.list_collections(user["id"])}
 
 
 @app.post("/api/collections", status_code=201)
-def create_collection(payload: CollectionRequest, user: WriteUser) -> dict:
+def create_collection(payload: CollectionRequest, user: Saver) -> dict:
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Collection name is required.")
@@ -1170,7 +1586,7 @@ def create_collection(payload: CollectionRequest, user: WriteUser) -> dict:
 
 
 @app.delete("/api/collections/{collection_id}")
-def delete_collection(collection_id: str, user: WriteUser) -> dict:
+def delete_collection(collection_id: str, user: Saver) -> dict:
     if not database.delete_collection(collection_id, user["id"]):
         raise HTTPException(status_code=404, detail="Collection not found.")
     return {"status": "deleted"}
@@ -1194,7 +1610,7 @@ def safe_saved_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
 
 @app.get("/api/saved-models")
 def list_saved_models(
-    user: CurrentUser,
+    user: Browser,
     query: Annotated[str, Query(max_length=200)] = "",
     collection_id: Annotated[str, Query(max_length=100)] = "",
 ) -> dict:
@@ -1203,7 +1619,7 @@ def list_saved_models(
 
 
 @app.post("/api/saved-models")
-def save_model(payload: SavedModelRequest, user: WriteUser) -> dict:
+def save_model(payload: SavedModelRequest, user: Saver) -> dict:
     timestamp = utc_iso()
     existing = database.get_saved_model(user["id"], payload.repo_id)
     try:
@@ -1224,7 +1640,7 @@ def save_model(payload: SavedModelRequest, user: WriteUser) -> dict:
 
 
 @app.delete("/api/saved-models/{repo_id:path}")
-def unsave_model(repo_id: str, user: WriteUser) -> dict:
+def unsave_model(repo_id: str, user: Saver) -> dict:
     try:
         validated = validate_repo_id(repo_id)
     except ValueError as error:
@@ -1235,12 +1651,12 @@ def unsave_model(repo_id: str, user: WriteUser) -> dict:
 
 
 @app.get("/api/uploads/repositories")
-def list_upload_repositories(user: CurrentUser) -> dict:
+def list_upload_repositories(user: Browser) -> dict:
     return {"items": database.list_owned_repositories(user["id"])}
 
 
 @app.post("/api/uploads/repositories", status_code=201)
-def create_upload_repository(payload: RepositoryRequest, user: WriteUser) -> dict:
+def create_upload_repository(payload: RepositoryRequest, user: Uploader) -> dict:
     try:
         return uploads.create_repository(
             user,
@@ -1256,7 +1672,7 @@ def create_upload_repository(payload: RepositoryRequest, user: WriteUser) -> dic
 @app.patch("/api/uploads/repositories")
 def update_upload_repository(
     payload: RepositoryUpdateRequest,
-    user: WriteUser,
+    user: Uploader,
     repo_id: Annotated[str, Query(max_length=200)],
 ) -> dict:
     try:
@@ -1274,7 +1690,7 @@ def update_upload_repository(
 
 @app.get("/api/uploads/repositories/files/status")
 def upload_file_status(
-    user: CurrentUser,
+    user: Browser,
     repo_id: Annotated[str, Query(max_length=200)],
     path: Annotated[str, Query(max_length=500)],
 ) -> dict:
@@ -1289,7 +1705,7 @@ def upload_file_status(
 @app.put("/api/uploads/repositories/files")
 async def upload_file_chunk(
     request: Request,
-    user: WriteUser,
+    user: Uploader,
     repo_id: Annotated[str, Query(max_length=200)],
     path: Annotated[str, Query(max_length=500)],
 ) -> dict:
@@ -1335,7 +1751,7 @@ async def upload_file_chunk(
 
 @app.post("/api/uploads/repositories/finalize")
 async def finalize_upload_repository(
-    user: WriteUser,
+    user: Uploader,
     repo_id: Annotated[str, Query(max_length=200)],
     payload: FinalizeRequest | None = None,
 ) -> dict:
@@ -1353,7 +1769,7 @@ async def finalize_upload_repository(
 @app.delete("/api/uploads/repositories")
 async def delete_upload_repository(
     payload: DeleteRepositoryRequest,
-    user: WriteUser,
+    user: Uploader,
     repo_id: Annotated[str, Query(max_length=200)],
 ) -> dict:
     try:
@@ -1377,7 +1793,40 @@ async def hub_error_handler(_: Request, error: HubError) -> JSONResponse:
     headers = {"X-Error-Code": error.code, "X-Error-Message": error.message}
     if error.commit:
         headers["X-Repo-Commit"] = error.commit
+    if error.status_code == 401:
+        # git only sends credentials after a Basic challenge.
+        headers["WWW-Authenticate"] = 'Basic realm="HuggingHack"'
     return JSONResponse({"error": error.message}, status_code=error.status_code, headers=headers)
+
+
+def pull_user(request: Request) -> dict[str, Any] | None:
+    """The account behind a pull, from a personal API token or a browser session.
+
+    huggingface_hub sends `Authorization: Bearer <token>`; git and git-lfs send
+    Basic auth with the token as the password. Anonymous pulls return None.
+    """
+    if not settings.accounts_enabled:
+        return None
+    authorization = request.headers.get("Authorization") or ""
+    scheme, _, credential = authorization.partition(" ")
+    token = ""
+    if scheme.lower() == "bearer":
+        token = credential.strip()
+    elif scheme.lower() == "basic":
+        try:
+            _, _, token = base64.b64decode(credential.strip()).decode("utf-8").partition(":")
+        except (ValueError, UnicodeDecodeError):
+            token = ""
+    # Only HuggingHack tokens are checked. Clients often send a stored Hugging Face
+    # token (HF_TOKEN, `hf auth login`) or a git credential meant for another host;
+    # those pull anonymously instead of failing.
+    if token.startswith(API_TOKEN_PREFIX):
+        principal = auth.token_principal(token)
+        if not principal:
+            raise HubError("Unauthorized", "Invalid credentials.", status_code=401)
+        return principal["user"]
+    session = session_for_request(request)
+    return session["user"] if session and session.get("user") else None
 
 
 def repository_file_response(
@@ -1411,30 +1860,38 @@ def repository_file_response(
 
 
 @app.get("/api/models/{owner}/{name}")
-def hub_api_model_info(owner: str, name: str, blobs: bool = False) -> dict:
-    return hub_repositories.model_info(f"{owner}/{name}", "main", blobs)
+def hub_api_model_info(owner: str, name: str, request: Request, blobs: bool = False) -> dict:
+    return hub_repositories.model_info(f"{owner}/{name}", "main", blobs, pull_user(request))
 
 
 @app.get("/api/models/{owner}/{name}/revision/{revision:path}")
-def hub_api_model_revision(owner: str, name: str, revision: str, blobs: bool = False) -> dict:
-    return hub_repositories.model_info(f"{owner}/{name}", revision, blobs)
+def hub_api_model_revision(
+    owner: str, name: str, revision: str, request: Request, blobs: bool = False
+) -> dict:
+    return hub_repositories.model_info(f"{owner}/{name}", revision, blobs, pull_user(request))
 
 
 @app.get("/api/models/{owner}/{name}/tree/{revision}")
-def hub_api_tree(owner: str, name: str, revision: str, recursive: bool = False) -> list:
-    return hub_repositories.tree(f"{owner}/{name}", revision, "", recursive)
+def hub_api_tree(
+    owner: str, name: str, revision: str, request: Request, recursive: bool = False
+) -> list:
+    return hub_repositories.tree(f"{owner}/{name}", revision, "", recursive, pull_user(request))
 
 
 @app.get("/api/models/{owner}/{name}/tree/{revision}/{path:path}")
 def hub_api_tree_path(
-    owner: str, name: str, revision: str, path: str, recursive: bool = False
+    owner: str, name: str, revision: str, path: str, request: Request, recursive: bool = False
 ) -> list:
-    return hub_repositories.tree(f"{owner}/{name}", revision, path, recursive)
+    return hub_repositories.tree(
+        f"{owner}/{name}", revision, path, recursive, pull_user(request)
+    )
 
 
 @app.api_route("/{owner}/{name}/resolve/{revision}/{path:path}", methods=["GET", "HEAD"])
 def hub_resolve(owner: str, name: str, revision: str, path: str, request: Request) -> Response:
-    snapshot, entry = hub_repositories.resolve(f"{owner}/{name}", revision, path)
+    snapshot, entry = hub_repositories.resolve(
+        f"{owner}/{name}", revision, path, pull_user(request)
+    )
     return repository_file_response(
         request,
         snapshot,
@@ -1447,8 +1904,8 @@ def git_repo_id(owner: str, name: str) -> str:
     return f"{owner}/{name.removesuffix('.git')}"
 
 
-def git_file(owner: str, name: str, relative: str) -> Response:
-    content = git_mirrors.read_file(git_repo_id(owner, name), relative)
+def git_file(owner: str, name: str, relative: str, request: Request) -> Response:
+    content = git_mirrors.read_file(git_repo_id(owner, name), relative, pull_user(request))
     if content is None:
         raise HubError("EntryNotFound", "Git object not found.")
     return Response(
@@ -1459,21 +1916,21 @@ def git_file(owner: str, name: str, relative: str) -> Response:
 
 
 @app.get("/{owner}/{name}/info/refs")
-def git_info_refs(owner: str, name: str) -> Response:
+def git_info_refs(owner: str, name: str, request: Request) -> Response:
     # Answering with text/plain, even for ?service=git-upload-pack, makes git use the
     # dumb HTTP protocol, which only needs these static files.
-    git_mirrors.ensure(git_repo_id(owner, name))
-    return git_file(owner, name, "info/refs")
+    git_mirrors.ensure(git_repo_id(owner, name), pull_user(request))
+    return git_file(owner, name, "info/refs", request)
 
 
 @app.get("/{owner}/{name}/HEAD")
-def git_head(owner: str, name: str) -> Response:
-    return git_file(owner, name, "HEAD")
+def git_head(owner: str, name: str, request: Request) -> Response:
+    return git_file(owner, name, "HEAD", request)
 
 
 @app.get("/{owner}/{name}/objects/{path:path}")
-def git_object(owner: str, name: str, path: str) -> Response:
-    return git_file(owner, name, f"objects/{path}")
+def git_object(owner: str, name: str, path: str, request: Request) -> Response:
+    return git_file(owner, name, f"objects/{path}", request)
 
 
 LFS_MEDIA_TYPE = "application/vnd.git-lfs+json"
@@ -1492,7 +1949,14 @@ async def git_lfs_batch(owner: str, name: str, request: Request) -> Response:
             status_code=403,
             media_type=LFS_MEDIA_TYPE,
         )
-    mirror = await run_in_threadpool(git_mirrors.ensure, repo_id)
+    user = await run_in_threadpool(pull_user, request)
+    mirror = await run_in_threadpool(git_mirrors.ensure, repo_id, user)
+    # Authenticated clones must present the same credentials for the weights.
+    download_header = (
+        {"Authorization": request.headers["Authorization"]}
+        if user and request.headers.get("Authorization")
+        else None
+    )
     # Link back to the address this client used; PUBLIC_URL only affects the
     # commands shown in the UI, so a stale value can never break a clone.
     base = str(request.base_url).rstrip("/")
@@ -1512,6 +1976,7 @@ async def git_lfs_batch(owner: str, name: str, request: Request) -> Response:
                         "download": {
                             "href": f"{base}/{repo_id}.git/info/lfs/objects/{oid}",
                             "expires_in": 86400,
+                            **({"header": download_header} if download_header else {}),
                         }
                     },
                 }
@@ -1528,7 +1993,7 @@ async def git_lfs_batch(owner: str, name: str, request: Request) -> Response:
 
 @app.get("/{owner}/{name}/info/lfs/objects/{oid}")
 def git_lfs_download(owner: str, name: str, oid: str, request: Request) -> Response:
-    found = git_mirrors.lfs_entry(git_repo_id(owner, name), oid)
+    found = git_mirrors.lfs_entry(git_repo_id(owner, name), oid, pull_user(request))
     if found is None:
         raise HubError("EntryNotFound", "LFS object not found.")
     snapshot, entry = found

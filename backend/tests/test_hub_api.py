@@ -204,8 +204,10 @@ def test_hub_api_can_be_disabled(hub_server, monkeypatch: pytest.MonkeyPatch):
     settings = replace(hub_server["settings"], hub_api_enabled=False)
     monkeypatch.setattr(hub_server["repositories"], "settings", settings)
     response = httpx.get(f"{hub_server['url']}/api/models/acme/tiny")
-    assert response.status_code == 404
+    # Anonymous pulls are off; clients are asked to authenticate with a token.
+    assert response.status_code == 401
     assert response.headers["x-error-code"] == "RepoNotFound"
+    assert response.headers["www-authenticate"].startswith("Basic")
 
 
 def git_environment(tmp_path: Path) -> dict[str, str]:

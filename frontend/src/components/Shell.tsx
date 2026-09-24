@@ -2,20 +2,21 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import {
   Bookmark,
   Box,
-  Database,
   Download,
   LogOut,
   Menu,
   Moon,
   Search,
-  Server,
   Settings,
+  ShieldCheck,
   Sun,
   UploadCloud,
   UserCircle,
   X,
 } from 'lucide-react'
-import { NavLink, useNavigate } from 'react-router-dom'
+import { Link, NavLink, useNavigate } from 'react-router-dom'
+import { ADMIN_CAPABILITIES, useAccess } from '../access'
+import { api } from '../api'
 import type { User } from '../types'
 
 interface ShellProps {
@@ -26,26 +27,66 @@ interface ShellProps {
 }
 
 const links = [
-  { to: '/models', label: 'Models', icon: Box },
-  { to: '/saved', label: 'Saved', icon: Bookmark },
-  { to: '/uploads', label: 'Uploads', icon: UploadCloud },
-  { to: '/downloads', label: 'Downloads', icon: Download },
-  { to: '/runtimes', label: 'Runtimes', icon: Server, adminOnly: true },
-  { to: '/storage', label: 'Storage', icon: Database, adminOnly: true },
+  { to: '/models', label: 'Models', icon: Box, capability: 'models.browse' },
+  { to: '/saved', label: 'Saved', icon: Bookmark, capability: 'models.save' },
+  { to: '/uploads', label: 'Uploads', icon: UploadCloud, capability: 'repos.create' },
+  { to: '/downloads', label: 'Downloads', icon: Download, capability: 'hub.download' },
 ]
+
+type Theme = 'light' | 'dark'
+
+function systemTheme(): Theme {
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
+
+function storedTheme(): Theme | null {
+  try {
+    const value = localStorage.getItem('hugginghack-theme')
+    return value === 'dark' || value === 'light' ? value : null
+  } catch {
+    return null
+  }
+}
 
 export default function Shell({ children, activeDownloads, user, onLogout }: ShellProps) {
   const navigate = useNavigate()
   const searchInput = useRef<HTMLInputElement>(null)
   const [query, setQuery] = useState('')
   const [mobileOpen, setMobileOpen] = useState(false)
-  const [theme, setTheme] = useState<'light' | 'dark'>(() =>
-    localStorage.getItem('hugginghack-theme') === 'dark' ? 'dark' : 'light',
+  const { can } = useAccess()
+  const visibleLinks = links.filter((link) => can(link.capability))
+  const isAdmin = ADMIN_CAPABILITIES.some((capability) => can(capability))
+  const preferred = user.preferences?.theme
+  const [theme, setTheme] = useState<Theme>(() =>
+    preferred === 'light' || preferred === 'dark'
+      ? preferred
+      : preferred === 'system'
+        ? systemTheme()
+        : storedTheme() || 'light',
   )
+
+  // The saved account preference wins; localStorage covers the moment before it loads.
+  useEffect(() => {
+    if (preferred === 'light' || preferred === 'dark') setTheme(preferred)
+    if (preferred === 'system') setTheme(systemTheme())
+  }, [preferred])
+
+  useEffect(() => {
+    const apply = (event: Event) => {
+      const value = (event as CustomEvent<string>).detail
+      setTheme(value === 'light' || value === 'dark' ? value : systemTheme())
+    }
+    window.addEventListener('hugginghack:theme', apply)
+    return () => window.removeEventListener('hugginghack:theme', apply)
+  }, [])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
-    localStorage.setItem('hugginghack-theme', theme)
+    try {
+      localStorage.setItem('hugginghack-theme', theme)
+    } catch {
+      // The theme still applies for this page view.
+    }
   }, [theme])
 
   useEffect(() => {
@@ -90,7 +131,7 @@ export default function Shell({ children, activeDownloads, user, onLogout }: She
           </form>
 
           <nav className="primary-nav" aria-label="Primary navigation">
-            {links.filter((link) => !link.adminOnly || user.role === 'admin').map(({ to, label, icon: Icon }) => (
+            {visibleLinks.map(({ to, label, icon: Icon }) => (
               <NavLink key={to} to={to} className={({ isActive }) => (isActive ? 'active' : '')}>
                 <Icon size={16} aria-hidden="true" />
                 <span>{label}</span>
@@ -99,23 +140,35 @@ export default function Shell({ children, activeDownloads, user, onLogout }: She
                 )}
               </NavLink>
             ))}
-            <NavLink to="/settings" aria-label="Settings">
+            {isAdmin && (
+              <NavLink to="/admin" aria-label="Administration" title="Administration">
+                <ShieldCheck size={16} aria-hidden="true" />
+                <span>Admin</span>
+              </NavLink>
+            )}
+            <NavLink to="/account" aria-label="Account settings" title="Account settings">
               <Settings size={17} aria-hidden="true" />
-              <span className="desktop-hidden-label">Settings</span>
+              <span className="desktop-hidden-label">Account</span>
             </NavLink>
           </nav>
 
           <button
             type="button"
             className="icon-button theme-toggle"
-            onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+            onClick={() => {
+              const next = theme === 'light' ? 'dark' : 'light'
+              setTheme(next)
+              api.updatePreferences({ theme: next }).catch(() => undefined)
+            }}
             aria-label={theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
           >
             {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
           </button>
           <div className="account-chip" title={`${user.display_name} · ${user.role}`}>
-            <UserCircle size={18} />
-            <span>{user.display_name}</span>
+            <Link to="/account" className="account-chip-link" aria-label="Your account">
+              <UserCircle size={18} />
+              <span>{user.display_name}</span>
+            </Link>
             <button type="button" onClick={onLogout} aria-label="Sign out" title="Sign out">
               <LogOut size={15} />
             </button>
@@ -140,7 +193,7 @@ export default function Shell({ children, activeDownloads, user, onLogout }: She
                 placeholder="Search your library"
               />
             </form>
-            {links.filter((link) => !link.adminOnly || user.role === 'admin').map(({ to, label, icon: Icon }) => (
+            {visibleLinks.map(({ to, label, icon: Icon }) => (
               <NavLink key={to} to={to} onClick={() => setMobileOpen(false)}>
                 <Icon size={18} />
                 {label}
@@ -149,9 +202,15 @@ export default function Shell({ children, activeDownloads, user, onLogout }: She
                 )}
               </NavLink>
             ))}
-            <NavLink to="/settings" onClick={() => setMobileOpen(false)}>
+            {isAdmin && (
+              <NavLink to="/admin" onClick={() => setMobileOpen(false)}>
+                <ShieldCheck size={18} />
+                Administration
+              </NavLink>
+            )}
+            <NavLink to="/account" onClick={() => setMobileOpen(false)}>
               <Settings size={18} />
-              Settings
+              Account
             </NavLink>
             <button type="button" className="mobile-account" onClick={onLogout}>
               <LogOut size={18} />
