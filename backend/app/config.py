@@ -63,6 +63,20 @@ class Settings:
     storage_targets_json: str = os.getenv("STORAGE_TARGETS_JSON", "[]")
     default_storage_target: str | None = (os.getenv("DEFAULT_STORAGE_TARGET") or "").strip() or None
     hub_api_enabled: bool = _boolean("HUB_API_ENABLED", True)
+    oidc_issuer: str | None = (os.getenv("OIDC_ISSUER") or "").strip() or None
+    oidc_client_id: str | None = (os.getenv("OIDC_CLIENT_ID") or "").strip() or None
+    oidc_client_secret: str | None = field(
+        default=(os.getenv("OIDC_CLIENT_SECRET") or "").strip() or None, repr=False
+    )
+    oidc_scopes: str = os.getenv("OIDC_SCOPES", "openid profile email").strip()
+    oidc_provider_name: str = os.getenv("OIDC_PROVIDER_NAME", "single sign-on").strip()
+    oidc_default_role: str = os.getenv("OIDC_DEFAULT_ROLE", "viewer").strip().lower()
+    oidc_allowed_groups: str = os.getenv("OIDC_ALLOWED_GROUPS", "").strip()
+    oidc_groups_claim: str = os.getenv("OIDC_GROUPS_CLAIM", "groups").strip()
+    oidc_username_claim: str = os.getenv("OIDC_USERNAME_CLAIM", "preferred_username").strip()
+    oidc_redirect_url: str | None = (os.getenv("OIDC_REDIRECT_URL") or "").strip() or None
+    oidc_ca_bundle: str | None = (os.getenv("OIDC_CA_BUNDLE") or "").strip() or None
+    oidc_verify_ssl: bool = _boolean("OIDC_VERIFY_SSL", True)
     public_url: str | None = (os.getenv("PUBLIC_URL") or "").strip().rstrip("/") or None
 
     @property
@@ -81,6 +95,14 @@ class Settings:
         self.model_storage.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.hub_cache_path.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def oidc_enabled(self) -> bool:
+        return bool(self.accounts_enabled and self.oidc_issuer and self.oidc_client_id)
+
+    @property
+    def oidc_groups(self) -> tuple[str, ...]:
+        return tuple(group.strip() for group in self.oidc_allowed_groups.split(",") if group.strip())
 
     @property
     def s3_enabled(self) -> bool:

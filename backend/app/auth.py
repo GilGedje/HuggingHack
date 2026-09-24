@@ -174,6 +174,71 @@ class AuthService:
             raise PermissionError("This account is disabled. Ask an administrator to enable it.")
         return user
 
+    def _available_username(self, wanted: str) -> str:
+        """A valid, unused username derived from an identity provider claim."""
+        cleaned = re.sub(r"[^a-z0-9_-]+", "-", wanted.strip().lower())
+        cleaned = re.sub(r"-{2,}", "-", cleaned).strip("-_")[:28]
+        if len(cleaned) < 3:
+            cleaned = f"user-{cleaned}".strip("-_") if cleaned else "user"
+        candidate = cleaned
+        suffix = 2
+        while not USERNAME_PATTERN.fullmatch(candidate) or self.database.get_user_by_username(candidate):
+            candidate = f"{cleaned[:28]}-{suffix}"
+            suffix += 1
+        return candidate
+
+    def provision_external_user(
+        self, provider: str, claims: dict[str, Any], username_claim: str, default_role: str
+    ) -> dict[str, Any]:
+        """Find or create the account for an identity-provider subject.
+
+        Accounts are matched only by the provider's stable subject id, never by
+        username or email, so an external sign-in can never take over a local
+        account. The username is chosen once and never changes, because
+        repositories live under it.
+        """
+        subject = str(claims.get("sub") or "")
+        if not subject:
+            raise ValueError("The identity provider did not identify the user.")
+        email = claims.get("email") if claims.get("email_verified", True) is not False else None
+        email = email.strip()[:254] if isinstance(email, str) and "@" in email else None
+        preferred = claims.get(username_claim) or claims.get("preferred_username")
+        display = str(
+            claims.get("name") or preferred or (email.split("@")[0] if email else "") or subject
+        ).strip()[:80]
+        user = self.database.get_user_by_external(provider, subject)
+        if user:
+            if user.get("disabled"):
+                raise PermissionError("This account is disabled. Ask an administrator to enable it.")
+            changes: dict[str, Any] = {}
+            if display and display != user["display_name"]:
+                changes["display_name"] = display
+            if email and email != user.get("email"):
+                changes["email"] = email
+            if changes:
+                changes["updated_at"] = utc_iso()
+                user = self.database.update_user(user["id"], **changes)
+            return user
+        if default_role not in {"admin", "member", "viewer"}:
+            default_role = "viewer"
+        base = str(preferred or (email.split("@")[0] if email else "") or "user")
+        timestamp = utc_iso()
+        with self._setup_lock:
+            return self.database.create_user(
+                {
+                    "id": uuid.uuid4().hex,
+                    "username": self._available_username(base),
+                    "display_name": display or base,
+                    "password_hash": f"!{provider}",
+                    "role": default_role,
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                    "email": email,
+                    "auth_provider": provider,
+                    "external_subject": subject,
+                }
+            )
+
     def _due(self, key: str) -> bool:
         now = utc_now().timestamp()
         if now - self._touched.get(key, 0) < TOUCH_INTERVAL_SECONDS:

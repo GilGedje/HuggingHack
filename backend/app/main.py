@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import hmac
+import secrets
+from datetime import datetime, timedelta
 import json
 import logging
 import re
@@ -16,7 +19,7 @@ from typing import Annotated, Any, Literal
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -25,6 +28,7 @@ from .auth import (
     AuthService,
     hash_password,
     utc_iso,
+    utc_now,
     validate_password,
 )
 from .catalog import LocalCatalog, search_catalog
@@ -33,6 +37,7 @@ from .database import INTEGRITY_ERRORS, Database
 from .downloads import DownloadManager
 from .git_mirror import GitMirrors
 from .history import RepoHistory, public_commit
+from .oidc import OidcClient, OidcError, claim_groups, pkce_pair
 from .permissions import CAPABILITIES, can, capabilities_for, permission_matrix
 from .hub_api import (
     HubError,
@@ -61,6 +66,7 @@ auth = AuthService(settings, database)
 uploads = UploadManager(settings, database, indexer, storages, history)
 runtimes = RuntimeManager(settings, database)
 catalog = LocalCatalog(settings, storages)
+oidc = OidcClient(settings)
 git_mirrors = GitMirrors(hub_repositories)
 
 
@@ -154,6 +160,7 @@ async def lifespan(_: FastAPI):
     downloads.shutdown()
     runtimes.shutdown()
     hub.close()
+    oidc.close()
 
 
 app = FastAPI(
@@ -413,6 +420,7 @@ def auth_payload(session: dict[str, Any] | None = None) -> dict[str, Any]:
     user = session.get("user") if session else None
     return {
         "accounts_enabled": settings.accounts_enabled,
+        "oidc": {"enabled": settings.oidc_enabled, "name": settings.oidc_provider_name},
         "setup_required": auth.setup_required(),
         "user": user,
         "capabilities": sorted(capabilities_for(user)),
@@ -506,6 +514,149 @@ def login(payload: CredentialsRequest, request: Request, response: Response) -> 
     set_session_cookie(response, raw_token)
     public_user = database.get_user(user["id"], include_secret=False)
     return auth_payload({"user": public_user, "csrf_token": csrf_token})
+
+
+OIDC_PROVIDER = "oidc"
+OIDC_BROWSER_COOKIE = "hugginghack_oidc"
+OIDC_STATE_SECONDS = 600
+
+
+def safe_next_path(value: str | None) -> str:
+    """Only same-app paths, so sign-in can never redirect somewhere else."""
+    path = (value or "").strip()
+    if (
+        not path.startswith("/")
+        or path.startswith("//")
+        or "\\" in path
+        or ":" in path.split("?", 1)[0]
+        or any(ord(character) < 32 for character in path)
+        or len(path) > 500
+    ):
+        return "/models"
+    return path
+
+
+def oidc_redirect_uri(request: Request) -> str:
+    """The callback registered with the identity provider; must match exactly."""
+    if settings.oidc_redirect_url:
+        return settings.oidc_redirect_url
+    base = settings.public_url or str(request.base_url).rstrip("/")
+    return f"{base}/api/auth/oidc/callback"
+
+
+def sso_error(message: str) -> RedirectResponse:
+    response = RedirectResponse(f"/#/?sso_error={quote(message)}", status_code=303)
+    response.delete_cookie(OIDC_BROWSER_COOKIE, path="/api/auth/oidc")
+    return response
+
+
+def hash_secret(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+@app.get("/api/auth/oidc/login")
+def oidc_login(request: Request, next: str = "/models") -> Response:
+    if not settings.oidc_enabled:
+        raise HTTPException(status_code=404, detail="Single sign-on is not configured.")
+    if auth.setup_required():
+        return sso_error("Create the owner account with a password first; then single sign-on is available.")
+    state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
+    browser = secrets.token_urlsafe(32)
+    verifier, challenge = pkce_pair()
+    redirect_uri = oidc_redirect_uri(request)
+    try:
+        location = oidc.authorization_url(state, nonce, challenge, redirect_uri)
+    except OidcError as error:
+        return sso_error(str(error))
+    now = utc_now()
+    database.create_oidc_state(
+        {
+            "state_hash": hash_secret(state),
+            "browser_hash": hash_secret(browser),
+            "nonce": nonce,
+            "code_verifier": verifier,
+            "redirect_uri": redirect_uri,
+            "next_path": safe_next_path(next),
+            "created_at": utc_iso(now),
+            "expires_before": utc_iso(now - timedelta(seconds=OIDC_STATE_SECONDS)),
+        }
+    )
+    response = RedirectResponse(location, status_code=303)
+    # Ties the sign-in to this browser, so a callback link from someone else fails.
+    response.set_cookie(
+        OIDC_BROWSER_COOKIE,
+        browser,
+        max_age=OIDC_STATE_SECONDS,
+        httponly=True,
+        secure=settings.secure_cookies,
+        samesite="lax",
+        path="/api/auth/oidc",
+    )
+    return response
+
+
+@app.get("/api/auth/oidc/callback")
+def oidc_callback(
+    request: Request,
+    state: str = "",
+    code: str = "",
+    error: str = "",
+    error_description: str = "",
+) -> Response:
+    if not settings.oidc_enabled:
+        raise HTTPException(status_code=404, detail="Single sign-on is not configured.")
+    if error:
+        return sso_error(error_description or f"The identity provider refused the sign-in ({error}).")
+    if auth.setup_required():
+        return sso_error("Create the owner account with a password first.")
+    pending = database.take_oidc_state(hash_secret(state)) if state else None
+    if not pending:
+        return sso_error("This sign-in link expired or was already used. Try again.")
+    try:
+        started = datetime.fromisoformat(pending["created_at"])
+    except ValueError:
+        started = utc_now() - timedelta(days=1)
+    browser = request.cookies.get(OIDC_BROWSER_COOKIE) or ""
+    if not browser or not hmac.compare_digest(hash_secret(browser), pending["browser_hash"]):
+        return sso_error("Sign-in must finish in the same browser that started it. Try again.")
+    if (utc_now() - started).total_seconds() > OIDC_STATE_SECONDS:
+        return sso_error("The sign-in took too long. Try again.")
+    if not code:
+        return sso_error("The identity provider did not return a sign-in code.")
+    try:
+        tokens = oidc.exchange(code, pending["code_verifier"], pending["redirect_uri"])
+        claims = oidc.validate_id_token(tokens["id_token"], pending["nonce"])
+        extra = oidc.userinfo(tokens.get("access_token"))
+        if extra.get("sub") == claims["sub"]:
+            claims = {**extra, **claims}
+            if settings.oidc_groups_claim not in claims and settings.oidc_groups_claim in extra:
+                claims[settings.oidc_groups_claim] = extra[settings.oidc_groups_claim]
+    except OidcError as failure:
+        return sso_error(str(failure))
+    allowed = settings.oidc_groups
+    if allowed:
+        groups = claim_groups(claims, settings.oidc_groups_claim)
+        if groups is None:
+            return sso_error(
+                f"The identity provider did not send the '{settings.oidc_groups_claim}' claim, "
+                "so group membership could not be checked."
+            )
+        if not set(groups) & set(allowed):
+            return sso_error("Your account is not in a group allowed to use HuggingHack.")
+    try:
+        user = auth.provision_external_user(
+            OIDC_PROVIDER, claims, settings.oidc_username_claim, settings.oidc_default_role
+        )
+    except PermissionError as failure:
+        return sso_error(str(failure))
+    except (ValueError, *INTEGRITY_ERRORS) as failure:
+        return sso_error(str(failure) or "Your account could not be created.")
+    raw_token, _ = auth.create_session(user["id"], *client_details(request))
+    response = RedirectResponse(f"/#{pending['next_path']}", status_code=303)
+    set_session_cookie(response, raw_token)
+    response.delete_cookie(OIDC_BROWSER_COOKIE, path="/api/auth/oidc")
+    return response
 
 
 @app.post("/api/auth/logout")
@@ -866,6 +1017,18 @@ def admin_server(_: SettingsViewer) -> dict:
         "pulls": {
             "hub_api_enabled": settings.hub_api_enabled,
             "public_url": settings.public_url,
+        },
+        "sso": {
+            "enabled": settings.oidc_enabled,
+            "provider_name": settings.oidc_provider_name,
+            "issuer": settings.oidc_issuer,
+            "client_id": settings.oidc_client_id,
+            "client_secret_configured": bool(settings.oidc_client_secret),
+            "scopes": settings.oidc_scopes,
+            "default_role": settings.oidc_default_role,
+            "allowed_groups": list(settings.oidc_groups),
+            "redirect_url": settings.oidc_redirect_url
+            or (f"{settings.public_url}/api/auth/oidc/callback" if settings.public_url else None),
         },
         "hugging_face": {
             "endpoint": settings.hf_endpoint,

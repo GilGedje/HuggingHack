@@ -58,6 +58,7 @@ export interface User {
 
 export interface AuthStatus {
   accounts_enabled: boolean
+  oidc?: { enabled: boolean; name: string }
   setup_required: boolean
   user: User | null
   capabilities: string[]
@@ -118,6 +119,17 @@ export interface ServerSettings {
   }
   uploads: { chunk_mb: number; max_file_gb: number }
   pulls: { hub_api_enabled: boolean; public_url?: string | null }
+  sso: {
+    enabled: boolean
+    provider_name: string
+    issuer?: string | null
+    client_id?: string | null
+    client_secret_configured: boolean
+    scopes: string
+    default_role: string
+    allowed_groups: string[]
+    redirect_url?: string | null
+  }
   hugging_face: {
     endpoint: string
     token_configured: boolean

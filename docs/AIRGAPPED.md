@@ -12,6 +12,7 @@ parameter counts, GGUF inspection, and every pull are served from your own stora
 - [3. Configure](#3-configure)
 - [4. Start, stop, and update](#4-start-stop-and-update)
 - [5. First sign-in](#5-first-sign-in)
+- [5a. Single sign-on with Authentik](#5a-single-sign-on-with-authentik)
 - [6. Add models](#6-add-models)
 - [6a. Browse models, history, and changes](#6a-browse-models-history-and-changes)
 - [6b. Storage locations and buckets](#6b-storage-locations-and-buckets)
@@ -117,6 +118,55 @@ Administrators open **Admin** in the top bar:
 
 Everyone has **Account** (the gear icon, or click your name): profile, password and active
 sessions, preferences (theme, default sort, default upload location), and **API tokens**.
+
+## 5a. Single sign-on with Authentik
+
+HuggingHack works with any OpenID Connect provider. With Authentik:
+
+1. In Authentik, open **Applications → Providers → Create** and choose **OAuth2/OpenID Provider**.
+   - **Client type:** Confidential. Copy the **Client ID** and **Client Secret**.
+   - **Redirect URIs:** `https://hugginghack.example.internal/api/auth/oidc/callback`
+     (your `PUBLIC_URL` followed by `/api/auth/oidc/callback`), matching exactly.
+   - **Signing Key:** choose a certificate, for example the built-in self-signed one. Tokens
+     are then signed with RS256 and verified against Authentik's published keys.
+   - **Scopes:** keep `openid`, `email`, and `profile`. Authentik includes `groups` in the
+     profile scope.
+   - **Grant types** (Authentik 2026 and later): make sure **Authorization Code** is allowed.
+2. Open **Applications → Applications → Create**, name it HuggingHack, set the slug to
+   `hugginghack`, and select the provider. Bind groups or users there to control access.
+3. Add to HuggingHack's `.env`, then run `docker compose up -d`:
+
+   ```dotenv
+   PUBLIC_URL=https://hugginghack.example.internal
+   OIDC_ISSUER=https://authentik.example.internal/application/o/hugginghack/
+   OIDC_CLIENT_ID=paste-the-client-id
+   OIDC_CLIENT_SECRET=paste-the-client-secret
+   OIDC_PROVIDER_NAME=Authentik
+   OIDC_DEFAULT_ROLE=viewer
+   # Optional: only these Authentik groups may sign in
+   OIDC_ALLOWED_GROUPS=hugginghack-users
+   ```
+
+   The issuer is the application's **OpenID Configuration Issuer** shown in Authentik,
+   including the trailing slash.
+4. If Authentik uses a certificate from an internal CA, copy the CA's PEM file into `./data`
+   and set `OIDC_CA_BUNDLE=/data/internal-ca.pem`.
+
+The sign-in page now shows **Sign in with Authentik** above the password form. The first
+sign-in creates an account with the default role; promote people under **Admin → Users**.
+Usernames come from Authentik's `preferred_username`, cleaned to letters, numbers, and
+hyphens, and never change afterwards because repositories live under them.
+
+Other providers use the same settings with their own issuer, for example
+`https://keycloak.example.internal/realms/<realm>` for Keycloak or
+`https://login.microsoftonline.com/<tenant-id>/v2.0` for Entra ID.
+
+Notes:
+
+- Signing out of HuggingHack does not sign you out of Authentik.
+- To block someone, disable their HuggingHack account or remove them from the Authentik
+  application. Deleting the account only lasts until their next sign-in.
+- If Authentik is unreachable, password sign-in keeps working.
 
 ## 6. Add models
 

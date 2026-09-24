@@ -72,7 +72,11 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
   }
 
   function remove(user: AdminUser) {
-    if (window.prompt(`Type ${user.username} to delete this account permanently.`) !== user.username) return
+    const external = (user.auth_provider || 'local') !== 'local'
+    const warning = external
+      ? '\n\nThis account signs in through single sign-on and will be created again the next time they sign in. Disable it instead to block access.'
+      : ''
+    if (window.prompt(`Type ${user.username} to delete this account permanently.${warning}`) !== user.username) return
     act(user, () => api.adminDeleteUser(user.id), `${user.username} was deleted.`)
   }
 
@@ -285,6 +289,22 @@ function ServerTab() {
             <Fact label="Accounts" value={server.accounts.enabled ? 'Enabled' : 'Disabled (single user)'} good={server.accounts.enabled} />
             <Fact label="Secure cookies (HTTPS)" value={yes(server.accounts.secure_cookies)} good={server.accounts.secure_cookies} />
             <Fact label="Session length" value={`${server.accounts.session_ttl_hours} hours`} />
+          </dl>
+        </section>
+        <section className="settings-section">
+          <h2>Single sign-on (OpenID Connect)</h2>
+          <dl className="settings-list">
+            <Fact label="Status" value={server.sso.enabled ? `Enabled · ${server.sso.provider_name}` : 'Not configured'} good={server.sso.enabled} />
+            {server.sso.enabled && (
+              <>
+                <Fact label="Issuer" value={server.sso.issuer || ''} />
+                <Fact label="Client ID" value={server.sso.client_id || ''} />
+                <Fact label="Client secret" value={server.sso.client_secret_configured ? 'Configured' : 'Not set (public client)'} />
+                <Fact label="Redirect URL" value={server.sso.redirect_url || 'Browser address + /api/auth/oidc/callback'} />
+                <Fact label="New accounts get" value={ROLE_LABELS[server.sso.default_role as Role] || server.sso.default_role} />
+                <Fact label="Allowed groups" value={server.sso.allowed_groups.join(', ') || 'Everyone the provider lets in'} />
+              </>
+            )}
           </dl>
         </section>
         <section className="settings-section">
