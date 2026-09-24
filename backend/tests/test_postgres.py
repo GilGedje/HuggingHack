@@ -234,3 +234,42 @@ def test_postgresql_admin_user_search():
     finally:
         for user_id in ids:
             database.delete_user(user_id)
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
+def test_postgresql_admin_organization_search():
+    database = Database(POSTGRES_URL or "")
+    database.initialize()
+    prefix = f"pgorg{uuid.uuid4().hex[:8]}"
+    user_id = uuid.uuid4().hex
+    timestamp = "2026-07-24T12:00:00+00:00"
+    database.create_user(
+        {"id": user_id, "username": f"{prefix}u", "display_name": "Org Admin", "password_hash": "test-only",
+         "role": "member", "created_at": timestamp, "updated_at": timestamp}
+    )
+    organizations = []
+    try:
+        for index in range(7):
+            organizations.append(
+                database.create_organization(
+                    {"id": uuid.uuid4().hex, "name": f"{prefix}{index}", "display_name": f"Team {index}",
+                     "description": "has_underscore" if index < 2 else "", "created_at": f"2026-07-24T12:00:0{index}+00:00",
+                     "updated_at": timestamp}
+                )
+            )
+        database.set_organization_member(organizations[3]["id"], user_id, "admin", timestamp)
+
+        rows, total, counts = database.search_organizations(user_id, query=prefix.upper(), sort="newest", limit=3, offset=3)
+        assert total == 7 and [row["name"] for row in rows] == [f"{prefix}{n}" for n in (3, 2, 1)]
+        assert counts == {"all": 7, "with_repositories": 0, "empty": 7, "mine": 1}
+        rows, total, _ = database.search_organizations(user_id, query=prefix, filter="mine")
+        assert total == 1 and rows[0]["my_role"] == "admin" and rows[0]["member_count"] == 1
+        rows, _, _ = database.search_organizations(user_id, query=prefix, sort="members", limit=1)
+        assert rows[0]["name"] == f"{prefix}3"
+        assert database.search_organizations(user_id, query=f"{prefix}%")[1] == 0
+        assert database.search_organizations(user_id, query="has_under")[1] == 2
+    finally:
+        for organization in organizations:
+            database.remove_organization_member(organization["id"], user_id, force=True)
+            database.delete_organization(organization["id"])
+        database.delete_user(user_id)

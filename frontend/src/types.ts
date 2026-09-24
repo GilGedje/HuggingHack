@@ -507,6 +507,26 @@ export interface Organization {
   my_role?: OrganizationRole | null
 }
 
+export type AdminOrganizationFilter = '' | 'with_repositories' | 'empty' | 'mine'
+export type AdminOrganizationSort = 'name' | 'newest' | 'repositories' | 'members'
+
+export interface AdminOrganizationQuery {
+  q: string
+  filter: AdminOrganizationFilter
+  sort: AdminOrganizationSort
+  page: number
+  per_page: number
+}
+
+export interface AdminOrganizationPage {
+  items: Organization[]
+  total: number
+  page: number
+  per_page: number
+  pages: number
+  counts: Record<'all' | 'with_repositories' | 'empty' | 'mine', number>
+}
+
 export interface OrganizationMember {
   id: string
   username: string
