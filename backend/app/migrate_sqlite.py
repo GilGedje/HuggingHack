@@ -41,6 +41,7 @@ TABLES = (
     "repo_commits",
     "text_blobs",
     "file_digests",
+    "model_hardware",
 )
 
 

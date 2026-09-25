@@ -374,6 +374,12 @@ class Database:
                     sha256 TEXT NOT NULL,
                     PRIMARY KEY(repo_id, path)
                 );
+
+                CREATE TABLE IF NOT EXISTS model_hardware (
+                    repo_id TEXT NOT NULL,
+                    hardware TEXT NOT NULL,
+                    PRIMARY KEY(repo_id, hardware)
+                );
                 """.replace("{USERS_COLUMNS}", USERS_COLUMNS)
             )
             columns = self._column_names(connection, "downloads")
@@ -1672,7 +1678,32 @@ class Database:
                 "DELETE FROM owned_repositories WHERE repo_id = ?", (repo_id,)
             )
             connection.execute("DELETE FROM local_models WHERE repo_id = ?", (repo_id,))
+            connection.execute("DELETE FROM model_hardware WHERE repo_id = ?", (repo_id,))
         return cursor.rowcount > 0
+
+    # Hardware tags are kept apart from local_models so rescans never drop them.
+
+    def model_hardware(self, repo_ids: list[str] | None = None) -> dict[str, list[str]]:
+        query = "SELECT repo_id, hardware FROM model_hardware"
+        params: tuple[Any, ...] = ()
+        if repo_ids is not None:
+            if not repo_ids:
+                return {}
+            query += f" WHERE repo_id IN ({', '.join('?' for _ in repo_ids)})"
+            params = tuple(repo_ids)
+        tags: dict[str, list[str]] = {}
+        with self.connect() as connection:
+            for row in connection.execute(query + " ORDER BY hardware", params).fetchall():
+                tags.setdefault(row["repo_id"], []).append(row["hardware"])
+        return tags
+
+    def set_model_hardware(self, repo_id: str, hardware: list[str]) -> None:
+        with self._write_lock, self.connect() as connection:
+            connection.execute("DELETE FROM model_hardware WHERE repo_id = ?", (repo_id,))
+            connection.executemany(
+                "INSERT INTO model_hardware (repo_id, hardware) VALUES (?, ?)",
+                [(repo_id, item) for item in hardware],
+            )
 
     # Organizations share one namespace with usernames.
 

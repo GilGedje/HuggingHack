@@ -23,6 +23,7 @@ import {
 } from 'react-router-dom'
 import { api } from './api'
 import { AuthScreen, SavedPage, UploadsPage } from './components/AccountPages'
+import { EMPTY_FILTERS, ModelFilters, activeFilterCount, applyFilters, type ModelFilterState } from './components/ModelFilters'
 import { LibraryModelRow } from './components/RepositoryRows'
 import { AccessProvider, useAccess } from './access'
 import { AccountPage } from './pages/AccountPage'
@@ -43,54 +44,14 @@ import { formatBytes } from './utils'
 type ToastTone = 'success' | 'error'
 type ToastHandler = (message: string, tone?: ToastTone) => void
 
-const parameterOptions = [
-  ['max:1B', '< 1B'],
-  ['min:1B,max:7B', '1B – 7B'],
-  ['min:7B,max:32B', '7B – 32B'],
-  ['min:32B,max:128B', '32B – 128B'],
-  ['min:128B', '> 128B'],
-]
-
-function FilterGroup({
-  title,
-  options,
-  value,
-  onChange,
-}: {
-  title: string
-  options: string[][]
-  value: string
-  onChange: (value: string) => void
-}) {
-  return (
-    <section className="filter-group">
-      <h3>{title}</h3>
-      {options.map(([id, label]) => (
-        <button
-          type="button"
-          key={id}
-          className={value === id ? 'selected' : ''}
-          onClick={() => onChange(value === id ? '' : id)}
-        >
-          <span className="filter-check">{value === id && <Check size={12} />}</span>
-          {label}
-        </button>
-      ))}
-    </section>
-  )
-}
-
 function ModelsPage({ onToast }: { onToast: ToastHandler }) {
   const [searchParams, setSearchParams] = useSearchParams()
   const [search, setSearch] = useState(searchParams.get('search') || '')
-  const [task, setTask] = useState('')
-  const [library, setLibrary] = useState('')
-  const [appFilter, setAppFilter] = useState('')
-  const [parameters, setParameters] = useState('')
+  const [filters, setFilters] = useState<ModelFilterState>(EMPTY_FILTERS)
   const { user, can } = useAccess()
   const [sort, setSort] = useState<string>(user.preferences?.catalog_sort || 'updated')
   const [models, setModels] = useState<LibraryModel[]>([])
-  const [facets, setFacets] = useState<LibraryFacets>({ tasks: [], libraries: [], apps: [] })
+  const [facets, setFacets] = useState<LibraryFacets>({ tasks: {}, precision: {}, hardware: [] })
   const [libraryTotal, setLibraryTotal] = useState(0)
   const [libraryBytes, setLibraryBytes] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -117,11 +78,7 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
   }, [legacyModel, navigate, searchParams])
 
   const fetchModels = useCallback(() => {
-    const params = new URLSearchParams({ search, sort })
-    if (task) params.set('task', task)
-    if (library) params.set('library', library)
-    if (appFilter) params.set('app', appFilter)
-    if (parameters) params.set('parameters', parameters)
+    const params = applyFilters(filters, new URLSearchParams({ search, sort }))
     setLoading(true)
     setError('')
     api
@@ -134,7 +91,7 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
       })
       .catch((reason) => setError(reason.message))
       .finally(() => setLoading(false))
-  }, [appFilter, library, parameters, search, sort, task])
+  }, [filters, search, sort])
 
   useEffect(() => {
     const timer = window.setTimeout(fetchModels, 250)
@@ -161,7 +118,8 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
     }
   }
 
-  const activeFilters = [task, library, appFilter, parameters].filter(Boolean).length
+  const activeFilters = activeFilterCount(filters)
+  const hardwareLabels = Object.fromEntries(facets.hardware.map(([id, label]) => [id, label]))
 
   async function toggleSaved(model: LibraryModel) {
     setSaving(model.id)
@@ -213,35 +171,11 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
               <CircleX size={18} />
             </button>
           </div>
-          {facets.tasks.length > 0 && (
-            <FilterGroup title="Tasks" options={facets.tasks} value={task} onChange={setTask} />
-          )}
-          {facets.libraries.length > 0 && (
-            <FilterGroup
-              title="Libraries & formats"
-              options={facets.libraries}
-              value={library}
-              onChange={setLibrary}
-            />
-          )}
-          {facets.apps.length > 0 && (
-            <FilterGroup title="Runs with" options={facets.apps} value={appFilter} onChange={setAppFilter} />
-          )}
-          <FilterGroup
-            title="Parameters"
-            options={parameterOptions}
-            value={parameters}
-            onChange={setParameters}
-          />
+          <ModelFilters facets={facets} value={filters} onChange={setFilters} />
           {activeFilters > 0 && (
             <button
               className="clear-filters"
-              onClick={() => {
-                setTask('')
-                setLibrary('')
-                setAppFilter('')
-                setParameters('')
-              }}
+              onClick={() => setFilters(EMPTY_FILTERS)}
             >
               Reset filters
             </button>
@@ -346,6 +280,7 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
                   }
                   onSave={toggleSaved}
                   saving={saving === model.id}
+                  hardwareLabels={hardwareLabels}
                 />
               ))}
               {!error && models.length === 0 && (

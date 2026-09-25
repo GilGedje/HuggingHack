@@ -40,6 +40,11 @@ FORMAT_EXTENSIONS = {
 }
 GGUF_SHARD_PATTERN = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 SAFETENSORS_MAX_HEADER_BYTES = 100_000_000
+# Weight number formats. BF16, FP8 and NVFP4 are the ones the model filters offer.
+CONFIG_DTYPES = {"bfloat16": "bf16", "float16": "fp16", "float32": "fp32"}
+HEADER_DTYPES = {"BF16": "bf16", "F16": "fp16", "F32": "fp32", "F8_E4M3": "fp8", "F8_E5M2": "fp8"}
+QUANTIZED_PRECISIONS = {"fp8", "nvfp4", "mxfp4", "int4", "int8"}
+PACKED_PRECISIONS = {"nvfp4", "mxfp4"}
 GGUF_MAX_STRING_BYTES = 16_000_000
 GGUF_MAX_ITEMS = 50_000_000
 # GGUF scalar value types mapped to their struct format.
@@ -104,8 +109,9 @@ def model_formats(relative_paths: Iterable[str]) -> list[str]:
     return sorted(formats)
 
 
-def safetensors_parameter_count(path: Path) -> int | None:
-    """Sum tensor element counts from a SafeTensors header without reading weights."""
+def safetensors_tensors(path: Path) -> list[tuple[str, str, int]] | None:
+    """Name, dtype and element count of every tensor, read from the SafeTensors
+    header without touching the weights."""
     try:
         with path.open("rb") as handle:
             raw_length = handle.read(8)
@@ -119,7 +125,7 @@ def safetensors_parameter_count(path: Path) -> int | None:
         return None
     if not isinstance(header, dict):
         return None
-    total = 0
+    tensors = []
     for name, tensor in header.items():
         if name == "__metadata__" or not isinstance(tensor, dict):
             continue
@@ -131,8 +137,101 @@ def safetensors_parameter_count(path: Path) -> int | None:
             if not isinstance(dimension, int) or dimension < 0:
                 return None
             count *= dimension
-        total += count
-    return total or None
+        tensors.append((name, str(tensor.get("dtype") or ""), count))
+    return tensors
+
+
+def _quantization_state(name: str) -> bool:
+    """Scales and zero points that quantized checkpoints store next to each weight."""
+    leaf = name.rsplit(".", 1)[-1]
+    return "scale" in leaf or "zero_point" in leaf
+
+
+def count_parameters(tensors: Iterable[tuple[str, str, int]], precision: str | None = None) -> int:
+    """Parameters, not stored elements: 4-bit formats pack two values per byte, and
+    their scale tensors are bookkeeping rather than weights."""
+    quantized = precision in QUANTIZED_PRECISIONS
+    total = 0
+    for name, dtype, count in tensors:
+        if quantized and _quantization_state(name):
+            continue
+        total += count * 2 if dtype == "U8" and precision in PACKED_PRECISIONS else count
+    return total
+
+
+def safetensors_parameter_count(path: Path, precision: str | None = None) -> int | None:
+    tensors = safetensors_tensors(path)
+    return None if tensors is None else count_parameters(tensors, precision)
+
+
+def _quantization_precision(config: dict[str, Any], quant_file: dict[str, Any]) -> str | None:
+    quantization = config.get("quantization_config") or (config.get("text_config") or {}).get(
+        "quantization_config"
+    )
+    quantization = quantization if isinstance(quantization, dict) else {}
+    modelopt = quant_file.get("quantization") if isinstance(quant_file.get("quantization"), dict) else {}
+    if not quantization and not modelopt:
+        return None
+    method = str(quantization.get("quant_method") or "").lower()
+    layout = str(quantization.get("format") or "").lower()
+    if method in {"fp8", "mxfp4"}:
+        return method
+    algorithms = {
+        str(value).upper()
+        for value in (quantization.get("quant_algo"), modelopt.get("quant_algo"))
+        if value
+    }
+    # ModelOpt mixed precision lists an algorithm per layer.
+    layers = modelopt.get("quantized_layers")
+    for layer in (layers.values() if isinstance(layers, dict) else []):
+        if isinstance(layer, dict) and layer.get("quant_algo"):
+            algorithms.add(str(layer["quant_algo"]).upper())
+    groups = quantization.get("config_groups")
+    for group in (groups.values() if isinstance(groups, dict) else []):
+        if not isinstance(group, dict):
+            continue
+        weights = group.get("weights") if isinstance(group.get("weights"), dict) else group
+        bits, kind = weights.get("num_bits"), weights.get("type")
+        if kind == "float" and bits in {4, 8}:
+            algorithms.add("NVFP4" if bits == 4 else "FP8")
+        elif kind == "int" and bits in {4, 8}:
+            algorithms.add(f"INT{bits}")
+    if "nvfp4" in layout or any("NVFP4" in name or name == "FP4" for name in algorithms):
+        return "nvfp4"
+    if "float-quantized" in layout or any(name.startswith("FP8") for name in algorithms):
+        return "fp8"
+    if method in {"gptq", "awq"}:
+        return "int8" if quantization.get("bits") == 8 else "int4"
+    if method == "bitsandbytes":
+        return "int4" if quantization.get("load_in_4bit") else "int8"
+    if any("INT4" in name or "W4A16" in name for name in algorithms):
+        return "int4"
+    if any("INT8" in name or "W8A8" in name for name in algorithms):
+        return "int8"
+    return None
+
+
+def model_precision(
+    config: dict[str, Any],
+    quant_file: dict[str, Any],
+    tensors: Iterable[tuple[str, str, int]] = (),
+) -> str | None:
+    """The weights' number format. Quantization wins over `torch_dtype`, which in
+    FP8 and NVFP4 checkpoints only describes the layers left unquantized."""
+    quantized = _quantization_precision(config, quant_file)
+    if quantized:
+        return quantized
+    text_config = config.get("text_config") if isinstance(config.get("text_config"), dict) else {}
+    for source in (config, text_config):
+        dtype = source.get("torch_dtype") or source.get("dtype")
+        if isinstance(dtype, str) and dtype.removeprefix("torch.") in CONFIG_DTYPES:
+            return CONFIG_DTYPES[dtype.removeprefix("torch.")]
+    elements: dict[str, int] = {}
+    for _, dtype, count in tensors:
+        elements[dtype] = elements.get(dtype, 0) + count
+    if elements:
+        return HEADER_DTYPES.get(max(elements, key=elements.__getitem__))
+    return None
 
 
 class _GgufReader:
@@ -230,7 +329,7 @@ def _gguf_candidates(ggufs: list[Path]) -> list[Path]:
     ]
 
 
-def repository_parameter_count(root: Path, files: Iterable[Path]) -> int | None:
+def _weight_shards(root: Path, files: Iterable[Path]) -> tuple[list[Path], list[Path]]:
     safetensors: list[Path] = []
     ggufs: list[Path] = []
     for path in files:
@@ -239,15 +338,23 @@ def repository_parameter_count(root: Path, files: Iterable[Path]) -> int | None:
             safetensors.append(path)
         elif suffix == ".gguf":
             ggufs.append(path)
+    # Prefer root-level Transformers shards; Mistral-style repos also ship
+    # consolidated.safetensors with the same weights, which would double count.
+    selected = [path for path in safetensors if path.parent == root] or safetensors
+    standard = [path for path in selected if not path.name.startswith("consolidated")]
+    return standard or selected, ggufs
+
+
+def repository_parameter_count(
+    root: Path, files: Iterable[Path], precision: str | None = None
+) -> int | None:
+    safetensors, ggufs = _weight_shards(root, files)
     if safetensors:
-        # Prefer root-level Transformers shards; Mistral-style repos also ship
-        # consolidated.safetensors with the same weights, which would double count.
-        selected = [path for path in safetensors if path.parent == root] or safetensors
-        standard = [path for path in selected if not path.name.startswith("consolidated")]
-        selected = standard or selected
-        counts = [safetensors_parameter_count(path) for path in selected]
+        # A shard may hold only scales or buffers, so zero is a valid count; only an
+        # unreadable header makes the total unknown.
+        counts = [safetensors_parameter_count(path, precision) for path in safetensors]
         if counts and all(count is not None for count in counts):
-            return sum(counts)
+            return sum(counts) or None
     if ggufs:
         counts = [gguf_parameter_count(path) for path in _gguf_candidates(ggufs)]
         if counts and all(count is not None for count in counts):
@@ -272,9 +379,15 @@ def _repository_files(root: Path) -> list[Path]:
 
 def repository_facts(root: Path) -> dict[str, Any]:
     files = _repository_files(root)
+    safetensors, _ = _weight_shards(root, files)
+    tensors = [tensor for path in safetensors for tensor in (safetensors_tensors(path) or [])]
+    precision = model_precision(
+        parse_json(root / "config.json"), parse_json(root / "hf_quant_config.json"), tensors
+    )
     return {
-        "parameter_count": repository_parameter_count(root, files),
+        "parameter_count": repository_parameter_count(root, files, precision),
         "formats": model_formats(path.name for path in files),
+        "precision": precision,
     }
 
 
@@ -392,6 +505,7 @@ class LocalModelIndexer:
                     "model_type": config.get("model_type"),
                     "torch_dtype": config.get("torch_dtype"),
                     "vocab_size": config.get("vocab_size"),
+                    "precision": facts["precision"],
                 }
             ),
             "source_url": manifest.get("source_url"),
@@ -420,7 +534,9 @@ class LocalModelIndexer:
             "library_name": model.get("library_name"),
             "license": model.get("license"),
             "tags_json": json.dumps(model.get("tags") or []),
-            "config_json": json.dumps(model.get("config") or {}),
+            "config_json": json.dumps(
+                {**(model.get("config") or {}), "precision": model.get("precision")}
+            ),
             "source_url": model.get("source_url"),
             "managed": int(bool(model.get("managed", True))),
             "storage_backend": "s3",

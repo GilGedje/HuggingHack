@@ -183,6 +183,11 @@ export const api = {
     request<LibrarySearchResult>(`/api/library/models?${params.toString()}`),
   libraryModelDetails: (repoId: string) =>
     request<LibraryModelDetails>(`/api/library/models/${repoPath(repoId)}`),
+  updateModelHardware: (repoId: string, hardware: string[]) =>
+    request<{ repo_id: string; hardware: string[] }>(
+      `/api/library/hardware?repo_id=${encodeURIComponent(repoId)}`,
+      { method: 'PUT', body: JSON.stringify({ hardware }) },
+    ),
   localModels: (query = '') =>
     request<{ items: LocalModel[]; count: number; total_bytes: number }>(
       `/api/local-models?query=${encodeURIComponent(query)}`,
