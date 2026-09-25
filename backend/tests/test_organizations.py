@@ -307,3 +307,13 @@ def test_admin_organization_list_is_paged_and_filtered(org):
     assert admin.get("/api/admin/organizations", params={"q": "_"}).json()["total"] == 6  # the literal underscore
     assert admin.get("/api/admin/organizations", params={"q": "%"}).json()["total"] == 0
     assert admin.get("/api/admin/organizations", params={"filter": "nope"}).status_code == 422
+
+
+def test_an_organization_description_is_markdown_with_room_to_write(org):  # noqa: F811
+    admin, _ = login("admin")
+    about = "## About NVIDIA\n\n**Accelerated computing** models, tuned for:\n\n- Blackwell\n- Hopper\n\n" + "x" * 2000
+    saved = admin.patch("/api/organizations/nvidia", json={"description": f"  {about}\n"})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["description"] == about  # line breaks kept, outer space trimmed
+    assert admin.get("/api/organizations/nvidia").json()["description"] == about
+    assert admin.patch("/api/organizations/nvidia", json={"description": "x" * 10_001}).status_code == 422

@@ -2622,8 +2622,8 @@ a, button, input, select, textarea, summary,
 
 /* One underline glides between tabs (motion.ts useTabIndicator). Until it is
    placed, each active tab keeps its own border, so nothing depends on it. */
-.model-tabs > div:first-child, .drawer-tabs, .primary-nav { position: relative; }
-:where(.model-tabs > div:first-child, .drawer-tabs, .primary-nav)::after {
+.model-tabs > div:first-child, .drawer-tabs, .primary-nav, .markdown-editor-tabs { position: relative; }
+:where(.model-tabs > div:first-child, .drawer-tabs, .primary-nav, .markdown-editor-tabs)::after {
   position: absolute; top: calc(var(--indicator-bottom, 0px) - 2px); left: 0;
   width: var(--indicator-w, 0px); height: 2px; background: var(--brand-warm); content: '';
   opacity: 0; pointer-events: none; transform: translateX(var(--indicator-x, 0px));
@@ -2633,10 +2633,10 @@ a, button, input, select, textarea, summary,
   width: calc(var(--indicator-w, 20px) - 20px);
   transform: translateX(calc(var(--indicator-x, 0px) + 10px));
 }
-:is(.model-tabs > div:first-child, .drawer-tabs, .primary-nav):is([data-indicator='still'], [data-indicator='glide'])::after {
+:is(.model-tabs > div:first-child, .drawer-tabs, .primary-nav, .markdown-editor-tabs):is([data-indicator='still'], [data-indicator='glide'])::after {
   opacity: 1;
 }
-:is(.model-tabs > div:first-child, .drawer-tabs, .primary-nav)[data-indicator='glide']::after {
+:is(.model-tabs > div:first-child, .drawer-tabs, .primary-nav, .markdown-editor-tabs)[data-indicator='glide']::after {
   transition: transform 360ms var(--ease-out), width 360ms var(--ease-out);
 }
 :is(.model-tabs > div:first-child, .drawer-tabs):is([data-indicator='still'], [data-indicator='glide']) > .active {
@@ -2717,3 +2717,46 @@ a, button, input, select, textarea, summary,
 .confirm-message p + p { margin-top: 8px; }
 .confirm-body .add-user-footer { margin-top: 4px; }
 .confirm-body .danger-button { min-height: 40px; padding: 0 15px; font-size: 13px; }
+
+/* Writing Markdown: a formatting bar, the text, and a preview of the result. */
+.markdown-editor { min-width: 0; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--canvas); overflow: hidden; }
+.markdown-editor:focus-within { border-color: var(--brand-warm); box-shadow: 0 0 0 3px color-mix(in oklch, var(--brand-primary) 22%, transparent); }
+.markdown-editor-bar {
+  padding: 0 10px; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  border-bottom: 1px solid var(--border); background: var(--canvas-subtle);
+}
+.markdown-editor-label { color: var(--text-secondary); font-size: 11px; font-weight: 600; }
+.markdown-editor-tabs { display: flex; gap: 4px; }
+.markdown-editor-tabs button {
+  padding: 9px 8px; border: 0; border-bottom: 2px solid transparent; background: transparent;
+  color: var(--text-muted); cursor: pointer; font-size: 12px; font-weight: 600;
+  transition: color 160ms var(--ease-out);
+}
+.markdown-editor-tabs button.active { border-bottom-color: var(--brand-warm); color: var(--text); }
+.markdown-editor-tabs button:hover { color: var(--text); }
+.markdown-toolbar { padding: 5px 6px; display: flex; flex-wrap: wrap; gap: 2px; border-bottom: 1px solid var(--border); }
+.markdown-toolbar button {
+  width: 30px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 5px;
+  background: transparent; color: var(--text-secondary); cursor: pointer;
+  transition: background-color 150ms var(--ease-out), color 150ms var(--ease-out), transform 120ms var(--ease-out);
+}
+.markdown-toolbar button:hover { background: var(--canvas-subtle); color: var(--text); }
+.markdown-toolbar button:active { transform: scale(0.92); }
+.markdown-editor textarea {
+  width: 100%; min-height: 160px; padding: 12px; display: block; resize: vertical;
+  border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 13px; line-height: 1.55;
+}
+.markdown-editor-foot {
+  padding: 6px 12px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  border-top: 1px solid var(--border); color: var(--text-muted); font-family: 'IBM Plex Mono', monospace; font-size: 10px;
+}
+.markdown-editor-body .markdown-preview { min-height: 200px; padding: 14px 16px; }
+.markdown-empty { min-height: 200px; padding: 14px 16px; color: var(--text-muted); font-size: 13px; }
+.markdown-text { font-size: 14px; }
+.markdown-text > :first-child { margin-top: 0; }
+.org-about {
+  margin-bottom: 24px; padding: 18px 22px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--canvas-raised, var(--canvas)); animation: fade-in 260ms var(--ease-out) backwards;
+}
+.org-about .markdown-text, .markdown-editor .markdown-text { width: auto; max-width: 820px; margin: 0; padding: 0; min-height: 0; }
+.markdown-editor-body .markdown-text.markdown-preview { padding: 14px 16px; min-height: 200px; }

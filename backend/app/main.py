@@ -2253,15 +2253,19 @@ def unsave_model(repo_id: str, user: Saver) -> dict:
     return {"status": "removed"}
 
 
+ORGANIZATION_DESCRIPTION_MAX = 10_000
+
+
 class OrganizationRequest(BaseModel):
     name: str = Field(min_length=2, max_length=64)
     display_name: str = Field(default="", max_length=80)
-    description: str = Field(default="", max_length=500)
+    # Markdown, shown as the organization's About section.
+    description: str = Field(default="", max_length=ORGANIZATION_DESCRIPTION_MAX)
 
 
 class OrganizationUpdate(BaseModel):
     display_name: str | None = Field(default=None, min_length=1, max_length=80)
-    description: str | None = Field(default=None, max_length=500)
+    description: str | None = Field(default=None, max_length=ORGANIZATION_DESCRIPTION_MAX)
 
 
 class MemberRequest(BaseModel):

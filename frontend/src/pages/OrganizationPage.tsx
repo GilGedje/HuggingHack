@@ -9,6 +9,8 @@ import type { LibraryModel, Organization, OrganizationDetails, OrganizationRole 
 import { initials } from '../utils'
 import { ModelCardSkeletons, RowSkeletons } from '../components/Skeletons'
 import { useConfirm } from '../components/ConfirmDialog'
+import { MarkdownEditor, MarkdownText } from '../components/Markdown'
+import { markdownSummary } from '../markdownText'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -52,7 +54,7 @@ export function OrganizationsIndex() {
               <div>
                 <strong>{organization.display_name}</strong>
                 <small>@{organization.name}</small>
-                <p>{organization.description || 'No description yet.'}</p>
+                <p>{markdownSummary(organization.description) || 'No description yet.'}</p>
                 <span className="org-card-meta">
                   {organization.repository_count || 0} repositories · {organization.member_count || 0} members
                   {organization.my_role ? ` · you: ${ORG_ROLE_LABELS[organization.my_role]}` : ''}
@@ -216,7 +218,13 @@ function SettingsTab({ organization, onChanged, onToast }: { organization: Organ
       </div>
       <form className="account-form" onSubmit={save}>
         <label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={80} required /></label>
-        <label>Description<input value={description} onChange={(event) => setDescription(event.target.value)} maxLength={500} /></label>
+        <MarkdownEditor
+          label="About"
+          value={description}
+          onChange={setDescription}
+          maxLength={10_000}
+          placeholder={'What this organization publishes, who it is for, and where to find more.\n\n**Bold**, _italic_, headings, lists, and links all work.'}
+        />
         <button className="download-button">Save</button>
       </form>
     </section>
@@ -260,6 +268,9 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
 
   if (error) return <div className="standard-page"><div className="inline-error">{error}</div></div>
   if (!organization) return <div className="standard-page"><RowSkeletons rows={5} cells={2} label="Loading the organization" /></div>
+  // The header shows the first line; the whole text, when there is more, opens the Models tab.
+  const summary = markdownSummary(organization.description)
+  const about = organization.description.trim() !== summary
   const tabs = [
     { id: 'models', label: 'Models', count: models?.length },
     { id: 'members', label: 'Members', count: organization.members.length },
@@ -279,7 +290,7 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
                 @{organization.name}
                 {organization.my_role && <> · <span className="role-badge member">You: {ORG_ROLE_LABELS[organization.my_role]}</span></>}
               </p>
-              {organization.description && <p className="org-description">{organization.description}</p>}
+              {summary && <p className="org-description">{summary}</p>}
             </div>
           </div>
           <nav className="model-tabs" aria-label="Organization sections">
@@ -302,6 +313,11 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
         </div>
       </header>
       <div className="section-body" ref={body}>
+        {tab === 'models' && about && (
+          <section className="org-about" aria-label={`About ${organization.display_name}`}>
+            <MarkdownText source={organization.description} />
+          </section>
+        )}
         {tab === 'models' && (
           models === null ? (
             <ModelCardSkeletons count={4} label="Loading the organization's models" />

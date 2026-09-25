@@ -33,6 +33,8 @@ import { RuntimesPage } from './RuntimesPage'
 import { StoragePage } from './StoragePage'
 import { RowSkeletons } from '../components/Skeletons'
 import { useConfirm } from '../components/ConfirmDialog'
+import { MarkdownEditor } from '../components/Markdown'
+import { markdownSummary } from '../markdownText'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -726,10 +728,16 @@ function NewOrganizationDialog({ onClose, onCreated }: { onClose: () => void; on
             <span>Display name <small>optional</small></span>
             <input value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} placeholder="NVIDIA" />
           </label>
-          <label className="wide">
-            <span>Description <small>optional</small></span>
-            <input value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
-          </label>
+          <div className="wide">
+            <MarkdownEditor
+              label="About (optional)"
+              value={form.description}
+              onChange={(description) => setForm({ ...form, description })}
+              maxLength={10_000}
+              rows={5}
+              placeholder="What this organization publishes. Markdown works: **bold**, lists, links."
+            />
+          </div>
         </div>
         <p className="add-user-org-note new-org-hint">
           The name becomes a namespace, as in <code>{form.name.trim() || 'Nvidia'}/GLM-5.3-NVFP4</code>, and cannot be
@@ -889,7 +897,7 @@ function OrganizationsTab({ onToast }: { onToast: ToastHandler }) {
             <div className="admin-user-row org-row" role="row" key={organization.id}>
               <span className="admin-user-name">
                 <Link to={`/orgs/${organization.name}`}><strong>{organization.display_name}</strong></Link>
-                <small>@{organization.name}{organization.description ? ` · ${organization.description}` : ''}</small>
+                <small>@{organization.name}{organization.description ? ` · ${markdownSummary(organization.description, 90)}` : ''}</small>
               </span>
               <span className="admin-user-muted">{organization.repository_count || 0}</span>
               <span className="admin-user-muted">{organization.member_count || 0}</span>
