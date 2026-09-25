@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  AlertCircle,
   AlertTriangle,
   ArrowLeft,
   Boxes,
@@ -32,6 +31,7 @@ import { useFadeOnChange, useStickySidebar, useTabIndicator } from '../motion'
 import { ModelActions, ModelCardDocument } from '../components/ModelDetails'
 import { ConfigSection } from '../components/ConfigSection'
 import { DownloadLink } from '../components/DownloadLink'
+import { LoadError } from '../components/LoadError'
 import { FileDiff } from '../components/FileDiff'
 import { GgufInspector } from '../components/GgufInspector'
 import { RepositorySettings } from '../components/RepositorySettings'
@@ -381,14 +381,7 @@ function CommitsSection({ model }: { model: LibraryModelDetails }) {
         <span>{formatNumber(total)} commit{total === 1 ? '' : 's'}</span>
       </div>
       {error && (
-        <div className="page-error">
-          <AlertCircle size={18} />
-          <div>
-            <strong>Could not load the commit history</strong>
-            <p>{error}</p>
-          </div>
-          <button type="button" onClick={() => load(commits.length)}>Retry</button>
-        </div>
+        <LoadError what="the commit history" message={error} onRetry={() => load(commits.length)} />
       )}
       {groupByDay(commits).map(([day, items]) => (
         <div className="commit-day" key={day}>
@@ -451,14 +444,7 @@ function CommitSection({ model, commitId }: { model: LibraryModelDetails; commit
 
   if (error) {
     return (
-      <div className="page-error">
-        <AlertCircle size={18} />
-        <div>
-          <strong>Could not load this commit</strong>
-          <p>{error}</p>
-        </div>
-        <button type="button" onClick={() => setAttempt((value) => value + 1)}>Retry</button>
-      </div>
+      <LoadError what="this commit" message={error} onRetry={() => setAttempt((value) => value + 1)} />
     )
   }
   if (!commit) {

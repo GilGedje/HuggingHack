@@ -31,6 +31,7 @@ import { UploadsPage } from './pages/UploadsPage'
 import { EMPTY_FILTERS, ModelFilters, activeFilterCount, applyFilters, type ModelFilterState } from './components/ModelFilters'
 import { LibraryModelRow } from './components/RepositoryRows'
 import { ModelCardSkeletons } from './components/Skeletons'
+import { LoadError } from './components/LoadError'
 import { AccessProvider, useAccess } from './access'
 import { AccountPage } from './pages/AccountPage'
 import { AdminPage } from './pages/AdminPage'
@@ -421,14 +422,7 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
           </div>
 
           {error && (
-            <div className="page-error">
-              <AlertCircle size={18} />
-              <div>
-                <strong>Could not read the local library</strong>
-                <p>{error}</p>
-              </div>
-              <button onClick={fetchModels}>Retry</button>
-            </div>
+            <LoadError what="the models" message={error} onRetry={fetchModels} />
           )}
           {/* A scan re-reads every model, so the grid shows what is coming instead. */}
           {loading || scanning ? (

@@ -29,6 +29,7 @@ import type {
 import { formatBytes, relativeTime } from '../utils'
 import { DownloadLink } from './DownloadLink'
 import { FileDiff } from './FileDiff'
+import { LoadError } from './LoadError'
 import { RowSkeletons } from './Skeletons'
 import { CopyButton } from './UseModel'
 
@@ -447,8 +448,8 @@ function RevisionView({
 
   if (error) {
     return (
-      <LoadFailed
-        title="Could not load this revision"
+      <LoadError
+        what="this revision"
         message={error}
         onRetry={() => {
           setError('')
@@ -701,14 +702,7 @@ function NewRevision({
         <Link to={`${base}/config`} className="text-link">
           <ArrowLeft size={14} /> All configs
         </Link>
-        <div className="page-error">
-          <AlertTriangle size={18} />
-          <div>
-            <strong>Could not load the latest files</strong>
-            <p>{loadError}</p>
-          </div>
-          <button type="button" onClick={() => setAttempt((value) => value + 1)}>Retry</button>
-        </div>
+        <LoadError what="the latest files" message={loadError} onRetry={() => setAttempt((value) => value + 1)} />
       </div>
     )
   }
@@ -868,19 +862,6 @@ function NewRevision({
   )
 }
 
-function LoadFailed({ title, message, onRetry }: { title: string; message: string; onRetry: () => void }) {
-  return (
-    <div className="page-error">
-      <AlertTriangle size={18} />
-      <div>
-        <strong>{title}</strong>
-        <p>{message}</p>
-      </div>
-      <button type="button" onClick={onRetry}>Retry</button>
-    </div>
-  )
-}
-
 /** The test setup carries over to the next revision; measured numbers do not. */
 function pickContext(results: ConfigResults, metrics: ConfigMetric[]): Record<string, number> {
   const context = new Set(metrics.filter((metric) => metric.group === 'context').map((metric) => metric.id))
@@ -917,7 +898,7 @@ export function ConfigSection({
     load()
   }, [load])
 
-  if (error) return <LoadFailed title="Could not load the configs" message={error} onRetry={load} />
+  if (error) return <LoadError what="the configs" message={error} onRetry={load} />
   if (!listing) return <RowSkeletons rows={4} cells={3} label="Loading configs" />
   if (path === 'new') {
     if (!listing.can_edit) return <div className="inline-error">You cannot add configs to this model.</div>
