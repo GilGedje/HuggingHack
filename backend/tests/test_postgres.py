@@ -289,3 +289,139 @@ def test_postgresql_model_hardware_tags():
     finally:
         database.set_model_hardware(repo_id, [])
     assert repo_id not in database.model_hardware()
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
+def test_postgresql_visibility_upgrade_and_storage_grants():
+    database = Database(POSTGRES_URL or "")
+    database.initialize()
+    suffix = uuid.uuid4().hex
+    user_id, org_id = f"user-{suffix}", f"org-{suffix}"
+    timestamp = "2026-09-25T12:00:00+00:00"
+    repos = {f"u{suffix}/mine": None, f"u{suffix}/open": None, f"o{suffix}/team": org_id}
+    try:
+        database.create_user(
+            {"id": user_id, "username": f"u{suffix}", "display_name": "Owner",
+             "password_hash": "test-only", "role": "member",
+             "created_at": timestamp, "updated_at": timestamp}
+        )
+        database.create_organization(
+            {"id": org_id, "name": f"o{suffix}", "display_name": "Org", "description": "",
+             "created_at": timestamp, "updated_at": timestamp}
+        )
+        # Put back the constraint of an older install; NOT VALID skips other tests' rows.
+        with database.connect() as connection:
+            connection.execute(
+                "ALTER TABLE owned_repositories DROP CONSTRAINT owned_repositories_visibility_check"
+            )
+            connection.execute(
+                "ALTER TABLE owned_repositories ADD CONSTRAINT old_visibility "
+                "CHECK (visibility IN ('private', 'shared')) NOT VALID"
+            )
+        for repo_id, organization_id in repos.items():
+            database.create_owned_repository(
+                {"id": uuid.uuid4().hex, "owner_id": user_id, "repo_id": repo_id,
+                 "description": "", "status": "ready", "created_at": timestamp,
+                 "updated_at": timestamp, "organization_id": organization_id,
+                 "visibility": "shared" if repo_id.endswith("/open") else "private"}
+            )
+        database.initialize()
+        assert [database.get_owned_repository(repo_id)["visibility"] for repo_id in repos] == [
+            "private", "public", "organization"
+        ]
+        with pytest.raises(INTEGRITY_ERRORS):
+            database.update_owned_repository(f"u{suffix}/mine", visibility="shared")
+
+        database.set_storage_grants("pg-bucket", [user_id], [org_id], timestamp)
+        grants = database.storage_grants()["pg-bucket"]
+        assert sorted((item["kind"], item["id"]) for item in grants) == [
+            ("organization", org_id), ("user", user_id)
+        ]
+        with pytest.raises(INTEGRITY_ERRORS):
+            database.set_storage_grants("pg-bucket", [user_id, user_id], [], timestamp)
+    finally:
+        database.set_storage_grants("pg-bucket", [], [], timestamp)
+        for repo_id in repos:
+            database.delete_owned_repository(repo_id)
+        with database.connect() as connection:
+            connection.execute("DELETE FROM organizations WHERE id = ?", (org_id,))
+            connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    assert "pg-bucket" not in database.storage_grants()
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
+def test_postgresql_repository_rename_moves_every_row():
+    database = Database(POSTGRES_URL or "")
+    database.initialize()
+    suffix = uuid.uuid4().hex
+    user_id, org_id = f"user-{suffix}", f"org-{suffix}"
+    old, new, adopted = f"u{suffix}/old", f"o{suffix}/new", f"hf{suffix}/model"
+    timestamp = "2026-09-25T12:00:00+00:00"
+    try:
+        database.create_user(
+            {"id": user_id, "username": f"u{suffix}", "display_name": "Owner",
+             "password_hash": "test-only", "role": "member",
+             "created_at": timestamp, "updated_at": timestamp}
+        )
+        database.create_organization(
+            {"id": org_id, "name": f"o{suffix}", "display_name": "Org", "description": "",
+             "created_at": timestamp, "updated_at": timestamp}
+        )
+        database.create_owned_repository(
+            {"id": uuid.uuid4().hex, "owner_id": user_id, "repo_id": old, "description": "",
+             "visibility": "private", "status": "ready", "created_at": timestamp,
+             "updated_at": timestamp}
+        )
+        database.set_model_hardware(old, ["l40"])
+        database.rename_repository(
+            old, new,
+            {"owner_id": user_id, "organization_id": org_id, "visibility": "organization",
+             "updated_at": timestamp},
+        )
+        moved = database.get_owned_repository(new)
+        assert moved["organization_id"] == org_id and moved["visibility"] == "organization"
+        assert database.get_owned_repository(old) is None
+        assert database.model_hardware([new, old]) == {new: ["l40"]}
+
+        # A downloaded model is registered as owned when it gets an owner.
+        database.rename_repository(
+            f"hf{suffix}/source", adopted,
+            {"id": uuid.uuid4().hex, "owner_id": user_id, "organization_id": None,
+             "visibility": "public", "updated_at": timestamp, "description": "",
+             "status": "ready", "created_at": timestamp},
+        )
+        assert database.get_owned_repository(adopted)["visibility"] == "public"
+    finally:
+        for repo_id in (old, new, adopted):
+            database.delete_owned_repository(repo_id)
+        with database.connect() as connection:
+            connection.execute("DELETE FROM organizations WHERE id = ?", (org_id,))
+            connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
+def test_postgresql_config_revisions():
+    database = Database(POSTGRES_URL or "")
+    database.initialize()
+    repo_id = f"pg-{uuid.uuid4().hex}/model"
+    base = {
+        "repo_id": repo_id, "message": "Baseline", "description": "", "author_id": None,
+        "author_name": "Tester", "files_json": "[]", "changes_json": "[]",
+        "results_json": '{"values": {"output_tps": 10}}', "results_updated_at": None,
+        "results_updated_by": None, "created_at": "2026-09-25T12:00:00+00:00",
+    }
+    try:
+        first = database.create_config_revision({**base, "id": uuid.uuid4().hex, "parent_id": None})
+        assert first["sequence"] == 1 and first["results"]["values"]["output_tps"] == 10
+        with pytest.raises(RuntimeError):
+            database.create_config_revision({**base, "id": uuid.uuid4().hex, "parent_id": None})
+        second = database.create_config_revision({**base, "id": uuid.uuid4().hex, "parent_id": first["id"]})
+        assert second["sequence"] == 2
+        assert database.latest_config_revision(repo_id)["id"] == second["id"]
+        updated = database.update_config_results(repo_id, first["id"], '{"values": {}}', "t", "Tester")
+        assert updated["results"] == {"values": {}} and updated["results_updated_by"] == "Tester"
+        assert [item["sequence"] for item in database.list_config_revisions(repo_id)] == [2, 1]
+        assert database.count_config_revisions(repo_id) == 2
+    finally:
+        database.delete_config_revisions(repo_id)
+    assert database.count_config_revisions(repo_id) == 0

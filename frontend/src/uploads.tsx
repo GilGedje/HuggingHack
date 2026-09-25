@@ -12,7 +12,6 @@ import {
   AlertCircle,
   Check,
   ChevronDown,
-  ChevronUp,
   FolderOpen,
   LoaderCircle,
   RotateCcw,
@@ -21,6 +20,7 @@ import {
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { api } from './api'
+import { DOCK_EXIT_MS, prefersReducedMotion, useFadeOnChange } from './motion'
 import { formatBytes } from './utils'
 
 export interface UploadItem {
@@ -128,6 +128,8 @@ export function UploadProvider({
 }) {
   const [jobs, setJobs] = useState<UploadJob[]>(restoreJobs)
   const [minimized, setMinimized] = useState(false)
+  const [leaving, setLeaving] = useState(false)
+  const leaveTimer = useRef(0)
   const jobsRef = useRef(jobs)
   const controllers = useRef(new Map<string, AbortController>())
   const running = useRef(false)
@@ -286,6 +288,26 @@ export function UploadProvider({
     update(job.id, { items, status: 'queued', error: undefined })
   }
 
+  useEffect(() => () => window.clearTimeout(leaveTimer.current), [])
+
+  function clearFinished() {
+    const finished = new Set(
+      jobs.filter((job) => !['interrupted', 'error'].includes(job.status)).map((job) => job.id),
+    )
+    const drop = () => setJobs((all) => all.filter((job) => !finished.has(job.id)))
+    // The panel leaves as one piece when nothing would be left in it.
+    if (finished.size < jobs.length || prefersReducedMotion()) {
+      drop()
+      return
+    }
+    setLeaving(true)
+    window.clearTimeout(leaveTimer.current)
+    leaveTimer.current = window.setTimeout(() => {
+      drop()
+      setLeaving(false)
+    }, DOCK_EXIT_MS)
+  }
+
   const value = useMemo(() => ({ jobs, active, enqueue }), [jobs, active, enqueue])
   const visible = jobs
   const current = jobs.find((job) => job.status === 'uploading' || job.status === 'committing')
@@ -296,13 +318,21 @@ export function UploadProvider({
       { done: 0, total: 0 },
     )
   const percent = totals.total ? Math.min(100, (totals.done / totals.total) * 100) : 100
+  const label = useFadeOnChange<HTMLSpanElement>(active ? 'active' : 'idle')
+  // Collapsed parts stay in the page so they can fold smoothly, but out of reach.
+  const inert = (hidden: boolean) => (element: HTMLElement | null) => {
+    if (hidden) element?.setAttribute('inert', '')
+    else element?.removeAttribute('inert')
+  }
 
   return (
     <UploadContext.Provider value={value}>
       {children}
       {visible.length > 0 && (
         <aside
-          className={minimized ? 'upload-dock minimized' : 'upload-dock'}
+          className={['upload-dock', minimized && 'minimized', active && 'live', leaving && !active && 'leaving']
+            .filter(Boolean)
+            .join(' ')}
           aria-label="Uploads"
           aria-live="polite"
         >
@@ -314,12 +344,12 @@ export function UploadProvider({
               aria-expanded={!minimized}
             >
               {active ? <LoaderCircle size={15} className="spin" /> : <UploadCloud size={15} />}
-              <span>
+              <span ref={label}>
                 {active
                   ? `Uploading${current ? ` ${current.repoId}` : ''} · ${percent.toFixed(0)}%`
                   : `${visible.length} upload${visible.length === 1 ? '' : 's'}`}
               </span>
-              {minimized ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+              <ChevronDown size={15} className="upload-dock-chevron" />
             </button>
             {!active && (
               <button
@@ -327,106 +357,107 @@ export function UploadProvider({
                 className="icon-button"
                 aria-label="Clear finished uploads"
                 title="Clear finished uploads"
-                onClick={() =>
-                  setJobs((all) => all.filter((job) => ['interrupted', 'error'].includes(job.status)))
-                }
+                onClick={clearFinished}
               >
                 <X size={16} />
               </button>
             )}
           </header>
-          {minimized ? (
-            active && (
-              <div className="job-progress upload-dock-mini-progress">
+          <div className="upload-dock-fold upload-dock-mini" ref={inert(true)} aria-hidden="true">
+            <div>
+              <div className={active ? 'job-progress live upload-dock-mini-progress' : 'job-progress upload-dock-mini-progress'}>
                 <span style={{ width: `${percent}%` }} />
               </div>
-            )
-          ) : (
-            <ul className="upload-dock-list">
-              {visible.map((job) => {
-                const done = uploadedBytes(job)
-                const jobPercent = job.total ? Math.min(100, (done / job.total) * 100) : 0
-                return (
-                  <li key={job.id} className={`upload-job ${job.status}`}>
-                    <div className="upload-job-title">
-                      <Link to={`/models/${job.repoId}`}>{job.repoId}</Link>
-                      <span>{job.message}</span>
-                    </div>
-                    {['uploading', 'queued', 'committing'].includes(job.status) && (
-                      <>
-                        <div className="job-progress">
-                          <span style={{ width: `${job.status === 'committing' ? 100 : jobPercent}%` }} />
-                        </div>
-                        <div className="upload-job-meta">
-                          <span>
-                            {job.status === 'queued'
-                              ? 'Waiting'
-                              : job.status === 'committing'
-                                ? 'Committing…'
-                                : job.currentFile || 'Starting…'}
-                          </span>
-                          <span>
-                            {formatBytes(done)} / {formatBytes(job.total)}
-                          </span>
-                        </div>
-                      </>
-                    )}
-                    {job.status === 'done' && (
-                      <p className="upload-job-state ok">
-                        <Check size={13} /> Committed {job.items.length} file
-                        {job.items.length === 1 ? '' : 's'}
-                        {job.deletions.length ? `, deleted ${job.deletions.length}` : ''}
-                      </p>
-                    )}
-                    {job.status === 'cancelled' && (
-                      <p className="upload-job-state">Cancelled; staged files were discarded.</p>
-                    )}
-                    {job.error && (
-                      <p className="upload-job-state danger">
-                        <AlertCircle size={13} /> {job.error}
-                      </p>
-                    )}
-                    {job.status === 'interrupted' && (
-                      <p className="upload-job-state">
-                        The page was reloaded. Choose the same folder again to resume where it stopped.
-                      </p>
-                    )}
-                    <div className="upload-job-actions">
-                      {['uploading', 'queued'].includes(job.status) && (
-                        <button type="button" onClick={() => cancel(job)}>
-                          <X size={13} /> Cancel
-                        </button>
+            </div>
+          </div>
+          <div className="upload-dock-fold upload-dock-body" ref={inert(minimized)} aria-hidden={minimized || undefined}>
+            <div>
+              <ul className="upload-dock-list">
+                {visible.map((job) => {
+                  const done = uploadedBytes(job)
+                  const jobPercent = job.total ? Math.min(100, (done / job.total) * 100) : 0
+                  return (
+                    <li key={job.id} className={`upload-job ${job.status}`}>
+                      <div className="upload-job-title">
+                        <Link to={`/models/${job.repoId}`}>{job.repoId}</Link>
+                        <span>{job.message}</span>
+                      </div>
+                      {['uploading', 'queued', 'committing'].includes(job.status) && (
+                        <>
+                          <div className={job.status === 'queued' ? 'job-progress' : 'job-progress live'}>
+                            <span style={{ width: `${job.status === 'committing' ? 100 : jobPercent}%` }} />
+                          </div>
+                          <div className="upload-job-meta">
+                            <span>
+                              {job.status === 'queued'
+                                ? 'Waiting'
+                                : job.status === 'committing'
+                                  ? 'Committing…'
+                                  : job.currentFile || 'Starting…'}
+                            </span>
+                            <span>
+                              {formatBytes(done)} / {formatBytes(job.total)}
+                            </span>
+                          </div>
+                        </>
                       )}
-                      {job.status === 'error' && (
-                        <button type="button" onClick={() => update(job.id, { status: 'queued' })}>
-                          <RotateCcw size={13} /> Retry
-                        </button>
+                      {job.status === 'done' && (
+                        <p className="upload-job-state ok">
+                          <Check size={13} /> Committed {job.items.length} file
+                          {job.items.length === 1 ? '' : 's'}
+                          {job.deletions.length ? `, deleted ${job.deletions.length}` : ''}
+                        </p>
+                      )}
+                      {job.status === 'cancelled' && (
+                        <p className="upload-job-state">Cancelled; staged files were discarded.</p>
+                      )}
+                      {job.error && (
+                        <p className="upload-job-state danger">
+                          <AlertCircle size={13} /> {job.error}
+                        </p>
                       )}
                       {job.status === 'interrupted' && (
-                        <label className="upload-job-reselect">
-                          <FolderOpen size={13} /> Choose folder
-                          <input
-                            type="file"
-                            multiple
-                            ref={(input) => {
-                              input?.setAttribute('webkitdirectory', '')
-                              input?.setAttribute('directory', '')
-                            }}
-                            onChange={(event) => reattach(job, Array.from(event.target.files || []))}
-                          />
-                        </label>
+                        <p className="upload-job-state">
+                          The page was reloaded. Choose the same folder again to resume where it stopped.
+                        </p>
                       )}
-                      {['interrupted', 'error'].includes(job.status) && (
-                        <button type="button" onClick={() => cancel(job).then(() => setJobs((all) => all.filter((entry) => entry.id !== job.id)))}>
-                          Discard
-                        </button>
-                      )}
-                    </div>
-                  </li>
-                )
-              })}
-            </ul>
-          )}
+                      <div className="upload-job-actions">
+                        {['uploading', 'queued'].includes(job.status) && (
+                          <button type="button" onClick={() => cancel(job)}>
+                            <X size={13} /> Cancel
+                          </button>
+                        )}
+                        {job.status === 'error' && (
+                          <button type="button" onClick={() => update(job.id, { status: 'queued' })}>
+                            <RotateCcw size={13} /> Retry
+                          </button>
+                        )}
+                        {job.status === 'interrupted' && (
+                          <label className="upload-job-reselect">
+                            <FolderOpen size={13} /> Choose folder
+                            <input
+                              type="file"
+                              multiple
+                              ref={(input) => {
+                                input?.setAttribute('webkitdirectory', '')
+                                input?.setAttribute('directory', '')
+                              }}
+                              onChange={(event) => reattach(job, Array.from(event.target.files || []))}
+                            />
+                          </label>
+                        )}
+                        {['interrupted', 'error'].includes(job.status) && (
+                          <button type="button" onClick={() => cancel(job).then(() => setJobs((all) => all.filter((entry) => entry.id !== job.id)))}>
+                            Discard
+                          </button>
+                        )}
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          </div>
         </aside>
       )}
     </UploadContext.Provider>

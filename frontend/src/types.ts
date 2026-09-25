@@ -230,8 +230,16 @@ export interface LibraryModelDetails extends LibraryModel {
   latest_commit?: CommitSummary | null
   commit_count: number
   can_edit: boolean
+  /** May rename, transfer, change visibility, and delete it. */
+  can_manage: boolean
+  /** Deployment config revisions recorded for it. */
+  config_count: number
+  /** Has an owner (an upload, or a model assigned to one); others are public. */
+  owned: boolean
   hardware_options: Array<[string, string]>
-  visibility: 'public' | 'shared' | 'private'
+  visibility: Visibility
+  /** Display name of the storage location that holds the model. */
+  storage_target_name: string
   description: string
   organization?: { name: string; display_name: string } | null
   total_bytes: number
@@ -345,7 +353,7 @@ export interface OwnedRepository {
   owner_display_name: string
   repo_id: string
   description: string
-  visibility: 'private' | 'shared'
+  visibility: Visibility
   status: 'uploading' | 'ready'
   size_bytes?: number | null
   file_count?: number | null
@@ -365,7 +373,7 @@ export interface StorageModel {
   cached: boolean
   storage_backend: 'filesystem' | 's3'
   modified_at?: string | null
-  visibility: 'public' | 'shared' | 'private'
+  visibility: Visibility
 }
 
 export interface StorageCapacity {
@@ -391,6 +399,15 @@ export interface StorageTarget {
   cached_count: number
   models: StorageModel[]
   capacity?: StorageCapacity | null
+  /** Who may put new repositories here; empty means every uploader. */
+  grants: StorageGrant[]
+}
+
+export interface StorageGrant {
+  kind: 'user' | 'organization'
+  id: string
+  name: string
+  display_name: string
 }
 
 export interface StorageOverview {
@@ -404,7 +421,17 @@ export interface StorageOption {
   id: string
   name: string
   kind: 'filesystem' | 's3'
+  /** Only some users and organizations may upload here. */
+  restricted: boolean
+  /** Reserved for the owner being uploaded as. */
+  dedicated: boolean
+  /** Free space on local disk; null for buckets. */
+  free_bytes: number | null
 }
+
+/** Private: the owner (an organization's admins and writers). Organization: every
+ * member. Public: every account, plus anonymous Hugging Face clients. */
+export type Visibility = 'private' | 'organization' | 'public'
 
 export interface CommitSummary {
   id: string
@@ -429,6 +456,59 @@ export interface CommitChange {
   truncated?: boolean
   additions?: number
   deletions?: number
+}
+
+export type MetricDirection = 'higher' | 'lower' | null
+
+export interface ConfigMetric {
+  id: string
+  label: string
+  unit: string
+  better: MetricDirection
+  group: 'speed' | 'latency' | 'capacity' | 'speculative' | 'context'
+}
+
+export interface CustomMetric {
+  name: string
+  value: number
+  unit: string
+  better: MetricDirection
+}
+
+/** Numbers measured while a config ran, with the test's context. */
+export interface ConfigResults {
+  values: Record<string, number>
+  hardware: string | null
+  vllm_version: string | null
+  custom: CustomMetric[]
+  notes: string
+}
+
+export interface ConfigRevision {
+  id: string
+  sequence: number
+  parent_id: string | null
+  message: string
+  description: string
+  author_name: string
+  created_at: string
+  file_count: number
+  summary: { added: number; modified: number; deleted: number }
+  results: ConfigResults
+  results_updated_at: string | null
+  results_updated_by: string | null
+}
+
+export interface ConfigRevisionDetail extends ConfigRevision {
+  files: Array<{ path: string; size: number; content: string }>
+  changes: CommitChange[]
+}
+
+export interface ConfigListing {
+  items: ConfigRevision[]
+  metrics: ConfigMetric[]
+  hardware: Array<[string, string]>
+  can_edit: boolean
 }
 
 export interface CommitDetail extends CommitSummary {

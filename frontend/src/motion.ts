@@ -6,8 +6,10 @@ const EASE_OUT = 'cubic-bezier(0.22, 1, 0.36, 1)'
 const DIALOG_EXIT_MS = 160
 /** How long a toast takes to leave; matches `toast-out` in styles.css. */
 export const TOAST_EXIT_MS = 180
+/** How long the upload panel takes to leave; matches `.upload-dock.leaving`. */
+export const DOCK_EXIT_MS = 180
 
-function prefersReducedMotion(): boolean {
+export function prefersReducedMotion(): boolean {
   return typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 }
 
@@ -16,7 +18,7 @@ function prefersReducedMotion(): boolean {
  * popping in. Opacity only: a transform here would become the containing block
  * for fixed-position dialogs inside the element.
  */
-export function useFadeOnChange<T extends HTMLElement>(key: string, { initial = false } = {}) {
+export function useFadeOnChange<T extends HTMLElement>(key: string, { initial = false, shift = 0 } = {}) {
   const ref = useRef<T>(null)
   const first = useRef(true)
   useLayoutEffect(() => {
@@ -24,12 +26,29 @@ export function useFadeOnChange<T extends HTMLElement>(key: string, { initial = 
     first.current = false
     const element = ref.current
     if (skip || !element?.animate || prefersReducedMotion()) return
-    const animation = element.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: EASE_OUT })
+    // A shift is only there while it plays; nothing is left on the element after.
+    const frames = shift
+      ? [{ opacity: 0, transform: `translateX(${shift}px)` }, { opacity: 1, transform: 'none' }]
+      : [{ opacity: 0 }, { opacity: 1 }]
+    const animation = element.animate(frames, { duration: shift ? 320 : 220, easing: EASE_OUT })
     return () => animation.cancel()
     // `initial` only matters on the first run.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
   return ref
+}
+
+/**
+ * How far new content drifts in when stepping through `index`: from the right
+ * going forward, from the left going back, so it arrives from where it lies.
+ */
+export function useStepDirection(index: number, distance = 14): number {
+  const previous = useRef(index)
+  const shift = index === previous.current ? 0 : index > previous.current ? distance : -distance
+  useEffect(() => {
+    previous.current = index
+  }, [index])
+  return shift
 }
 
 /**

@@ -36,6 +36,7 @@ from .config import settings, validate_namespace, validate_repo_id
 from .database import INTEGRITY_ERRORS, Database
 from .downloads import DownloadManager
 from .git_mirror import GitMirrors
+from .deploy_configs import METRICS, ConfigRevisions
 from .history import RepoHistory, public_commit
 from .oidc import OidcClient, OidcError, claim_groups, pkce_pair
 from .permissions import CAPABILITIES, can, capabilities_for, permission_matrix
@@ -270,17 +271,28 @@ class SavedModelRequest(BaseModel):
 class RepositoryRequest(BaseModel):
     slug: str = Field(min_length=1, max_length=96)
     description: str = Field(default="", max_length=500)
-    visibility: Literal["private", "shared"] = "private"
+    visibility: Literal["private", "organization", "public"] = "private"
     storage_target: str | None = Field(default=None, max_length=40)
     namespace: str | None = Field(default=None, max_length=64)
 
 
 class RepositoryUpdateRequest(BaseModel):
     description: str = Field(default="", max_length=500)
-    visibility: Literal["private", "shared"] = "private"
+    visibility: Literal["private", "organization", "public"] = "private"
+
+
+class StorageGrantRequest(BaseModel):
+    users: list[str] = Field(default_factory=list, max_length=200)
+    organizations: list[str] = Field(default_factory=list, max_length=200)
 
 
 class DeleteRepositoryRequest(BaseModel):
+    confirmation: str = Field(min_length=1, max_length=200)
+
+
+class RenameRepositoryRequest(BaseModel):
+    namespace: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=96)
     confirmation: str = Field(min_length=1, max_length=200)
 
 
@@ -415,6 +427,9 @@ Editor = requires("repos.edit_own", write=True)
 Scanner = requires("library.scan", write=True)
 CacheManager = requires("library.cache", write=True)
 StorageViewer = requires("storage.view")
+StorageManager = requires("storage.manage", write=True, session_only=True)
+# Repository settings: who may change a repository is decided per repository.
+RepoManager = requires("models.browse", write=True, session_only=True)
 UserManager = requires("users.manage", session_only=True)
 UserAdmin = requires("users.manage", write=True, session_only=True)
 SettingsViewer = requires("settings.view", session_only=True)
@@ -1161,6 +1176,124 @@ def update_model_hardware(
     return {"repo_id": model["repo_id"], "hardware": chosen}
 
 
+class ConfigFile(BaseModel):
+    path: str = Field(min_length=1, max_length=500)
+    content: str = Field(max_length=600_000)
+
+
+class ConfigRevisionRequest(BaseModel):
+    parent_id: str | None = Field(default=None, max_length=40)
+    message: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=5000)
+    files: list[ConfigFile] = Field(default_factory=list, max_length=60)
+    deletions: list[str] = Field(default_factory=list, max_length=60)
+    results: dict[str, Any] | None = None
+
+
+class ConfigResultsRequest(BaseModel):
+    results: dict[str, Any]
+
+
+def config_revisions() -> ConfigRevisions:
+    return ConfigRevisions(database, history)
+
+
+def editable_model(repo_id: str, user: dict[str, Any]) -> dict[str, Any]:
+    model = visible_model(repo_id, user["id"])
+    if not uploads.can_edit(model["repo_id"], user):
+        raise HTTPException(status_code=403, detail="You cannot edit this model.")
+    return model
+
+
+@app.get("/api/library/configs")
+def list_config_revisions(
+    user: Browser, repo_id: Annotated[str, Query(max_length=200)]
+) -> dict:
+    """Deployment config revisions of a model, newest first, with their results."""
+    model = visible_model(repo_id, user["id"])
+    return {
+        "items": config_revisions().list(model["repo_id"]),
+        "metrics": METRICS,
+        "hardware": [[key, label] for key, label in HARDWARE.items()],
+        "can_edit": uploads.can_edit(model["repo_id"], user),
+    }
+
+
+@app.get("/api/library/config")
+def get_config_revision(
+    user: Browser,
+    repo_id: Annotated[str, Query(max_length=200)],
+    revision_id: Annotated[str, Query(max_length=40)],
+) -> dict:
+    model = visible_model(repo_id, user["id"])
+    try:
+        return config_revisions().detail(model["repo_id"], revision_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.get("/api/library/config/archive")
+def download_config_revision(
+    user: Browser,
+    repo_id: Annotated[str, Query(max_length=200)],
+    revision_id: Annotated[str, Query(max_length=40)],
+) -> Response:
+    """Every file of one revision as a zip, for copying to a GPU host."""
+    model = visible_model(repo_id, user["id"])
+    try:
+        name, payload = config_revisions().archive(model["repo_id"], revision_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return Response(
+        payload,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
+@app.post("/api/library/configs", status_code=201)
+def create_config_revision(
+    payload: ConfigRevisionRequest,
+    user: Editor,
+    repo_id: Annotated[str, Query(max_length=200)],
+) -> dict:
+    model = editable_model(repo_id, user)
+    try:
+        return config_revisions().create(
+            model["repo_id"],
+            user,
+            payload.parent_id,
+            [item.model_dump() for item in payload.files],
+            payload.deletions,
+            payload.message,
+            payload.description,
+            payload.results,
+        )
+    except (RuntimeError, *INTEGRITY_ERRORS) as error:
+        raise HTTPException(
+            status_code=409,
+            detail="Someone added a revision since you started. Reload and try again.",
+        ) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.put("/api/library/config/results")
+def update_config_results(
+    payload: ConfigResultsRequest,
+    user: Editor,
+    repo_id: Annotated[str, Query(max_length=200)],
+    revision_id: Annotated[str, Query(max_length=40)],
+) -> dict:
+    model = editable_model(repo_id, user)
+    try:
+        return config_revisions().set_results(model["repo_id"], revision_id, user, payload.results)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
 def library_listing(model: dict[str, Any]) -> dict[str, Any]:
     root = settings.model_storage / model["relative_path"]
     if model["storage_backend"] == "s3" and (not model["cached"] or not root.is_dir()):
@@ -1312,6 +1445,48 @@ def change_errors(error: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(error))
 
 
+@app.post("/api/repos/rename")
+async def rename_repository(
+    payload: RenameRepositoryRequest,
+    user: RepoManager,
+    repo_id: Annotated[str, Query(max_length=200)],
+) -> dict:
+    """Rename a repository or move it to another owner."""
+    try:
+        return await run_in_threadpool(
+            uploads.rename_repository,
+            repo_id,
+            user,
+            payload.namespace,
+            payload.name,
+            payload.confirmation,
+        )
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    except (FileExistsError, *INTEGRITY_ERRORS) as error:
+        raise HTTPException(status_code=409, detail=str(error) or "That name is taken.") from error
+    except (ValueError, OSError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.delete("/api/repos")
+async def delete_model_repository(
+    payload: DeleteRepositoryRequest,
+    user: RepoManager,
+    repo_id: Annotated[str, Query(max_length=200)],
+) -> dict:
+    """Delete an upload (its admins) or any other model (server administrators)."""
+    try:
+        await run_in_threadpool(uploads.delete_model, repo_id, user, payload.confirmation)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {"status": "deleted"}
+
+
 @app.post("/api/repos/changes", status_code=201)
 def start_repository_change(payload: ChangeStartRequest, user: Editor) -> dict:
     visible_model(payload.repo_id, user["id"])
@@ -1409,12 +1584,16 @@ async def library_model(repo_id: str, user: Browser) -> dict:
         file["last_commit"] = last_commits.get(file["path"])
     details["latest_commit"] = public_commit(latest) if latest else None
     details["commit_count"] = database.count_commits(model["repo_id"])
+    details["config_count"] = database.count_config_revisions(model["repo_id"])
     details["can_edit"] = uploads.can_edit(model["repo_id"], user)
+    details["can_manage"] = uploads.can_manage(model["repo_id"], user)
     tagged = database.model_hardware([model["repo_id"]]).get(model["repo_id"], [])
     details["hardware"] = [key for key in HARDWARE if key in tagged]
     details["hardware_options"] = [[key, label] for key, label in HARDWARE.items()]
     owned = database.get_owned_repository(model["repo_id"])
     details["visibility"] = owned["visibility"] if owned else "public"
+    details["owned"] = bool(owned)
+    details["storage_target_name"] = storages.for_model(model).name
     details["description"] = owned["description"] if owned else ""
     organization = database.get_organization(model["repo_id"].split("/", 1)[0])
     details["organization"] = (
@@ -1460,6 +1639,14 @@ def start_download(payload: DownloadRequest, user: HubWriter) -> dict:
             status_code=409,
             detail="An account-owned repository already uses this storage path.",
         )
+    storage_target = payload.storage_target
+    if storage_target or not database.get_local_model(payload.repo_id):
+        try:
+            storage_target = uploads.choose_storage(user, storage_target).id
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except PermissionError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from error
     try:
         return downloads.queue(
             payload.repo_id,
@@ -1468,7 +1655,7 @@ def start_download(payload: DownloadRequest, user: HubWriter) -> dict:
             payload.ignore_patterns,
             payload.mode,
             user_id=user["id"],
-            storage_target=payload.storage_target,
+            storage_target=storage_target,
         )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -1568,15 +1755,26 @@ def local_model(repo_id: str, user: Browser) -> dict:
 
 
 @app.get("/api/storage/options")
-def storage_options(_: Browser) -> dict:
-    """Targets an uploader can choose, without connection details."""
-    return {
-        "default": storages.default_id,
-        "items": [
-            {"id": storage.id, "name": storage.name, "kind": storage.backend}
-            for storage in storages.all()
-        ],
-    }
+def storage_options(
+    user: Browser,
+    namespace: Annotated[str | None, Query(max_length=64)] = None,
+) -> dict:
+    """Targets this user may put a new repository in (for `namespace` when given),
+    without connection details."""
+    if not can(user, "repos.create") and not can(user, "hub.download"):
+        return {"default": None, "items": []}
+    try:
+        items = uploads.storage_choices(user, namespace)
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    try:
+        default = uploads.choose_storage(user, None, namespace).id
+    except PermissionError:
+        default = None
+    free = shutil.disk_usage(settings.model_storage).free
+    for item in items:
+        item["free_bytes"] = None if storages.get(item["id"]).remote else free
+    return {"default": default, "items": items}
 
 
 def storage_model_summary(model: dict[str, Any]) -> dict[str, Any]:
@@ -1597,6 +1795,7 @@ def storage_model_summary(model: dict[str, Any]) -> dict[str, Any]:
 @app.get("/api/storage/targets")
 async def storage_targets(_: StorageViewer) -> dict:
     models = database.list_local_models()
+    grants = database.storage_grants()
     usage = shutil.disk_usage(settings.model_storage)
     healths = await asyncio.gather(
         *(run_in_threadpool(storage.health) for storage in storages.all())
@@ -1619,6 +1818,7 @@ async def storage_targets(_: StorageViewer) -> dict:
             "cached_count": sum(1 for item in items if item["cached"]),
             "models": items,
             "capacity": None,
+            "grants": grants.get(storage.id, []),
         }
         if not storage.remote:
             target["capacity"] = {
@@ -1641,6 +1841,31 @@ async def storage_targets(_: StorageViewer) -> dict:
         "targets": targets,
         "conflicts": storage_conflicts,
     }
+
+
+@app.put("/api/storage/targets/{target_id}/grants")
+def update_storage_grants(
+    target_id: str, payload: StorageGrantRequest, _: StorageManager
+) -> dict:
+    """Reserve a storage target for these users and organizations; none opens it to all."""
+    try:
+        storage = storages.get(target_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    user_ids = []
+    for username in dict.fromkeys(payload.users):
+        account = database.get_user_by_username(username)
+        if not account:
+            raise HTTPException(status_code=400, detail=f"No user named {username}.")
+        user_ids.append(account["id"])
+    organization_ids = []
+    for name in dict.fromkeys(payload.organizations):
+        organization = database.get_organization(name)
+        if not organization:
+            raise HTTPException(status_code=400, detail=f"No organization named {name}.")
+        organization_ids.append(organization["id"])
+    database.set_storage_grants(storage.id, user_ids, organization_ids, utc_iso())
+    return {"target_id": storage.id, "grants": database.storage_grants().get(storage.id, [])}
 
 
 def require_runtime_admin(user: dict[str, Any]) -> None:
@@ -2029,7 +2254,7 @@ def update_upload_repository(
     try:
         return uploads.update_repository(
             validate_repo_id(repo_id),
-            user["id"],
+            user,
             payload.description,
             payload.visibility,
         )
@@ -2125,7 +2350,7 @@ async def delete_upload_repository(
 ) -> dict:
     try:
         await run_in_threadpool(
-            uploads.delete_repository, repo_id, user["id"], payload.confirmation
+            uploads.delete_repository, repo_id, user, payload.confirmation
         )
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error

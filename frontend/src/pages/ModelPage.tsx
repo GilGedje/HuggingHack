@@ -6,7 +6,6 @@ import {
   ChevronRight,
   Cloud,
   Cpu,
-  Download,
   File,
   Folder,
   GitBranch,
@@ -28,7 +27,11 @@ import { api } from '../api'
 import { precisionLabel } from '../catalog'
 import { useFadeOnChange, useTabIndicator } from '../motion'
 import { ModelActions, ModelCardDocument } from '../components/ModelDetails'
+import { ConfigSection } from '../components/ConfigSection'
+import { DownloadLink } from '../components/DownloadLink'
+import { FileDiff } from '../components/FileDiff'
 import { GgufInspector } from '../components/GgufInspector'
+import { RepositorySettings } from '../components/RepositorySettings'
 import { formatLabels } from '../components/RepositoryRows'
 import { UploadChangeDialog } from '../components/UploadChangeDialog'
 import { CopyButton, UseModelDialog, type UseModelMode } from '../components/UseModel'
@@ -37,9 +40,9 @@ import type {
   CommitSummary,
   LibraryFile,
   LibraryModelDetails,
-  StorageOption,
 } from '../types'
 import { formatBytes, formatNumber, initials, relativeTime, taskLabel } from '../utils'
+import { visibilityLabel } from '../visibility'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -192,9 +195,7 @@ function FilesSection({
             </span>
             <span className="file-browser-action">
               {!row.folder && (
-                <a href={api.fileUrl(model.id, row.path)} aria-label={`Download ${row.path}`} title="Download">
-                  <Download size={14} />
-                </a>
+                <DownloadLink href={api.fileUrl(model.id, row.path)} label={`Download ${row.path}`} />
               )}
             </span>
           </div>
@@ -375,14 +376,6 @@ function CommitsSection({ model }: { model: LibraryModelDetails }) {
   )
 }
 
-function diffClass(line: string): string {
-  if (line.startsWith('+++') || line.startsWith('---')) return 'meta'
-  if (line.startsWith('@@')) return 'hunk'
-  if (line.startsWith('+')) return 'add'
-  if (line.startsWith('-')) return 'del'
-  return ''
-}
-
 function CommitSection({ model, commitId }: { model: LibraryModelDetails; commitId: string }) {
   const [commit, setCommit] = useState<CommitDetail | null>(null)
   const [error, setError] = useState('')
@@ -432,41 +425,7 @@ function CommitSection({ model, commitId }: { model: LibraryModelDetails; commit
         </div>
       </header>
       {commit.changes.map((change) => (
-        <article className={`commit-file ${change.change}`} key={change.path}>
-          <header>
-            <span className={`commit-change-kind ${change.change}`}>{change.change}</span>
-            <code>{change.path}</code>
-            <span className="commit-file-stats">
-              {change.binary ? (
-                <>
-                  {change.old_size != null && formatBytes(change.old_size)}
-                  {change.old_size != null && change.new_size != null && ' → '}
-                  {change.new_size != null && formatBytes(change.new_size)}
-                </>
-              ) : (
-                <>
-                  <span className="added">+{change.additions || 0}</span>{' '}
-                  <span className="deleted">−{change.deletions || 0}</span>
-                </>
-              )}
-            </span>
-          </header>
-          {change.binary ? (
-            <p className="commit-binary">
-              Binary or large file; contents are not kept in history.
-            </p>
-          ) : (
-            <pre className="commit-diff">
-              {(change.diff || []).map((line, index) => (
-                <span key={index} className={diffClass(line)}>
-                  {line || ' '}
-                  {'\n'}
-                </span>
-              ))}
-              {change.truncated && <span className="hunk">… diff truncated</span>}
-            </pre>
-          )}
-        </article>
+        <FileDiff key={change.path} change={change} />
       ))}
     </section>
   )
@@ -481,7 +440,6 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
   const navigate = useNavigate()
   const [model, setModel] = useState<LibraryModelDetails | null>(null)
   const [error, setError] = useState('')
-  const [targets, setTargets] = useState<StorageOption[]>([])
   const [saving, setSaving] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
 
@@ -493,8 +451,12 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
         ? 'files'
         : rest === 'gguf'
           ? 'gguf'
-          : 'card'
-  const indicator = useTabIndicator<HTMLDivElement>(`${section}:${model?.id}:${model?.files.length}:${model?.commit_count}`)
+          : rest === 'settings'
+            ? 'settings'
+            : rest === 'config' || rest.startsWith('config/')
+              ? 'config'
+              : 'card'
+  const indicator = useTabIndicator<HTMLDivElement>(`${section}:${model?.id}:${model?.files.length}:${model?.commit_count}:${model?.config_count}`)
   const body = useFadeOnChange<HTMLDivElement>(rest)
   const useMode: UseModelMode | null =
     searchParams.get('local-app') === 'vllm'
@@ -521,7 +483,6 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
   }, [repoId, reloadKey])
 
   useEffect(() => {
-    api.storageOptions().then((payload) => setTargets(payload.items)).catch(() => undefined)
     const refresh = (event: Event) => {
       if ((event as CustomEvent<string>).detail === repoId) setReloadKey((value) => value + 1)
     }
@@ -593,7 +554,6 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
   }
 
   const [owner, name] = model.id.split('/')
-  const target = targets.find((item) => item.id === model.storage_target)
   const remoteOnly = model.storage_backend === 's3' && !model.cached
   const ggufFiles = model.files.filter((file) => file.path.toLowerCase().endsWith('.gguf'))
   const vllm = model.apps.includes('vllm')
@@ -602,7 +562,9 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
     { id: 'card', label: 'Model card', to: base },
     { id: 'files', label: 'Files and versions', to: `${base}/tree` },
     { id: 'commits', label: 'Commits', to: `${base}/commits`, count: model.commit_count },
+    { id: 'config', label: 'Config', to: `${base}/config`, count: model.config_count || undefined },
     ...(ggufFiles.length ? [{ id: 'gguf', label: 'GGUF', to: `${base}/gguf`, count: ggufFiles.length }] : []),
+    ...(model.can_manage ? [{ id: 'settings', label: 'Settings', to: `${base}/settings` }] : []),
   ]
 
   return (
@@ -646,12 +608,12 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
             {model.visibility !== 'public' && (
               <span>
                 {model.visibility === 'private' ? <LockKeyhole size={11} /> : <Users size={11} />}{' '}
-                {model.visibility}
+                {visibilityLabel(model.visibility)}
               </span>
             )}
             <span className="local-badge">
               {model.storage_backend === 's3' ? <Cloud size={11} /> : <HardDrive size={11} />}{' '}
-              {target?.name || model.storage_target}
+              {model.storage_target_name}
               {remoteOnly ? ' · S3 only' : ''}
             </span>
           </div>
@@ -711,6 +673,17 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
           {section === 'files' && <FilesSection model={model} onUpload={() => setParam({ upload: '1' })} />}
           {section === 'commits' && <CommitsSection model={model} />}
           {section === 'commit' && <CommitSection model={model} commitId={rest.slice('commit/'.length)} />}
+          {section === 'config' && (
+            <ConfigSection
+              model={model}
+              path={rest.slice('config/'.length)}
+              onChanged={() => setReloadKey((value) => value + 1)}
+              onToast={onToast}
+            />
+          )}
+          {section === 'settings' && model.can_manage && (
+            <RepositorySettings model={model} onChanged={() => setReloadKey((value) => value + 1)} onToast={onToast} />
+          )}
           {section === 'gguf' && (
             <GgufInspector
               repoId={model.id}
@@ -755,7 +728,7 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
                   <Link to={`${base}/tree`}>{formatNumber(model.file_count)}</Link>
                 </dd>
                 <dt>Storage</dt>
-                <dd>{target?.name || model.storage_target}</dd>
+                <dd>{model.storage_target_name}</dd>
                 <dt>Location</dt>
                 <dd><code>{remoteOnly ? model.remote_uri || model.local_path : model.local_path}</code></dd>
                 {model.latest_commit && (

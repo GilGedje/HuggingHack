@@ -83,7 +83,7 @@ def test_writers_upload_into_the_organization_and_roles_control_access(org):
     namespaces = [item["name"] for item in writer.get("/api/uploads/namespaces").json()["items"]]
     assert namespaces == ["writer", "Nvidia"]
     created = writer.post(
-        "/api/uploads/repositories", json={"slug": "GLM-5.3-NVFP4", "namespace": "nvidia", "visibility": "private"}
+        "/api/uploads/repositories", json={"slug": "GLM-5.3-NVFP4", "namespace": "nvidia", "visibility": "organization"}
     )
     assert created.status_code == 201, created.text
     repo_id = created.json()["repo_id"]
@@ -116,9 +116,9 @@ def test_writers_upload_into_the_organization_and_roles_control_access(org):
     assert reader.post("/api/repos/changes", json={"repo_id": repo_id}).status_code == 403
     session = writer.post("/api/repos/changes", json={"repo_id": repo_id})
     assert session.status_code == 201
-    assert writer.patch("/api/uploads/repositories", params={"repo_id": repo_id}, json={"description": "", "visibility": "shared"}).status_code == 404
+    assert writer.patch("/api/uploads/repositories", params={"repo_id": repo_id}, json={"description": "", "visibility": "public"}).status_code == 404
     admin, _ = login("admin")
-    assert admin.patch("/api/uploads/repositories", params={"repo_id": repo_id}, json={"description": "NVFP4 build", "visibility": "shared"}).status_code == 200
+    assert admin.patch("/api/uploads/repositories", params={"repo_id": repo_id}, json={"description": "NVFP4 build", "visibility": "public"}).status_code == 200
     assert outsider.get(f"/api/library/models/{repo_id}").status_code == 200
 
     # Removing a member cuts access immediately, including a staged change.
@@ -157,7 +157,7 @@ def test_organization_admins_manage_members_and_keep_one_admin(org):
 
 def test_deleting_the_creator_keeps_organization_repositories(org):
     writer, _ = login("writer")
-    repo_id = writer.post("/api/uploads/repositories", json={"slug": "kept", "namespace": "Nvidia"}).json()["repo_id"]
+    repo_id = writer.post("/api/uploads/repositories", json={"slug": "kept", "namespace": "Nvidia", "visibility": "organization"}).json()["repo_id"]
     upload(writer, repo_id, {"config.json": b"{}"})
     admin, _ = login("admin")
     writer_id = main.database.get_user_by_username("writer")["id"]
@@ -178,7 +178,7 @@ def live_org(org):
     import uvicorn
 
     writer, _ = login("writer")
-    repo_id = writer.post("/api/uploads/repositories", json={"slug": "secret-weights", "namespace": "Nvidia"}).json()["repo_id"]
+    repo_id = writer.post("/api/uploads/repositories", json={"slug": "secret-weights", "namespace": "Nvidia", "visibility": "organization"}).json()["repo_id"]
     upload(writer, repo_id, {"config.json": b'{"x": 1}', "model.safetensors": WEIGHTS})
     tokens = {}
     for username in ("reader", "outsider"):
@@ -197,7 +197,7 @@ def live_org(org):
         thread.join(timeout=10)
 
 
-def test_organization_members_pull_private_repositories_with_tokens(live_org, tmp_path: Path):
+def test_organization_members_pull_organization_repositories_with_tokens(live_org, tmp_path: Path):
     url, repo, tokens = live_org["url"], live_org["repo"], live_org["tokens"]
     path = hf_hub_download(repo, "model.safetensors", endpoint=url, token=tokens["reader"], cache_dir=tmp_path / "hf")
     assert Path(path).read_bytes() == WEIGHTS

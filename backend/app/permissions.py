@@ -18,6 +18,7 @@ CAPABILITIES: dict[str, str] = {
     "hub.download": "Download models from Hugging Face",
     "runtimes.use": "Send models to Ollama or vLLM runtimes",
     "storage.view": "View every storage location and its models",
+    "storage.manage": "Upload to any storage location and choose who may upload to each",
     "users.manage": "Manage accounts, roles, and access",
     "orgs.manage": "Create and delete organizations and manage any organization",
     "settings.view": "View server configuration",

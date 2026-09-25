@@ -18,8 +18,8 @@ export const ORG_ROLE_LABELS: Record<OrganizationRole, string> = {
 
 const ORG_ROLE_HELP: Record<OrganizationRole, string> = {
   admin: 'Manage members and settings, change visibility, delete repositories',
-  write: 'Create repositories and upload changes',
-  read: 'See and pull private repositories',
+  write: 'Create repositories, upload changes, and see private ones',
+  read: 'See and pull repositories shared with the organization',
 }
 
 function errorMessage(reason: unknown, fallback: string): string {

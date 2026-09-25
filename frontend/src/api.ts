@@ -17,6 +17,10 @@ import type {
   ChangeSession,
   CommitDetail,
   CommitSummary,
+  ConfigListing,
+  ConfigResults,
+  ConfigRevision,
+  ConfigRevisionDetail,
   Collection,
   Health,
   LibraryModelDetails,
@@ -27,9 +31,11 @@ import type {
   RuntimeJob,
   RuntimeTarget,
   SavedModel,
+  StorageGrant,
   StorageOption,
   StorageOverview,
   User,
+  Visibility,
 } from './types'
 
 let csrfToken: string | null = null
@@ -209,8 +215,15 @@ export const api = {
       { method: 'DELETE' },
     ),
   storageTargets: () => request<StorageOverview>('/api/storage/targets'),
-  storageOptions: () =>
-    request<{ default: string; items: StorageOption[] }>('/api/storage/options'),
+  storageOptions: (namespace?: string) =>
+    request<{ default: string | null; items: StorageOption[] }>(
+      `/api/storage/options${namespace ? `?namespace=${encodeURIComponent(namespace)}` : ''}`,
+    ),
+  updateStorageGrants: (targetId: string, payload: { users: string[]; organizations: string[] }) =>
+    request<{ target_id: string; grants: StorageGrant[] }>(
+      `/api/storage/targets/${encodeURIComponent(targetId)}/grants`,
+      { method: 'PUT', body: JSON.stringify(payload) },
+    ),
   runtimeTargets: () => request<{ items: RuntimeTarget[] }>('/api/runtimes'),
   runtimeJobs: (limit = 100) =>
     request<{ items: RuntimeJob[]; active: number }>(
@@ -267,7 +280,7 @@ export const api = {
   createUploadRepository: (payload: {
     slug: string
     description?: string
-    visibility?: 'private' | 'shared'
+    visibility?: Visibility
     storage_target?: string
     namespace?: string
   }) =>
@@ -277,7 +290,7 @@ export const api = {
     }),
   updateUploadRepository: (
     repoId: string,
-    payload: { description: string; visibility: 'private' | 'shared' },
+    payload: { description: string; visibility: Visibility },
   ) =>
     request<OwnedRepository>(
       `/api/uploads/repositories?repo_id=${encodeURIComponent(repoId)}`,
@@ -320,6 +333,44 @@ export const api = {
       `/api/uploads/repositories/finalize?repo_id=${encodeURIComponent(repoId)}`,
       { method: 'POST', body: JSON.stringify(payload) },
     ),
+  configRevisions: (repoId: string) =>
+    request<ConfigListing>(`/api/library/configs?repo_id=${encodeURIComponent(repoId)}`),
+  configRevision: (repoId: string, revisionId: string) =>
+    request<ConfigRevisionDetail>(
+      `/api/library/config?repo_id=${encodeURIComponent(repoId)}&revision_id=${encodeURIComponent(revisionId)}`,
+    ),
+  configArchiveUrl: (repoId: string, revisionId: string) =>
+    `/api/library/config/archive?repo_id=${encodeURIComponent(repoId)}&revision_id=${encodeURIComponent(revisionId)}`,
+  createConfigRevision: (
+    repoId: string,
+    payload: {
+      parent_id: string | null
+      message: string
+      description?: string
+      files: Array<{ path: string; content: string }>
+      deletions: string[]
+      results?: ConfigResults
+    },
+  ) =>
+    request<ConfigRevision>(`/api/library/configs?repo_id=${encodeURIComponent(repoId)}`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateConfigResults: (repoId: string, revisionId: string, results: ConfigResults) =>
+    request<ConfigRevision>(
+      `/api/library/config/results?repo_id=${encodeURIComponent(repoId)}&revision_id=${encodeURIComponent(revisionId)}`,
+      { method: 'PUT', body: JSON.stringify({ results }) },
+    ),
+  renameRepository: (repoId: string, payload: { namespace: string; name: string; confirmation: string }) =>
+    request<{ repo_id: string; visibility: Visibility }>(
+      `/api/repos/rename?repo_id=${encodeURIComponent(repoId)}`,
+      { method: 'POST', body: JSON.stringify(payload) },
+    ),
+  deleteRepository: (repoId: string, confirmation: string) =>
+    request<{ status: string }>(`/api/repos?repo_id=${encodeURIComponent(repoId)}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ confirmation }),
+    }),
   startChange: (repoId: string) =>
     request<ChangeSession>('/api/repos/changes', {
       method: 'POST',

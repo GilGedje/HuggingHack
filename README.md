@@ -221,10 +221,45 @@ models/
       ...
 ```
 
-Choose a model folder in the browser and HuggingHack sends each file in bounded chunks.
-Interrupted uploads keep their progress and resume from the server's confirmed offset.
-Uploaded repositories are private by default; their owner can share them with every local
-account. Model files stay in the model mount rather than in the metadata database.
+**Uploads** walks through four steps: name the model, choose who can see it and where it is
+stored, drop or pick the model folder, then review and upload. The folder check flags a
+missing `config.json`, tokenizer, safetensors weights, or model card, shows the detected
+precision, and skips `.git`, `.cache`, `__pycache__`, and system clutter, so a folder cloned
+from Hugging Face uploads as is. The repository is created only when the upload starts.
+HuggingHack sends each file in bounded chunks; interrupted uploads keep their progress and
+resume from the server's confirmed offset (choose **Resume** under **Unfinished uploads**).
+Model files stay in the model mount rather than in the metadata database.
+
+| Visibility | Who can see it |
+| --- | --- |
+| **Private** (default) | You; for an organization repository, its admins and writers |
+| **Organization** | Every member of the owning organization (organization repositories only) |
+| **Public** | Every account, plus anonymous pulls through the Hub protocol and `git clone` |
+
+The **Config** tab keeps the files you deploy a model with (launch scripts, compose files,
+vLLM arguments) as numbered revisions, next to what each one achieved. A revision starts from
+the latest files: upload or drop files and folders, edit or write files in place, remove
+some, and describe the change. Its files never change afterwards, and each revision shows a
+diff against the one before. Results stay editable, since you deploy first and measure
+second: the test setup (hardware, GPUs, tensor parallel, vLLM version, concurrency, input and
+output length), throughput, TTFT, TPOT and ITL, KV cache and reported max concurrency,
+speculative-decoding acceptance rate and length, your own metrics, and notes. **Compare
+results** lines up every measured revision and highlights the best value in each row.
+**Download .zip** fetches one revision's files for the GPU host. Configs are stored in the
+metadata database, never in the model's files, so pulling a model never pulls them. Anyone
+who can see the model can read them, so keep tokens out; anyone who may upload changes to it
+can add revisions and results.
+
+Every model page has a **Settings** tab for the repository's admins, and for server
+administrators on every model, including downloaded ones:
+
+- **Visibility** and **description** of owned repositories.
+- **Rename or transfer**: change the name or move the model to yourself or an organization you
+  write to (administrators: any organization). Files, commit history, saves, and hardware tags
+  move with it; old links, `vllm serve` names, and git remotes stop working, with no redirect.
+  Giving a downloaded model an owner registers it like an upload and keeps it **Public**.
+  Models stored in S3 cannot be renamed yet.
+- **Delete**, confirmed by typing the repository name.
 
 To preserve the original trusted-LAN behavior, set `ACCOUNTS_ENABLED=false`. This creates a
 single local compatibility identity and skips sign-in. Do not use that mode on an untrusted
@@ -465,13 +500,13 @@ Organizations are shared namespaces for teams and companies, so a model can live
 
 | Organization role | Can |
 | --- | --- |
-| **Read** | See and pull the organization's private repositories |
-| **Write** | Also create repositories in the organization and upload changes |
+| **Read** | See and pull the organization's repositories with **Organization** visibility |
+| **Write** | Also see **Private** ones, create repositories in the organization, and upload changes |
 | **Admin** | Also manage members and settings, change visibility, and delete repositories |
 
 Organization roles add to the server role: a server **Viewer** with organization **Write**
-access can read but still cannot upload. Private organization repositories are visible only to
-members, including through API tokens and `git clone`. Organization names and usernames share
+access can read but still cannot upload. Private and organization repositories stay inside
+the organization, including through API tokens and `git clone`. Organization names and usernames share
 one namespace (case-insensitive), so a user cannot take an organization's name or the reverse.
 Repositories stay with the organization when the account that created them leaves or is deleted.
 Browse every organization at `#/orgs`; pick the owner when creating a repository on **Uploads**.
@@ -554,6 +589,15 @@ DEFAULT_STORAGE_TARGET=minio-main
 Target ids are permanent because models reference them. Credentials are read from the
 named environment variables and never returned by the API. Uploaders pick a target when
 creating a repository; new uploads and downloads otherwise use `DEFAULT_STORAGE_TARGET`.
+
+Every location is open to every uploader until an administrator reserves it: on the Storage
+page, **Who can upload → Reserve** lists the users and organizations allowed to create
+repositories there. A user grant covers that user's personal repositories and an organization
+grant covers the organization's, so a bucket can be dedicated to one person or team. A
+reserved location is preselected for its owners' uploads and hidden from everyone else.
+Hugging Face downloads still go to `DEFAULT_STORAGE_TARGET` unless another location is chosen;
+they may choose a reserved one when the user or one of their writable organizations is listed.
+Administrators can always use every location.
 If the same repository exists in two locations, the earlier target wins and the Storage page
 reports the conflict.
 

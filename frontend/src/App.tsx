@@ -8,6 +8,8 @@ import {
   Filter,
   ListFilter,
   LoaderCircle,
+  PanelLeftClose,
+  PanelLeftOpen,
   RefreshCw,
   Search,
   SlidersHorizontal,
@@ -22,7 +24,8 @@ import {
   useSearchParams,
 } from 'react-router-dom'
 import { api } from './api'
-import { AuthScreen, SavedPage, UploadsPage } from './components/AccountPages'
+import { AuthScreen, SavedPage } from './components/AccountPages'
+import { UploadsPage } from './pages/UploadsPage'
 import { EMPTY_FILTERS, ModelFilters, activeFilterCount, applyFilters, type ModelFilterState } from './components/ModelFilters'
 import { LibraryModelRow } from './components/RepositoryRows'
 import { AccessProvider, useAccess } from './access'
@@ -42,6 +45,17 @@ import type {
 import { formatBytes } from './utils'
 
 type ToastTone = 'success' | 'error'
+
+// Whether the Explore filters are tucked away is a per-browser convenience.
+const FILTERS_HIDDEN_KEY = 'hugginghack.explore.filtersHidden'
+
+function readFiltersHidden(): boolean {
+  try {
+    return localStorage.getItem(FILTERS_HIDDEN_KEY) === '1'
+  } catch {
+    return false
+  }
+}
 type ToastHandler = (message: string, tone?: ToastTone) => void
 
 function ModelsPage({ onToast }: { onToast: ToastHandler }) {
@@ -58,6 +72,10 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
   const [scanning, setScanning] = useState(false)
   const [error, setError] = useState('')
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
+  const [filtersHidden, setFiltersHidden] = useState(readFiltersHidden)
+  const hideButton = useRef<HTMLButtonElement>(null)
+  const showButton = useRef<HTMLButtonElement>(null)
+  const focusAfterToggle = useRef(false)
   const [saving, setSaving] = useState<string | null>(null)
   const navigate = useNavigate()
   const urlSearch = searchParams.get('search') || ''
@@ -119,6 +137,25 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
   }
 
   const activeFilters = activeFilterCount(filters)
+
+  // Keyboard focus follows the control that took the place of the one pressed;
+  // a mouse click leaves focus alone, so no focus ring appears.
+  useEffect(() => {
+    if (!focusAfterToggle.current) return
+    focusAfterToggle.current = false
+    ;(filtersHidden ? showButton : hideButton).current?.focus({ preventScroll: true })
+  }, [filtersHidden])
+
+  function hideFilters(hidden: boolean, pressed: HTMLElement) {
+    focusAfterToggle.current = pressed.matches(':focus-visible')
+    setFiltersHidden(hidden)
+    try {
+      if (hidden) localStorage.setItem(FILTERS_HIDDEN_KEY, '1')
+      else localStorage.removeItem(FILTERS_HIDDEN_KEY)
+    } catch {
+      // Private windows may refuse storage; the choice then lasts until reload.
+    }
+  }
   const hardwareLabels = Object.fromEntries(facets.hardware.map(([id, label]) => [id, label]))
 
   async function toggleSaved(model: LibraryModel) {
@@ -156,30 +193,43 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
 
   return (
     <>
-      <div className="catalog-layout">
+      <div className={filtersHidden ? 'catalog-layout filters-hidden' : 'catalog-layout'}>
         <aside className={mobileFiltersOpen ? 'filters mobile-open' : 'filters'}>
-          <div className="filters-heading">
-            <Filter size={16} />
-            <span>Models</span>
-            {activeFilters > 0 && <em>{activeFilters}</em>}
-            <button
-              type="button"
-              className="filter-mobile-close"
-              onClick={() => setMobileFiltersOpen(false)}
-              aria-label="Close filters"
-            >
-              <CircleX size={18} />
-            </button>
+          <div className="filters-inner">
+            <div className="filters-heading">
+              <Filter size={16} />
+              <span>Models</span>
+              {activeFilters > 0 && <em>{activeFilters}</em>}
+              <button
+                ref={hideButton}
+                type="button"
+                className="filter-hide"
+                tabIndex={filtersHidden ? -1 : undefined}
+                onClick={(event) => hideFilters(true, event.currentTarget)}
+                aria-label="Hide filters"
+                title="Hide filters"
+              >
+                <PanelLeftClose size={16} />
+              </button>
+              <button
+                type="button"
+                className="filter-mobile-close"
+                onClick={() => setMobileFiltersOpen(false)}
+                aria-label="Close filters"
+              >
+                <CircleX size={18} />
+              </button>
+            </div>
+            <ModelFilters facets={facets} value={filters} onChange={setFilters} />
+            {activeFilters > 0 && (
+              <button
+                className="clear-filters"
+                onClick={() => setFilters(EMPTY_FILTERS)}
+              >
+                Reset filters
+              </button>
+            )}
           </div>
-          <ModelFilters facets={facets} value={filters} onChange={setFilters} />
-          {activeFilters > 0 && (
-            <button
-              className="clear-filters"
-              onClick={() => setFilters(EMPTY_FILTERS)}
-            >
-              Reset filters
-            </button>
-          )}
         </aside>
 
         <section className="catalog-content">
@@ -198,6 +248,17 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
           </div>
 
           <div className="catalog-tools">
+            <button
+              ref={showButton}
+              type="button"
+              className="secondary-button show-filters-button"
+              onClick={(event) => hideFilters(false, event.currentTarget)}
+              tabIndex={filtersHidden ? undefined : -1}
+              aria-hidden={filtersHidden ? undefined : true}
+            >
+              <PanelLeftOpen size={15} />
+              Filters {activeFilters > 0 ? `(${activeFilters})` : ''}
+            </button>
             <div className="catalog-search">
               <Search size={18} />
               <input

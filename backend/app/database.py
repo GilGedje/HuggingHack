@@ -113,6 +113,42 @@ USERS_COLUMNS = """
 LEGACY_USER_COLUMNS = (
     "id", "username", "display_name", "password_hash", "role", "created_at", "updated_at"
 )
+VISIBILITIES = ("private", "organization", "public")
+OWNED_REPOSITORY_COLUMNS = """
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+                    repo_id TEXT NOT NULL UNIQUE,
+                    description TEXT NOT NULL DEFAULT '',
+                    visibility TEXT NOT NULL DEFAULT 'private'
+                        CHECK (visibility IN ('private', 'organization', 'public')),
+                    status TEXT NOT NULL DEFAULT 'uploading'
+                        CHECK (status IN ('uploading', 'ready')),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    organization_id TEXT REFERENCES organizations(id) ON DELETE RESTRICT
+""".strip("\n")
+_VISIBILITY_UPGRADE = (
+    "CASE WHEN visibility = 'shared' THEN 'public' "
+    "WHEN organization_id IS NOT NULL THEN 'organization' ELSE visibility END"
+)
+OWNED_REPOSITORY_FIELDS = (
+    "id", "owner_id", "repo_id", "description", "visibility", "status",
+    "created_at", "updated_at", "organization_id",
+)
+# Who may see an uploaded repository, as a WHERE fragment over `owned_repositories`
+# that takes the viewing user's id twice. Models that are not uploads are public.
+VISIBLE_TO_USER = """(
+                    owned_repositories.id IS NULL
+                    OR owned_repositories.visibility = 'public'
+                    OR (owned_repositories.organization_id IS NULL
+                        AND owned_repositories.owner_id = ?)
+                    OR owned_repositories.organization_id IN (
+                        SELECT organization_id FROM organization_members
+                        WHERE user_id = ?
+                          AND (owned_repositories.visibility = 'organization'
+                               OR role IN ('admin', 'write'))
+                    )
+                )"""
 
 
 class Database:
@@ -328,17 +364,7 @@ class Database:
                     ON organization_members(user_id);
 
                 CREATE TABLE IF NOT EXISTS owned_repositories (
-                    id TEXT PRIMARY KEY,
-                    owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-                    repo_id TEXT NOT NULL UNIQUE,
-                    description TEXT NOT NULL DEFAULT '',
-                    visibility TEXT NOT NULL DEFAULT 'private'
-                        CHECK (visibility IN ('private', 'shared')),
-                    status TEXT NOT NULL DEFAULT 'uploading'
-                        CHECK (status IN ('uploading', 'ready')),
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    organization_id TEXT REFERENCES organizations(id) ON DELETE RESTRICT
+{OWNED_REPOSITORY_COLUMNS}
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_owned_repositories_owner
@@ -380,7 +406,42 @@ class Database:
                     hardware TEXT NOT NULL,
                     PRIMARY KEY(repo_id, hardware)
                 );
-                """.replace("{USERS_COLUMNS}", USERS_COLUMNS)
+
+                CREATE TABLE IF NOT EXISTS storage_grants (
+                    target_id TEXT NOT NULL,
+                    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+                    organization_id TEXT REFERENCES organizations(id) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL,
+                    CHECK ((user_id IS NULL) <> (organization_id IS NULL))
+                );
+
+                CREATE TABLE IF NOT EXISTS config_revisions (
+                    id TEXT PRIMARY KEY,
+                    repo_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    parent_id TEXT,
+                    message TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    author_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+                    author_name TEXT NOT NULL DEFAULT '',
+                    files_json TEXT NOT NULL DEFAULT '[]',
+                    changes_json TEXT NOT NULL DEFAULT '[]',
+                    results_json TEXT NOT NULL DEFAULT '{}',
+                    results_updated_at TEXT,
+                    results_updated_by TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(repo_id, sequence)
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_storage_grants_user
+                    ON storage_grants(target_id, user_id) WHERE user_id IS NOT NULL;
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_storage_grants_organization
+                    ON storage_grants(target_id, organization_id)
+                    WHERE organization_id IS NOT NULL;
+                """.replace("{USERS_COLUMNS}", USERS_COLUMNS).replace(
+                    "{OWNED_REPOSITORY_COLUMNS}", OWNED_REPOSITORY_COLUMNS
+                )
             )
             columns = self._column_names(connection, "downloads")
             if "user_id" not in columns:
@@ -446,6 +507,80 @@ class Database:
             connection.execute(
                 "DELETE FROM sessions WHERE expires_at <= ?",
                 (datetime.now(timezone.utc).isoformat(),),
+            )
+        self._migrate_visibility()
+
+    def _migrate_visibility(self) -> None:
+        """Move uploads from private/shared to private/organization/public.
+
+        Organization members could already see private organization repositories,
+        so those become `organization`; `shared` was open to everyone, so `public`.
+        """
+        if self.backend == "sqlite":
+            with self.connect() as connection:
+                row = connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' "
+                    "AND name = 'owned_repositories'"
+                ).fetchone()
+            if not row or "'shared'" not in row["sql"]:
+                return
+            assert self.path is not None
+            fields = ", ".join(OWNED_REPOSITORY_FIELDS)
+            connection = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+            try:
+                connection.execute("PRAGMA foreign_keys=OFF")
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    connection.execute(
+                        f"CREATE TABLE owned_repositories_new ({OWNED_REPOSITORY_COLUMNS})"
+                    )
+                    connection.execute(
+                        f"INSERT INTO owned_repositories_new ({fields}) "
+                        f"SELECT {fields.replace('visibility', _VISIBILITY_UPGRADE)} "
+                        "FROM owned_repositories"
+                    )
+                    connection.execute("DROP TABLE owned_repositories")
+                    connection.execute(
+                        "ALTER TABLE owned_repositories_new RENAME TO owned_repositories"
+                    )
+                    connection.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_owned_repositories_owner "
+                        "ON owned_repositories(owner_id, updated_at DESC)"
+                    )
+                    problems = connection.execute("PRAGMA foreign_key_check").fetchall()
+                    if problems:
+                        raise RuntimeError(
+                            f"Visibility migration broke references: {problems[:5]}"
+                        )
+                    connection.execute("COMMIT")
+                except BaseException:
+                    connection.execute("ROLLBACK")
+                    raise
+            finally:
+                connection.execute("PRAGMA foreign_keys=ON")
+                connection.close()
+            return
+        with self._write_lock, self.connect() as connection:
+            checks = connection.execute(
+                """
+                SELECT conname FROM pg_constraint
+                WHERE conrelid = 'owned_repositories'::regclass AND contype = 'c'
+                  AND pg_get_constraintdef(oid) LIKE ?
+                """,
+                ("%shared%",),
+            ).fetchall()
+            if not checks:
+                return
+            for check in checks:
+                connection.execute(
+                    f'ALTER TABLE owned_repositories DROP CONSTRAINT "{check["conname"]}"'
+                )
+            connection.execute(
+                f"UPDATE owned_repositories SET visibility = {_VISIBILITY_UPGRADE}"
+            )
+            connection.execute(
+                "ALTER TABLE owned_repositories ADD CONSTRAINT owned_repositories_visibility_check "
+                "CHECK (visibility IN ('private', 'organization', 'public'))"
             )
 
     def _migrate_users(self) -> None:
@@ -1247,15 +1382,7 @@ class Database:
                 FROM local_models
                 LEFT JOIN owned_repositories
                     ON owned_repositories.repo_id = local_models.repo_id
-                WHERE (
-                    owned_repositories.id IS NULL
-                    OR (owned_repositories.organization_id IS NULL
-                        AND owned_repositories.owner_id = ?)
-                    OR owned_repositories.visibility = 'shared'
-                    OR owned_repositories.organization_id IN (
-                        SELECT organization_id FROM organization_members WHERE user_id = ?
-                    )
-                )
+                WHERE """ + VISIBLE_TO_USER + """
                 """
                 + query_clause
                 + " ORDER BY local_models.modified_at DESC",
@@ -1274,15 +1401,7 @@ class Database:
                 LEFT JOIN owned_repositories
                     ON owned_repositories.repo_id = local_models.repo_id
                 WHERE local_models.repo_id = ?
-                  AND (
-                    owned_repositories.id IS NULL
-                    OR (owned_repositories.organization_id IS NULL
-                        AND owned_repositories.owner_id = ?)
-                    OR owned_repositories.visibility = 'shared'
-                    OR owned_repositories.organization_id IN (
-                        SELECT organization_id FROM organization_members WHERE user_id = ?
-                    )
-                  )
+                  AND """ + VISIBLE_TO_USER + """
                 """,
                 (repo_id, user_id, user_id),
             ).fetchone()
@@ -1300,7 +1419,7 @@ class Database:
                 WHERE local_models.repo_id = ?
                   AND (
                     owned_repositories.id IS NULL
-                    OR owned_repositories.visibility = 'shared'
+                    OR owned_repositories.visibility = 'public'
                   )
                 """,
                 (repo_id,),
@@ -1632,6 +1751,8 @@ class Database:
         return dict(row) if row else None
 
     def list_owned_repositories(self, user_id: str) -> list[dict[str, Any]]:
+        """Uploaded repositories this user may write to: their own and their
+        organizations' where they are an admin or writer."""
         with self.connect() as connection:
             rows = connection.execute(
                 """
@@ -1646,9 +1767,9 @@ class Database:
                     ON organizations.id = owned_repositories.organization_id
                 LEFT JOIN local_models ON local_models.repo_id = owned_repositories.repo_id
                 WHERE (owned_repositories.organization_id IS NULL AND owner_id = ?)
-                   OR visibility = 'shared'
                    OR owned_repositories.organization_id IN (
-                       SELECT organization_id FROM organization_members WHERE user_id = ?
+                       SELECT organization_id FROM organization_members
+                       WHERE user_id = ? AND role IN ('admin', 'write')
                    )
                 ORDER BY owned_repositories.updated_at DESC
                 """,
@@ -1703,6 +1824,183 @@ class Database:
             connection.executemany(
                 "INSERT INTO model_hardware (repo_id, hardware) VALUES (?, ?)",
                 [(repo_id, item) for item in hardware],
+            )
+
+    # Tables whose rows belong to a repository and follow it when it is renamed.
+    # `downloads` and `runtime_jobs` are history and keep the name they ran under.
+    RENAMED_WITH_REPOSITORY = (
+        "saved_models", "repo_commits", "file_digests", "model_hardware", "config_revisions",
+    )
+
+    def rename_repository(
+        self, old: str, new: str, ownership: dict[str, Any] | None = None
+    ) -> None:
+        """Move every row of a repository to its new name in one transaction.
+
+        `ownership` sets the owner, organization, and visibility of an uploaded
+        repository; with an `id` it registers a downloaded model as owned.
+        """
+        with self._write_lock, self.connect() as connection:
+            for table in self.RENAMED_WITH_REPOSITORY:
+                # Leftovers of an earlier repository with the new name must not merge in.
+                connection.execute(f"DELETE FROM {table} WHERE repo_id = ?", (new,))
+                connection.execute(
+                    f"UPDATE {table} SET repo_id = ? WHERE repo_id = ?", (new, old)
+                )
+            connection.execute(
+                "UPDATE local_models SET repo_id = ?, relative_path = ? WHERE repo_id = ?",
+                (new, new, old),
+            )
+            if ownership and "id" in ownership:
+                connection.execute(
+                    """
+                    INSERT INTO owned_repositories (
+                        id, owner_id, repo_id, description, visibility, status,
+                        created_at, updated_at, organization_id
+                    ) VALUES (
+                        :id, :owner_id, :repo_id, :description, :visibility, :status,
+                        :created_at, :updated_at, :organization_id
+                    )
+                    """,
+                    {**ownership, "repo_id": new},
+                )
+            elif ownership:
+                connection.execute(
+                    """
+                    UPDATE owned_repositories
+                    SET repo_id = :new, owner_id = :owner_id, organization_id = :organization_id,
+                        visibility = :visibility, updated_at = :updated_at
+                    WHERE repo_id = :old
+                    """,
+                    {**ownership, "new": new, "old": old},
+                )
+            else:
+                connection.execute(
+                    "UPDATE owned_repositories SET repo_id = ? WHERE repo_id = ?", (new, old)
+                )
+
+    # Deployment config revisions: linear per repository, numbered from 1.
+
+    @staticmethod
+    def _decode_config(row: Any) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        result = dict(row)
+        result["files"] = json.loads(result.pop("files_json") or "[]")
+        result["changes"] = json.loads(result.pop("changes_json") or "[]")
+        result["results"] = json.loads(result.pop("results_json") or "{}")
+        return result
+
+    def create_config_revision(self, record: dict[str, Any]) -> dict[str, Any]:
+        with self._write_lock, self.connect() as connection:
+            row = connection.execute(
+                "SELECT id, sequence FROM config_revisions WHERE repo_id = ? "
+                "ORDER BY sequence DESC LIMIT 1",
+                (record["repo_id"],),
+            ).fetchone()
+            if (row["id"] if row else None) != record["parent_id"]:
+                raise RuntimeError("Someone added a revision since you started. Reload and try again.")
+            connection.execute(
+                """
+                INSERT INTO config_revisions (
+                    id, repo_id, sequence, parent_id, message, description, author_id,
+                    author_name, files_json, changes_json, results_json,
+                    results_updated_at, results_updated_by, created_at
+                ) VALUES (
+                    :id, :repo_id, :sequence, :parent_id, :message, :description, :author_id,
+                    :author_name, :files_json, :changes_json, :results_json,
+                    :results_updated_at, :results_updated_by, :created_at
+                )
+                """,
+                {**record, "sequence": (int(row["sequence"]) if row else 0) + 1},
+            )
+        return self.get_config_revision(record["repo_id"], record["id"])
+
+    def get_config_revision(self, repo_id: str, revision_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM config_revisions WHERE repo_id = ? AND id = ?",
+                (repo_id, revision_id),
+            ).fetchone()
+        return self._decode_config(row)
+
+    def latest_config_revision(self, repo_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM config_revisions WHERE repo_id = ? ORDER BY sequence DESC LIMIT 1",
+                (repo_id,),
+            ).fetchone()
+        return self._decode_config(row)
+
+    def list_config_revisions(self, repo_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM config_revisions WHERE repo_id = ? ORDER BY sequence DESC",
+                (repo_id,),
+            ).fetchall()
+        return [self._decode_config(row) for row in rows]
+
+    def count_config_revisions(self, repo_id: str) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM config_revisions WHERE repo_id = ?", (repo_id,)
+            ).fetchone()
+        return int(row["count"])
+
+    def update_config_results(
+        self, repo_id: str, revision_id: str, results_json: str, updated_at: str, updated_by: str
+    ) -> dict[str, Any] | None:
+        with self._write_lock, self.connect() as connection:
+            connection.execute(
+                "UPDATE config_revisions SET results_json = ?, results_updated_at = ?, "
+                "results_updated_by = ? WHERE repo_id = ? AND id = ?",
+                (results_json, updated_at, updated_by, repo_id, revision_id),
+            )
+        return self.get_config_revision(repo_id, revision_id)
+
+    def delete_config_revisions(self, repo_id: str) -> None:
+        with self._write_lock, self.connect() as connection:
+            connection.execute("DELETE FROM config_revisions WHERE repo_id = ?", (repo_id,))
+
+    # A storage target with grants only takes repositories of the granted users and
+    # organizations; one without grants is open to every uploader.
+
+    def storage_grants(self) -> dict[str, list[dict[str, Any]]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT storage_grants.target_id,
+                       CASE WHEN storage_grants.user_id IS NULL
+                            THEN 'organization' ELSE 'user' END AS kind,
+                       COALESCE(storage_grants.user_id, storage_grants.organization_id) AS id,
+                       COALESCE(users.username, organizations.name) AS name,
+                       COALESCE(users.display_name, organizations.display_name) AS display_name
+                FROM storage_grants
+                LEFT JOIN users ON users.id = storage_grants.user_id
+                LEFT JOIN organizations ON organizations.id = storage_grants.organization_id
+                ORDER BY kind, LOWER(COALESCE(users.username, organizations.name))
+                """
+            ).fetchall()
+        grants: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            item = dict(row)
+            grants.setdefault(item.pop("target_id"), []).append(item)
+        return grants
+
+    def set_storage_grants(
+        self,
+        target_id: str,
+        user_ids: Iterable[str],
+        organization_ids: Iterable[str],
+        created_at: str,
+    ) -> None:
+        with self._write_lock, self.connect() as connection:
+            connection.execute("DELETE FROM storage_grants WHERE target_id = ?", (target_id,))
+            connection.executemany(
+                "INSERT INTO storage_grants (target_id, user_id, organization_id, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                [(target_id, user_id, None, created_at) for user_id in user_ids]
+                + [(target_id, None, org_id, created_at) for org_id in organization_ids],
             )
 
     # Organizations share one namespace with usernames.

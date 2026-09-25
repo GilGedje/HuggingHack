@@ -42,6 +42,8 @@ TABLES = (
     "text_blobs",
     "file_digests",
     "model_hardware",
+    "storage_grants",
+    "config_revisions",
 )
 
 

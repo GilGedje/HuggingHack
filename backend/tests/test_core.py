@@ -586,13 +586,13 @@ def test_chunked_upload_is_confined_owned_and_indexed(tmp_path: Path):
     assert database.get_visible_local_model(member["id"], repository["repo_id"]) is None
 
     manager.update_repository(
-        repository["repo_id"], owner["id"], "Shared test repository", "shared"
+        repository["repo_id"], owner, "Shared test repository", "public"
     )
     assert database.get_visible_local_model(member["id"], repository["repo_id"]) is not None
     with pytest.raises(ValueError):
-        manager.delete_repository(repository["repo_id"], owner["id"], "wrong/name")
+        manager.delete_repository(repository["repo_id"], owner, "wrong/name")
     manager.delete_repository(
-        repository["repo_id"], owner["id"], repository["repo_id"]
+        repository["repo_id"], owner, repository["repo_id"]
     )
     assert not (storage / repository["repo_id"]).exists()
     assert not any(

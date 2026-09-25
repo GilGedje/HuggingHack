@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertCircle,
   AlertTriangle,
+  Building2,
   Check,
   Cloud,
   Database,
@@ -10,13 +11,17 @@ import {
   LockKeyhole,
   RefreshCw,
   Search,
+  UserRound,
   Users,
+  X,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
+import { useAccess } from '../access'
 import { api } from '../api'
 import { formatLabels } from '../components/RepositoryRows'
-import type { StorageOverview, StorageTarget } from '../types'
+import type { StorageGrant, StorageOverview, StorageTarget } from '../types'
 import { formatBytes, formatNumber, relativeTime } from '../utils'
+import { visibilityLabel } from '../visibility'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -34,7 +39,181 @@ function Capacity({ used, total }: { used: number; total: number }) {
   )
 }
 
-function TargetSection({ target, query }: { target: StorageTarget; query: string }) {
+type Principal = Pick<StorageGrant, 'kind' | 'name' | 'display_name'>
+
+const same = (a: Principal, b: Principal) => a.kind === b.kind && a.name.toLowerCase() === b.name.toLowerCase()
+
+/** Who may put new repositories in a storage location. Nobody listed means everyone. */
+function UploadAccess({
+  target,
+  canManage,
+  onSaved,
+  onToast,
+}: {
+  target: StorageTarget
+  canManage: boolean
+  onSaved: () => void
+  onToast: ToastHandler
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState<Principal[]>(target.grants)
+  const [search, setSearch] = useState('')
+  const [results, setResults] = useState<Principal[]>([])
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!editing || !search.trim()) {
+      setResults([])
+      return
+    }
+    let ignore = false
+    const timer = window.setTimeout(() => {
+      Promise.all([
+        api.adminUsers({ q: search, role: '', status: '', sort: 'name', page: 1, per_page: 6 }),
+        api.adminOrganizations({ q: search, filter: '', sort: 'name', page: 1, per_page: 6 }),
+      ])
+        .then(([users, organizations]) => {
+          if (ignore) return
+          setResults([
+            ...organizations.items.map((item) => ({ kind: 'organization' as const, name: item.name, display_name: item.display_name })),
+            ...users.items.map((item) => ({ kind: 'user' as const, name: item.username, display_name: item.display_name })),
+          ])
+        })
+        .catch(() => undefined)
+    }, 180)
+    return () => {
+      ignore = true
+      window.clearTimeout(timer)
+    }
+  }, [editing, search])
+
+  async function save() {
+    setSaving(true)
+    try {
+      await api.updateStorageGrants(target.id, {
+        users: draft.filter((item) => item.kind === 'user').map((item) => item.name),
+        organizations: draft.filter((item) => item.kind === 'organization').map((item) => item.name),
+      })
+      setEditing(false)
+      onSaved()
+      onToast(draft.length ? `${target.name} is now reserved.` : `${target.name} is open to every uploader.`)
+    } catch (reason) {
+      onToast(reason instanceof Error ? reason.message : 'Could not save upload access.', 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const Chip = ({ item, onRemove }: { item: Principal; onRemove?: () => void }) => (
+    <span className="access-chip">
+      {item.kind === 'organization' ? <Building2 size={12} /> : <UserRound size={12} />}
+      {item.name}
+      {onRemove && (
+        <button type="button" aria-label={`Remove ${item.name}`} onClick={onRemove}>
+          <X size={12} />
+        </button>
+      )}
+    </span>
+  )
+
+  if (!editing) {
+    return (
+      <div className="upload-access">
+        <span className="upload-access-label">Who can upload</span>
+        {target.grants.length ? (
+          target.grants.map((item) => <Chip key={`${item.kind}-${item.id}`} item={item} />)
+        ) : (
+          <span className="upload-access-open">Everyone who can upload</span>
+        )}
+        {canManage && (
+          <button
+            type="button"
+            className="secondary-button compact"
+            onClick={() => {
+              setDraft(target.grants)
+              setSearch('')
+              setEditing(true)
+            }}
+          >
+            {target.grants.length ? 'Edit' : 'Reserve'}
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  const available = results.filter((item) => !draft.some((chosen) => same(chosen, item)))
+  return (
+    <div className="upload-access editing">
+      <span className="upload-access-label">Who can upload</span>
+      <p>
+        Only the users and organizations listed here can create repositories in {target.name}: users for
+        their personal repositories, organizations for theirs. Leave it empty to open it to everyone.
+      </p>
+      <div className="upload-access-chips">
+        {draft.map((item) => (
+          <Chip
+            key={`${item.kind}-${item.name}`}
+            item={item}
+            onRemove={() => setDraft(draft.filter((chosen) => !same(chosen, item)))}
+          />
+        ))}
+        {!draft.length && <span className="upload-access-open">Everyone who can upload</span>}
+      </div>
+      <div className="catalog-search upload-access-search">
+        <Search size={16} />
+        <input
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Add a user or organization"
+          aria-label="Find a user or organization"
+          autoFocus
+        />
+      </div>
+      {available.length > 0 && (
+        <ul className="upload-access-results">
+          {available.map((item) => (
+            <li key={`${item.kind}-${item.name}`}>
+              <button
+                type="button"
+                onClick={() => {
+                  setDraft([...draft, item])
+                  setSearch('')
+                }}
+              >
+                {item.kind === 'organization' ? <Building2 size={13} /> : <UserRound size={13} />}
+                <strong>{item.name}</strong>
+                <small>{item.kind === 'organization' ? `Organization · ${item.display_name}` : item.display_name}</small>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="upload-access-actions">
+        <button type="button" className="download-button compact" onClick={save} disabled={saving}>
+          {saving ? <LoaderCircle size={14} className="spin" /> : <Check size={14} />} Save
+        </button>
+        <button type="button" className="secondary-button compact" onClick={() => setEditing(false)} disabled={saving}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function TargetSection({
+  target,
+  query,
+  canManage,
+  onChanged,
+  onToast,
+}: {
+  target: StorageTarget
+  query: string
+  canManage: boolean
+  onChanged: () => void
+  onToast: ToastHandler
+}) {
   const models = target.models.filter((model) =>
     model.repo_id.toLowerCase().includes(query.trim().toLowerCase()),
   )
@@ -83,6 +262,7 @@ function TargetSection({ target, query }: { target: StorageTarget; query: string
       {target.capacity && (
         <Capacity used={target.capacity.used_bytes} total={target.capacity.total_bytes} />
       )}
+      <UploadAccess target={target} canManage={canManage} onSaved={onChanged} onToast={onToast} />
       <div className="storage-model-table" role="table" aria-label={`Models in ${target.name}`}>
         <div className="storage-model-row header" role="row">
           <span role="columnheader">Model</span>
@@ -102,7 +282,7 @@ function TargetSection({ target, query }: { target: StorageTarget; query: string
                   <>
                     {' · '}
                     {model.visibility === 'private' ? <LockKeyhole size={10} /> : <Users size={10} />}
-                    {model.visibility}
+                    {visibilityLabel(model.visibility)}
                   </>
                 )}
               </small>
@@ -127,6 +307,7 @@ function TargetSection({ target, query }: { target: StorageTarget; query: string
 }
 
 export function StoragePage({ onToast }: { onToast: ToastHandler }) {
+  const { can } = useAccess()
   const [overview, setOverview] = useState<StorageOverview | null>(null)
   const [error, setError] = useState('')
   const [scanning, setScanning] = useState(false)
@@ -245,7 +426,14 @@ export function StoragePage({ onToast }: { onToast: ToastHandler }) {
           </div>
 
           {overview.targets.map((target) => (
-            <TargetSection key={target.id} target={target} query={query} />
+            <TargetSection
+              key={target.id}
+              target={target}
+              query={query}
+              canManage={can('storage.manage')}
+              onChanged={load}
+              onToast={onToast}
+            />
           ))}
         </>
       )}

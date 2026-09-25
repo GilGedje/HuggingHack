@@ -265,7 +265,7 @@ def test_storage_page_is_admin_only_and_groups_models_by_target(multi_target):
 def test_uploads_sync_to_the_chosen_target(multi_target):
     uploads = main.uploads
     admin = multi_target["admin"]
-    repository = uploads.create_repository(admin, "tiny", "", "shared", "bucket-a")
+    repository = uploads.create_repository(admin, "tiny", "", "public", "bucket-a")
     uploads.upload_chunk(repository["repo_id"], admin["id"], "config.json", 0, 2, b"{}")
     uploads.finalize(repository["repo_id"], admin["id"])
     assert "models/admin/tiny/config.json" in multi_target["clients"]["bucket-a"].objects
@@ -273,12 +273,12 @@ def test_uploads_sync_to_the_chosen_target(multi_target):
     indexed = multi_target["database"].get_local_model("admin/tiny")
     assert indexed["storage_target"] == "bucket-a"
     with pytest.raises(ValueError):
-        uploads.create_repository(admin, "other", "", "shared", "nowhere")
+        uploads.create_repository(admin, "other", "", "public", "nowhere")
 
     mirror = multi_target["settings"].data_dir / "git-mirrors" / "admin" / "tiny"
     mirror.mkdir(parents=True)
     multi_target["database"].set_file_digest("admin/tiny", "w", "v", "a" * 64)
-    uploads.delete_repository("admin/tiny", admin["id"], "admin/tiny")
+    uploads.delete_repository("admin/tiny", admin, "admin/tiny")
     assert not any("admin/tiny" in key for key in multi_target["clients"]["bucket-a"].objects)
     assert not mirror.exists()
     assert multi_target["database"].get_file_digest("admin/tiny", "w", "v") is None
