@@ -8,6 +8,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.errors import RepositoryNotFoundError
@@ -84,6 +85,24 @@ def login(role: str) -> tuple[TestClient, dict]:
     status = response.json()
     client.headers["X-CSRF-Token"] = status["csrf_token"]
     return client, status
+
+
+def test_no_read_route_asks_for_the_write_security_token():
+    """Browsers send the CSRF token only with writes, so a GET behind the write
+    check fails for everyone with "Security token is missing or expired"."""
+
+    def uses_write(dependant) -> bool:
+        return any(
+            dependency.call is main.require_write_user or uses_write(dependency)
+            for dependency in dependant.dependencies
+        )
+
+    offenders = [
+        route.path
+        for route in main.app.routes
+        if isinstance(route, APIRoute) and route.methods & {"GET", "HEAD"} and uses_write(route.dependant)
+    ]
+    assert offenders == []
 
 
 def test_every_write_route_declares_who_may_call_it():

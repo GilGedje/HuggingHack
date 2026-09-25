@@ -452,6 +452,7 @@ UserManager = requires("users.manage", session_only=True)
 UserAdmin = requires("users.manage", write=True, session_only=True)
 SettingsViewer = requires("settings.view", session_only=True)
 OrgCreator = requires("orgs.manage", write=True, session_only=True)
+OrgOverseer = requires("orgs.manage", session_only=True)
 OrgEditor = requires("models.browse", write=True, session_only=True)
 TokenOwner = requires("tokens.manage", session_only=True)
 TokenWriter = requires("tokens.manage", write=True, session_only=True)
@@ -2301,7 +2302,7 @@ def list_organizations(user: Browser) -> dict:
 
 @app.get("/api/admin/organizations")
 def admin_list_organizations(
-    user: OrgCreator,
+    user: OrgOverseer,
     q: Annotated[str, Query(max_length=200)] = "",
     filter: Literal["", "with_repositories", "empty", "mine"] = "",
     sort: Literal["name", "newest", "repositories", "members"] = "name",
