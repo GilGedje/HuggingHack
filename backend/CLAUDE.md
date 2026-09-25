@@ -153,6 +153,11 @@ mirrored in `frontend/src/uploadPlan.ts` `isRecorded`, so change both together.
 - `S3ModelStorage.sync_repository` order: upload the objects, then the manifest
   (`.hugginghack.json`), then delete stale keys (the delete is best-effort). The manifest is
   never removed first, so a failed sync keeps the old version listed. `apply_changes` has the same order.
+  Before uploading, both write `.hugginghack-pending.json` naming the new objects (`_begin_change`), and the
+  manifest carries that change's id. Until a manifest with the same id is published, discovery, listings,
+  restores and moves leave those objects out (`_repository_objects`), so a failed change is never adopted as
+  a "Detected changes in storage" commit; the next change that succeeds deletes them (`_finish_change`).
+  Objects added to a bucket by hand still count, as before.
 - `UploadManager._apply_local_change` moves replaced or deleted files into
   `<session>.backup` and restores everything (manifest included) on any failure, so the
   same session can be committed again. `finalize` restores the unfinished manifest if the sync fails.

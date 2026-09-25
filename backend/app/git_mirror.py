@@ -38,6 +38,7 @@ MIRROR_FORMAT = 1
 METADATA_NAME = "hugginghack-mirror.json"
 OBJECT_PATTERN = re.compile(r"^objects/[0-9a-f]{2}/[0-9a-f]{38}$")
 OID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+EMPTY_OID = hashlib.sha256(b"").hexdigest()
 COMMITTER = "HuggingHack <hugginghack@localhost>"
 
 
@@ -49,7 +50,9 @@ class Mirror:
 
 
 def is_lfs(entry: RepoEntry) -> bool:
-    return (
+    # git-lfs never stores an empty file as a pointer, so a checkout of one would
+    # always look modified.
+    return entry.size > 0 and (
         entry.size > LFS_THRESHOLD_BYTES
         or PurePosixPath(entry.path).suffix.lower() in LFS_EXTENSIONS
     )
@@ -145,7 +148,9 @@ class GitMirrors:
                 self._restore(snapshot.repo_id, root)
             if self._metadata_sha(root) == snapshot.sha:
                 mirror = self._load(root)
-                if mirror:
+                # Mirrors built before empty files stayed out of LFS are rebuilt
+                # on top of themselves, so existing clones still fast-forward.
+                if mirror and EMPTY_OID not in mirror.lfs:
                     return mirror
             mirror = self._build(snapshot, root)
             self._persist(snapshot.repo_id, root)

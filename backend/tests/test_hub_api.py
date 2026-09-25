@@ -167,6 +167,11 @@ def test_huggingface_hub_client_pulls_from_the_local_library(hub_server, tmp_pat
     assert ranged.status_code == 206
     assert ranged.content == SAFETENSORS[10:20]
     assert ranged.headers["x-repo-commit"] == info.sha
+    # Several ranges get the same refusal a bucket-backed file gives, not a broken body.
+    multiple = httpx.get(
+        f"{endpoint}/acme/tiny/resolve/main/model.safetensors", headers={"Range": "bytes=0-9,20-29"}
+    )
+    assert multiple.status_code == 416 and multiple.json()["error"] == "Only one byte range is supported."
     head = httpx.head(f"{endpoint}/acme/tiny/resolve/{info.sha}/model.safetensors")
     assert head.status_code == 200
     assert int(head.headers["content-length"]) == len(SAFETENSORS)
@@ -275,6 +280,15 @@ def test_git_clone_with_lfs_from_the_local_library(hub_server, tmp_path: Path):
     (hub_server["root"] / "config.json").write_text("{}", encoding="utf-8")
     subprocess.run(["git", "pull"], cwd=clone, env=environment, check=True, capture_output=True)
     assert (clone / "config.json").read_text() == "{}"
+
+    # An empty weights file is a plain empty file, so the checkout stays clean.
+    (hub_server["root"] / "empty.bin").write_bytes(b"")
+    subprocess.run(["git", "pull"], cwd=clone, env=environment, check=True, capture_output=True)
+    assert (clone / "empty.bin").read_bytes() == b""
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=clone, env=environment, capture_output=True, text=True, check=True
+    )
+    assert status.stdout == ""
 
 
 def test_gitattributes_patterns_match_one_literal_path():

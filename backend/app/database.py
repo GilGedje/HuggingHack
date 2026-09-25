@@ -1513,6 +1513,18 @@ class Database:
             ).fetchone()
         return self._decode_row(row)
 
+    def repository_id_taken(self, repo_id: str, ignore: str | None = None) -> bool:
+        """Whether a repository id is in use, ignoring case: on a case-insensitive
+        disk the two would share a folder, and to people they read as one name."""
+        with self.connect() as connection:
+            for table in ("owned_repositories", "local_models"):
+                rows = connection.execute(
+                    f"SELECT repo_id FROM {table} WHERE LOWER(repo_id) = LOWER(?)", (repo_id,)
+                ).fetchall()
+                if any(row["repo_id"] != ignore for row in rows):
+                    return True
+        return False
+
     def prune_local_models(self, relative_paths: set[str]) -> None:
         with self._write_lock, self.connect() as connection:
             rows = connection.execute(

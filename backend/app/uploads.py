@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator
 from .config import Settings, validate_repo_id
 from .database import VISIBILITIES, Database
 from .indexer import (
+    PART_SUFFIXES,
     LocalModelIndexer,
     directory_stats,
     hidden_path,
@@ -72,9 +73,12 @@ def validate_upload_path(value: str) -> PurePosixPath:
         or any(part in {"", ".", ".."} for part in path.parts)
         or any(part in RESERVED_PARTS for part in path.parts)
         or path.name in RESERVED_FILENAMES
-        or path.name.endswith(PART_SUFFIX)
+        or any(path.name.endswith(suffix) for suffix in PART_SUFFIXES)
     ):
         raise ValueError("Upload path is invalid or reserved.")
+    # Control characters (a newline, say) can be stored but never requested by name.
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in cleaned):
+        raise ValueError("File names cannot contain control characters such as line breaks or tabs.")
     return path
 
 
@@ -97,6 +101,9 @@ class UploadManager:
         # Set by the app: remove a repository's git mirror, locally and in the system folder.
         self.mirror_forget: Callable[[str], None] | None = None
         self._write_lock = threading.RLock()
+        # The length each unfinished file was started with, so a later chunk cannot
+        # change it. Kept in memory: after a restart the next chunk sets it again.
+        self._lengths: dict[str, int] = {}
 
     def _repository_root(self, repo_id: str) -> Path:
         validated = validate_repo_id(repo_id)
@@ -320,8 +327,7 @@ class UploadManager:
         # or objects already in the bucket: an upload must never take one over.
         if (
             target.exists()
-            or self.database.get_owned_repository(repo_id)
-            or self.database.get_local_model(repo_id)
+            or self.database.repository_id_taken(repo_id)
             or self._bucket_has(target_storage, repo_id)
         ):
             raise FileExistsError("That repository already exists.")
@@ -426,6 +432,13 @@ class UploadManager:
             current = partial.stat().st_size if partial.exists() else 0
             if current != offset:
                 raise RuntimeError(f"Upload offset mismatch. Server has {current} bytes.")
+            declared = self._lengths.setdefault(str(partial), total) if current else total
+            if declared != total:
+                raise RuntimeError(
+                    f"This file was started as {declared} bytes, not {total}. "
+                    "Cancel the upload and start the file again."
+                )
+            self._lengths[str(partial)] = total
 
             with partial.open("ab") as output:
                 output.write(payload)
@@ -435,6 +448,7 @@ class UploadManager:
             complete = uploaded == total
             if complete:
                 partial.replace(target)
+                self._lengths.pop(str(partial), None)
         return {
             "offset": uploaded,
             "complete": complete,
@@ -691,8 +705,7 @@ class UploadManager:
             raise ValueError("That is already its name.")
         old_root, new_root = self._repository_root(old), self._repository_root(new)
         if (
-            self.database.get_local_model(new)
-            or self.database.get_owned_repository(new)
+            self.database.repository_id_taken(new, ignore=old)
             or (new_root.exists() and not os.path.samefile(new_root, old_root))
         ):
             raise FileExistsError(f"{new} already exists.")

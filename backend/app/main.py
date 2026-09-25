@@ -2483,6 +2483,16 @@ def load_runtime_model(
         raise HTTPException(status_code=409, detail=str(error)) from error
 
 
+@app.post("/api/runtime-jobs/{job_id}/cancel")
+def cancel_runtime_job(job_id: str, _: RuntimeWriter) -> dict:
+    try:
+        return runtimes.cancel(job_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
 @app.get("/api/collections")
 def list_collections(user: Browser) -> dict:
     return {"items": database.list_collections(user["id"])}
@@ -3095,6 +3105,10 @@ def repository_file_response(
     headers = {**headers, "Accept-Ranges": "bytes"}
     local = hub_repositories.local_file(snapshot, entry)
     if local is not None:
+        # One range at most, as from a bucket: Starlette's multipart answer breaks
+        # under the read lease and the header middleware.
+        if "," in request.headers.get("range", ""):
+            parse_range(request.headers["range"], entry.size)
         return FileResponse(local, headers=headers, media_type="application/octet-stream")
     if request.method == "HEAD":
         return Response(

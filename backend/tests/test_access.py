@@ -112,6 +112,7 @@ def test_every_write_route_declares_who_may_call_it():
         ("POST", "/api/auth/login"),
         ("POST", "/{owner}/{name}/info/lfs/objects/batch"),  # a read: pulls weights
         ("POST", "/api/runtimes/{target_id}/load"),  # runtime token or runtimes.use
+        ("POST", "/api/runtime-jobs/{job_id}/cancel"),  # runtime token or runtimes.use
     }
 
     def guarded(dependant) -> bool:
@@ -303,9 +304,11 @@ def test_server_settings_never_expose_secret_values(server, monkeypatch: pytest.
 
 def test_runtime_automation_token_only_reaches_runtimes(server, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(main, "settings", replace(server["settings"], runtime_api_token="rt-secret-token"))
+    monkeypatch.setattr(main, "runtimes", RuntimeManager(server["settings"], server["database"]))
     client = TestClient(main.app)
     client.headers["Authorization"] = "Bearer rt-secret-token"
     assert client.get("/api/runtimes").status_code == 200
+    assert client.post("/api/runtime-jobs/missing/cancel").status_code == 404
     assert client.get("/api/admin/users").status_code == 401
     assert client.get("/api/library/models").status_code == 401
     # Personal tokens still work on runtime endpoints, by role.
@@ -316,6 +319,7 @@ def test_runtime_automation_token_only_reaches_runtimes(server, monkeypatch: pyt
         personal = TestClient(main.app)
         personal.headers["Authorization"] = f"Bearer {token}"
         assert personal.get("/api/runtimes").status_code == expected
+    assert member.post("/api/runtime-jobs/missing/cancel").status_code == 403
 
 
 @pytest.fixture()

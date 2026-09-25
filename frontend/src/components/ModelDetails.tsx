@@ -243,6 +243,8 @@ export function ModelActions({
             onToast(`${next.runtime_model_name} is ready on ${next.target_name}.`)
           } else if (next.status === 'failed') {
             onToast(next.error || 'Runtime load failed.', 'error')
+          } else if (next.status === 'cancelled') {
+            onToast(`Sending ${next.runtime_model_name} to ${next.target_name} was stopped.`)
           }
         })
         .catch((reason) => {

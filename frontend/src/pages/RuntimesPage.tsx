@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AlertCircle, Check, Cloud, RefreshCw, Server } from 'lucide-react'
+import { AlertCircle, Ban, Check, Cloud, RefreshCw, Server } from 'lucide-react'
 import { api } from '../api'
 import type { RuntimeJob, RuntimeTarget } from '../types'
 import { formatBytes, relativeTime } from '../utils'
 import { RowSkeletons } from '../components/Skeletons'
+import { useConfirm } from '../components/ConfirmDialog'
 
 const runtimeActiveStatuses = ['queued', 'preparing', 'transferring', 'loading']
 /** The pause between one answer and the next poll. */
@@ -17,6 +18,8 @@ export function RuntimesPage() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
+  const [cancelling, setCancelling] = useState('')
+  const confirm = useConfirm()
   const latest = useRef(0)
   const timer = useRef(0)
   const stopped = useRef(false)
@@ -47,6 +50,25 @@ export function RuntimesPage() {
         timer.current = window.setTimeout(() => load(), POLL_MS)
       })
   }, [])
+
+  async function cancelJob(job: RuntimeJob) {
+    const sure = await confirm({
+      title: `Stop sending ${job.runtime_model_name}?`,
+      message: `HuggingHack stops waiting for ${job.target_name}. Whatever it already received may stay there; load the model again to finish.`,
+      confirmLabel: 'Stop job',
+      danger: true,
+    })
+    if (!sure) return
+    setCancelling(job.id)
+    try {
+      const cancelled = await api.cancelRuntimeJob(job.id)
+      setJobs((current) => current.map((item) => (item.id === cancelled.id ? cancelled : item)))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not stop the runtime job.')
+    } finally {
+      setCancelling('')
+    }
+  }
 
   useEffect(() => {
     stopped.current = false
@@ -94,7 +116,7 @@ export function RuntimesPage() {
           </article>
         ))}
         {loading && targets.length === 0 && <RowSkeletons rows={2} cells={1} label="Loading runtimes" />}
-        {!loading && targets.length === 0 && (
+        {!loading && !error && targets.length === 0 && (
           <div className="empty-state spacious runtime-empty">
             <Server size={34} />
             <h2>No runtime destinations configured</h2>
@@ -119,7 +141,9 @@ export function RuntimesPage() {
                   ? <AlertCircle size={18} />
                   : job.status === 'ready'
                     ? <Check size={18} />
-                    : <Server size={18} />}
+                    : job.status === 'cancelled'
+                      ? <Ban size={18} />
+                      : <Server size={18} />}
               </div>
               <div className="runtime-job-main">
                 <div className="runtime-job-heading">
@@ -141,6 +165,14 @@ export function RuntimesPage() {
                         <span>{formatBytes(job.processed_bytes)} of {formatBytes(job.total_bytes)}</span>
                       )}
                       <span>Updated {relativeTime(job.updated_at)}</span>
+                      <button
+                        type="button"
+                        className="secondary-button compact"
+                        onClick={() => void cancelJob(job)}
+                        disabled={cancelling === job.id}
+                      >
+                        {cancelling === job.id ? 'Stopping…' : 'Stop'}
+                      </button>
                     </div>
                   </>
                 )}
@@ -155,7 +187,7 @@ export function RuntimesPage() {
             </article>
           ))}
           {loading && jobs.length === 0 && <RowSkeletons rows={3} cells={2} label="Loading runtime jobs" />}
-          {!loading && jobs.length === 0 && (
+          {!loading && !error && jobs.length === 0 && (
             <div className="empty-compact">Send a model from its model page to create the first runtime job.</div>
           )}
         </div>

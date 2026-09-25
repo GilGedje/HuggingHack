@@ -419,7 +419,10 @@ VLLM_AGENT_TOKEN=replace-with-the-same-long-random-secret-used-on-the-agent
   requests in flight are interrupted during a switch.
 - S3-only models must be restored to the local cache first.
 
-The job's progress shows on the model page and on **Admin → Runtimes**.
+The job's progress shows on the model page and on **Admin → Runtimes**, where **Stop** ends an
+active job at once (the runtime may keep what it already received). A runtime that stops answering
+fails the job with "<name> stopped answering": after 30 minutes of silence for Ollama, and after
+2 hours 5 minutes for the vLLM agent, which answers only once vLLM is up.
 
 **The vLLM agent.** On the vLLM machine, mount the same model share and run the small manager
 from this repository. The token is mandatory and must match the one forwarded to HuggingHack:
@@ -446,8 +449,8 @@ curl -X POST http://NAS-IP:7860/api/runtimes/ollama-rig/load \
   -d '{"repo_id":"bartowski/Qwen2.5-7B-Instruct-GGUF","runtime_model_name":"qwen-local","source_file":"Qwen2.5-7B-Instruct-Q4_K_M.gguf"}'
 ```
 
-The response is a persistent job: read it at `GET /api/runtime-jobs/{job_id}`, list history at
-`GET /api/runtime-jobs`, and discover destinations at `GET /api/runtimes`. The interactive API
+The response is a persistent job: read it at `GET /api/runtime-jobs/{job_id}`, stop it with
+`POST /api/runtime-jobs/{job_id}/cancel`, list history at `GET /api/runtime-jobs`, and discover destinations at `GET /api/runtimes`. The interactive API
 reference at `/api/docs` is off by default; set `API_DOCS_ENABLED=true` to turn it on (it
 loads Swagger UI from a CDN, so it needs internet access in the browser).
 

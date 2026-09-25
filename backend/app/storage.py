@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
+from uuid import uuid4
 from urllib.parse import urlsplit, urlunsplit
 
 from .config import Settings, repository_path, validate_repo_id
@@ -27,6 +28,10 @@ from .indexer import (
 
 logger = logging.getLogger("hugginghack")
 MANIFEST_NAME = ".hugginghack.json"
+# Names the objects a change is writing before its manifest is published. A change
+# that fails part-way leaves them behind; until one succeeds, they are not part of
+# the repository, so a scan never adopts them as a commit.
+PENDING_NAME = ".hugginghack-pending.json"
 TARGET_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 
 
@@ -414,6 +419,95 @@ class S3ModelStorage(FilesystemModelStorage):
                 Delete={"Objects": batch, "Quiet": True},
             )
 
+    def _pending_key(self, repo_id: str) -> str:
+        return f"{self._repo_prefix(repo_id)}{PENDING_NAME}"
+
+    def _pending(self, repo_id: str) -> dict[str, Any] | None:
+        try:
+            response = self.client.get_object(Bucket=self.bucket, Key=self._pending_key(repo_id))
+            body = response["Body"]
+            try:
+                record = json.loads(body.read().decode("utf-8"))
+            finally:
+                close = getattr(body, "close", None)
+                if close:
+                    close()
+        except ValueError:
+            return None
+        except Exception as error:
+            if _missing_object(error):
+                return None
+            raise
+        return record if isinstance(record, dict) else None
+
+    def _unpublished(self, repo_id: str, manifest: dict[str, Any] | None) -> set[str]:
+        """Paths a change wrote without publishing its manifest. A record naming the
+        change the manifest now carries was published, so none of it counts."""
+        record = self._pending(repo_id)
+        if not record or record.get("change") == (manifest or {}).get("change"):
+            return set()
+        files = record.get("files")
+        return {item for item in files if isinstance(item, str)} if isinstance(files, list) else set()
+
+    def _begin_change(
+        self, repo_id: str, writing: set[str], manifest: dict[str, Any] | None = None
+    ) -> tuple[str, set[str], bool]:
+        """Record the new objects a change is about to write, before writing any.
+        Returns the change's id, the leftovers of earlier failed attempts, and
+        whether a record now exists."""
+        prefix = self._repo_prefix(repo_id)
+        present = {(item.get("Key") or "")[len(prefix) :] for item in self._objects(prefix)}
+        unpublished: set[str] = set()
+        if PENDING_NAME in present:
+            unpublished = self._unpublished(
+                repo_id, manifest if manifest is not None else self.repository_manifest(repo_id, strict=True)
+            )
+        change = uuid4().hex
+        new = (writing - (present - unpublished)) | unpublished
+        if new:
+            self.client.put_object(
+                Bucket=self.bucket,
+                Key=self._pending_key(repo_id),
+                Body=json.dumps({"change": change, "files": sorted(new)}).encode("utf-8"),
+            )
+        return change, unpublished, bool(new) or PENDING_NAME in present
+
+    def _finish_change(self, repo_id: str, remove: set[str], recorded: bool) -> None:
+        """After a change is published, remove the objects it replaced: deleted
+        files and leftovers of failed attempts. They are recorded as pending first,
+        so if removing them fails, they still stay out of the repository."""
+        prefix = self._repo_prefix(repo_id)
+        remove = remove - {MANIFEST_NAME, PENDING_NAME}
+        try:
+            if remove:
+                self.client.put_object(
+                    Bucket=self.bucket,
+                    Key=self._pending_key(repo_id),
+                    Body=json.dumps({"change": uuid4().hex, "files": sorted(remove)}).encode("utf-8"),
+                )
+                self._delete_keys(f"{prefix}{relative}" for relative in sorted(remove))
+            if remove or recorded:
+                self._delete_keys([self._pending_key(repo_id)])
+        except Exception as error:
+            logger.warning(
+                "Could not remove old objects of %s from %s: %s",
+                repo_id, self.id, self.redact(str(error) or error.__class__.__name__),
+            )
+
+    def _repository_objects(
+        self, repo_id: str, manifest: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """A repository's objects, without those of a change that was never published."""
+        prefix = self._repo_prefix(repo_id)
+        objects = list(self._objects(prefix))
+        excluded: set[str] = set()
+        if any(item.get("Key") == f"{prefix}{PENDING_NAME}" for item in objects):
+            excluded = self._unpublished(
+                repo_id, manifest if manifest is not None else self.repository_manifest(repo_id)
+            )
+        excluded.add(PENDING_NAME)
+        return [item for item in objects if (item.get("Key") or "")[len(prefix) :] not in excluded]
+
     def _transfer_options(self) -> dict[str, Any]:
         options: dict[str, Any] = {}
         if self.transfer_config is not None:
@@ -507,24 +601,29 @@ class S3ModelStorage(FilesystemModelStorage):
             "torch_dtype": config.get("torch_dtype"),
             "vocab_size": config.get("vocab_size"),
         }
-        if not manifest.get("pipeline_tag") and config.get("model_type"):
-            manifest["pipeline_tag"] = config["model_type"]
-        facts = repository_facts(root)
-        # Only what the files measure; the manifest's own task, license, and tags
-        # (from the Hub) must not be replaced by the model card's.
+        facts = repository_facts(root, manifest)
         manifest.update({key: facts[key] for key in ("parameter_count", "formats", "precision")})
+        # The card's task, license, library, and tags, so a rescan of the bucket lists
+        # the model as the local copy did; the manifest's own (from the Hub) win.
+        manifest.update(
+            {key: facts[key] for key in ("pipeline_tag", "library_name", "license", "tags") if facts[key]}
+        )
         # What the model derives from comes from its card; a manifest that already
         # names one (from the Hub) keeps it.
         if not manifest.get("base_model") and facts.get("base_model"):
             manifest["base_model"] = facts["base_model"]
             manifest["base_model_relation"] = facts["base_model_relation"]
-        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-
         with self._lock:
             repo_prefix = self._repo_prefix(validated)
             manifest_key = self._manifest_key(validated)
             local_files = self._local_files(root)
-            intended_keys = {f"{repo_prefix}{relative}" for _, relative in local_files}
+            intended = {relative for _, relative in local_files}
+            change, _, recorded = self._begin_change(
+                validated,
+                {relative for relative in intended if changed is None or relative in changed} - {MANIFEST_NAME},
+            )
+            manifest["change"] = change
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
             for path, relative in local_files:
                 if relative == MANIFEST_NAME:
                     continue
@@ -545,13 +644,14 @@ class S3ModelStorage(FilesystemModelStorage):
             # The new version is published; leftovers only cost space, and the
             # next sync of this repository removes whatever this one could not.
             try:
-                existing_keys = {item["Key"] for item in self._objects(repo_prefix)}
-                self._delete_keys(existing_keys - intended_keys)
+                existing = {(item.get("Key") or "")[len(repo_prefix) :] for item in self._objects(repo_prefix)}
             except Exception as error:
+                existing = set()
                 logger.warning(
-                    "Could not remove old objects of %s from %s: %s",
+                    "Could not list old objects of %s in %s: %s",
                     validated, self.id, self.redact(str(error) or error.__class__.__name__),
                 )
+            self._finish_change(validated, existing - intended, recorded)
         return self.remote_uri(validated)
 
     def apply_changes(
@@ -565,28 +665,30 @@ class S3ModelStorage(FilesystemModelStorage):
 
         Files are uploaded, then the manifest, then deletions made; the manifest is
         never removed, so a failure part-way leaves the repository listed and the
-        same change can simply be applied again.
+        same change can simply be applied again. New files are recorded as pending
+        first, so a failure never adds them to the repository at the next scan.
         """
         validated = validate_repo_id(repo_id)
         repo_prefix = self._repo_prefix(validated)
         with self._lock:
-            for relative, path in files.items():
-                key = f"{repo_prefix}{_safe_relative_key(relative).as_posix()}"
-                self.client.upload_file(str(path), self.bucket, key, **self._upload_options())
+            uploads = {_safe_relative_key(relative).as_posix(): path for relative, path in files.items()}
+            change, leftovers, recorded = self._begin_change(validated, set(uploads), manifest)
+            for relative, path in uploads.items():
+                self.client.upload_file(str(path), self.bucket, f"{repo_prefix}{relative}", **self._upload_options())
             manifest = {
                 **manifest,
                 "storage_backend": "s3",
                 "storage_target": self.id,
                 "remote_uri": self.remote_uri(validated),
+                "change": change,
             }
             self.client.put_object(
                 Bucket=self.bucket,
                 Key=self._manifest_key(validated),
                 Body=json.dumps(manifest, indent=2).encode("utf-8"),
             )
-            self._delete_keys(
-                f"{repo_prefix}{_safe_relative_key(relative).as_posix()}" for relative in deletions
-            )
+            removed = {_safe_relative_key(relative).as_posix() for relative in deletions}
+            self._finish_change(validated, removed | (leftovers - set(uploads)), recorded)
 
     def delete_repository(self, repo_id: str) -> None:
         with self._lock:
@@ -630,6 +732,7 @@ class S3ModelStorage(FilesystemModelStorage):
         manifests: list[tuple[str, dict[str, Any]]] = []
         repository_keys: dict[str, list[str]] = {}
         repository_entries: dict[str, list[dict[str, Any]]] = {}
+        pending: set[str] = set()
         for item in self._objects(root_prefix):
             key = item.get("Key") or ""
             relative_key = key[len(root_prefix) :] if root_prefix else key
@@ -639,6 +742,8 @@ class S3ModelStorage(FilesystemModelStorage):
             repo_id = f"{parts[0]}/{parts[1]}"
             if len(parts) == 3 and parts[-1] == MANIFEST_NAME:
                 manifests.append((repo_id, item))
+            elif len(parts) == 3 and parts[-1] == PENDING_NAME:
+                pending.add(repo_id)
             else:
                 repository_keys.setdefault(repo_id, []).append(parts[-1])
                 repository_entries.setdefault(repo_id, []).append(
@@ -660,6 +765,14 @@ class S3ModelStorage(FilesystemModelStorage):
                 or manifest.get("repo_id") != repo_id
             ):
                 continue
+            if repo_id in pending:
+                unpublished = self._unpublished(repo_id, manifest)
+                repository_entries[repo_id] = [
+                    entry for entry in repository_entries.get(repo_id, []) if entry["path"] not in unpublished
+                ]
+                repository_keys[repo_id] = [
+                    PurePosixPath(entry["path"]).name for entry in repository_entries[repo_id]
+                ]
             cache_root = repository_path(repo_id, self.settings.model_storage)
             cached_manifest = cache_root / MANIFEST_NAME
             cached = False
@@ -720,7 +833,7 @@ class S3ModelStorage(FilesystemModelStorage):
         prefix = self._repo_prefix(repo_id)
         files: list[dict[str, Any]] = []
         unsafe_count = 0
-        for item in self._objects(prefix):
+        for item in self._repository_objects(repo_id):
             key = item.get("Key") or ""
             relative = key[len(prefix) :]
             if not relative:
@@ -753,7 +866,7 @@ class S3ModelStorage(FilesystemModelStorage):
         if not manifest or manifest.get("status") != "complete":
             raise FileNotFoundError("A complete S3 copy of this repository was not found.")
         prefix = self._repo_prefix(validated)
-        objects = list(self._objects(prefix))
+        objects = self._repository_objects(validated, manifest)
         if not objects:
             raise FileNotFoundError("The S3 repository is empty.")
         root = repository_path(validated, self.settings.model_storage)
@@ -841,7 +954,7 @@ class S3ModelStorage(FilesystemModelStorage):
         """List every object of a repository, without the browsing limit."""
         prefix = self._repo_prefix(repo_id)
         entries: list[dict[str, Any]] = []
-        for item in self._objects(prefix):
+        for item in self._repository_objects(repo_id):
             relative = (item.get("Key") or "")[len(prefix) :]
             if not relative:
                 continue
@@ -905,7 +1018,7 @@ class S3ModelStorage(FilesystemModelStorage):
         """Every file of a repository in this bucket, except its manifest."""
         prefix = self._repo_prefix(repo_id)
         files = []
-        for item in self._objects(prefix):
+        for item in self._repository_objects(repo_id):
             relative = (item.get("Key") or "")[len(prefix) :]
             if relative and relative != MANIFEST_NAME:
                 files.append((_safe_relative_key(relative).as_posix(), int(item.get("Size") or 0)))
