@@ -957,7 +957,7 @@ def test_indexer_counts_parameters_from_weight_headers(tmp_path: Path):
     (tmp_path / "consolidated.safetensors").write_bytes(safetensors_bytes({"all": [48]}))
     (tmp_path / "pytorch_model.bin").write_bytes(b"pickle")
     facts = repository_facts(tmp_path)
-    assert facts == {
+    assert {key: facts[key] for key in ("parameter_count", "formats", "precision")} == {
         "parameter_count": 48,
         "formats": ["gguf", "pytorch", "safetensors"],
         "precision": "fp32",  # no config.json, so the header's dtype decides

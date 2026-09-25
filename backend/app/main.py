@@ -31,7 +31,7 @@ from .auth import (
     utc_now,
     validate_password,
 )
-from .catalog import HARDWARE, LocalCatalog, search_catalog
+from .catalog import HARDWARE, LocalCatalog, model_task, nominal_parameters, search_catalog
 from .config import settings, validate_namespace, validate_repo_id
 from .database import INTEGRITY_ERRORS, Database
 from .downloads import DownloadManager
@@ -50,6 +50,7 @@ from .hub_api import (
 )
 from .hub_service import HubService
 from .indexer import LocalModelIndexer, upload_is_registered
+from .listing import PRECISIONS, preview as preview_listing, validate_overrides
 from .runtimes import RuntimeManager
 from .storage import create_storage_registry
 from .uploads import UploadManager
@@ -1229,6 +1230,77 @@ def update_model_hardware(
     return {"repo_id": model["repo_id"], "hardware": chosen}
 
 
+class ListingPreviewRequest(BaseModel):
+    repo_id: str | None = Field(default=None, max_length=200)
+    paths: list[str] = Field(default_factory=list)
+    config: str | None = None
+    quant_config: str | None = None
+    readme: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+
+
+class ListingRequest(BaseModel):
+    overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+def detected_listing(model: dict[str, Any]) -> dict[str, Any]:
+    return {**(model.get("detected") or {}), "model_type": (model.get("config") or {}).get("model_type")}
+
+
+def listing_view(repo_id: str, detected: dict[str, Any], overrides: dict[str, Any]) -> dict:
+    """What the files say, what people changed, and how the model ends up listed."""
+    listed = {**detected, **overrides}
+    return {
+        "detected": detected,
+        "overrides": overrides,
+        # The library shows no task for a config.model_type fallback, and a size the
+        # name agrees with over the exact count.
+        "listed_task": model_task({"pipeline_tag": listed.get("pipeline_tag"), "config": {"model_type": detected.get("model_type")}}),
+        "nominal_parameters": nominal_parameters({"id": repo_id, "parameter_count": listed.get("parameter_count")}),
+        "precisions": PRECISIONS,
+    }
+
+
+@app.post("/api/uploads/preview")
+def preview_upload_listing(payload: ListingPreviewRequest, _: Uploader) -> dict:
+    """How the library will list a model, read from the files an upload is about to
+    send: its config, quantization config, model card, and weight headers."""
+    try:
+        detected = preview_listing(
+            payload.paths, payload.config, payload.quant_config, payload.readme, payload.headers
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return listing_view(payload.repo_id or "local/model", detected, {})
+
+
+@app.put("/api/repos/listing")
+def update_listing(
+    payload: ListingRequest,
+    user: Editor,
+    repo_id: Annotated[str, Query(max_length=200)],
+) -> dict:
+    """Correct how a model is listed. Works as soon as an upload's repository
+    exists, before its files arrive."""
+    try:
+        validated = validate_repo_id(repo_id)
+        overrides = validate_overrides(payload.overrides)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    owned = database.get_owned_repository(validated)
+    model = database.get_visible_local_model(user["id"], validated)
+    if owned:
+        if uploads.access(owned, user["id"]) is None and not can(user, "repos.edit_any"):
+            raise HTTPException(status_code=404, detail="Repository not found.")
+    elif not model:
+        raise HTTPException(status_code=404, detail="Repository not found.")
+    if not uploads.can_edit(validated, user):
+        raise HTTPException(status_code=403, detail="You cannot edit this model.")
+    database.set_listing_overrides(validated, overrides, utc_iso(), user["id"])
+    current = database.get_local_model(validated)
+    return listing_view(validated, detected_listing(current) if current else {}, overrides)
+
+
 class ConfigFile(BaseModel):
     path: str = Field(min_length=1, max_length=500)
     content: str = Field(max_length=600_000)
@@ -1643,6 +1715,9 @@ async def library_model(repo_id: str, user: Browser) -> dict:
     tagged = database.model_hardware([model["repo_id"]]).get(model["repo_id"], [])
     details["hardware"] = [key for key in HARDWARE if key in tagged]
     details["hardware_options"] = [[key, label] for key, label in HARDWARE.items()]
+    details["listing"] = listing_view(
+        model["repo_id"], detected_listing(model), model.get("listing_overrides") or {}
+    )
     owned = database.get_owned_repository(model["repo_id"])
     details["visibility"] = owned["visibility"] if owned else "public"
     details["owned"] = bool(owned)

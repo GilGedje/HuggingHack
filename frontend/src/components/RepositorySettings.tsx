@@ -3,9 +3,11 @@ import { AlertTriangle, Cloud, Globe2, HardDrive, LoaderCircle, LockKeyhole, Tra
 import { useNavigate } from 'react-router-dom'
 import { useAccess } from '../access'
 import { api } from '../api'
-import type { LibraryModelDetails, UploadNamespace, Visibility } from '../types'
+import type { LibraryModelDetails, ListingOverrides, UploadNamespace, Visibility } from '../types'
 import { VISIBILITIES, visibilityAllowed, visibilityAudience, visibilityLabel } from '../visibility'
 import { ChoiceCard } from './ChoiceCard'
+import { sameOverrides } from '../listingFields'
+import { ListingEditor } from './ListingEditor'
 import { NamespacePicker } from './NamespacePicker'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
@@ -36,6 +38,9 @@ export function RepositorySettings({
   const [owner, name] = model.id.split('/')
   const organization = model.organization?.name || null
 
+  const [listing, setListing] = useState<ListingOverrides>(model.listing.overrides)
+  const [savingListing, setSavingListing] = useState(false)
+  const listingChanged = !sameOverrides(listing, model.listing.overrides)
   const [description, setDescription] = useState(model.description)
   const [savingDescription, setSavingDescription] = useState(false)
   const [visibility, setVisibility] = useState<Visibility>(model.visibility)
@@ -97,6 +102,20 @@ export function RepositorySettings({
   const unchanged = target === model.id
   const transfer = namespace.toLowerCase() !== owner.toLowerCase()
   const remote = model.storage_backend === 's3'
+
+  async function saveListing() {
+    setSavingListing(true)
+    try {
+      await api.updateListing(model.id, listing)
+      onToast('The listing was updated.')
+      announce(model.id)
+      onChanged()
+    } catch (reason) {
+      onToast(message(reason, 'Could not update the listing.'), 'error')
+    } finally {
+      setSavingListing(false)
+    }
+  }
 
   async function saveDescription(event: FormEvent) {
     event.preventDefault()
@@ -225,6 +244,22 @@ export function RepositorySettings({
           </div>
         </section>
       )}
+
+      <section className="settings-block">
+        <div className="settings-block-heading">
+          <h2>Listing</h2>
+          <p>How the library shows and filters this model. Rescans keep your corrections.</p>
+        </div>
+        <ListingEditor listing={model.listing} overrides={listing} onChange={setListing} disabled={savingListing} />
+        <div className="settings-block-actions">
+          <button type="button" className="secondary-button compact" disabled={savingListing || !listingChanged} onClick={saveListing}>
+            {savingListing && <LoaderCircle size={14} className="spin" />} Save listing
+          </button>
+          {listingChanged && (
+            <button type="button" className="text-link" onClick={() => setListing(model.listing.overrides)}>Discard changes</button>
+          )}
+        </div>
+      </section>
 
       <form className="settings-block" onSubmit={rename}>
         <div className="settings-block-heading">

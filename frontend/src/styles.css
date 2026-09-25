@@ -1175,6 +1175,37 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
   margin-left: auto; border: 0; background: transparent; color: var(--text-secondary); cursor: pointer;
   font-size: 11px; text-decoration: underline; text-underline-offset: 3px;
 }
+/* How a model will be listed, one correctable field per row (ListingEditor). */
+.wizard-listing { margin-top: 4px; display: grid; gap: 10px; }
+.wizard-listing h3 { font-size: 14px; }
+.listing-editor { margin: 0; display: grid; border-top: 1px solid var(--border); }
+.listing-row {
+  padding: 10px 0; display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 4px 14px;
+  border-bottom: 1px solid var(--border); font-size: 12px;
+}
+.listing-row dt { display: grid; gap: 2px; color: var(--text-secondary); }
+.listing-row dt small { color: var(--text-muted); font-size: 10px; line-height: 1.35; }
+.listing-row dd { min-width: 0; margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.listing-value { min-width: 0; color: var(--text); overflow-wrap: anywhere; }
+.listing-value.empty { color: var(--text-muted); }
+.listing-row.corrected .listing-value { font-weight: 600; animation: fade-in 220ms var(--ease-out) backwards; }
+.listing-detected { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--text-muted); font-size: 11px; }
+.listing-detected button, .listing-edit-button {
+  padding: 0; display: inline-flex; align-items: center; gap: 3px; border: 0; background: transparent;
+  color: var(--text-secondary); cursor: pointer; font-size: 11px; text-decoration: underline; text-underline-offset: 3px;
+}
+.listing-edit-button { margin-left: auto; }
+.listing-detected button:hover, .listing-edit-button:hover { color: var(--text); }
+.listing-edit { width: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; animation: fade-in 200ms var(--ease-out) backwards; }
+.listing-edit :is(input, select) {
+  height: 32px; min-width: 0; max-width: 360px; padding: 0 10px; flex: 1 1 200px;
+  border: 1px solid var(--border-strong); border-radius: 6px; background: var(--canvas); color: var(--text); font-size: 12px;
+}
+.listing-edit .field-hint { margin: 0; flex-basis: 100%; }
+.listing-edit .text-link { padding: 0; border: 0; background: none; cursor: pointer; font-size: 11px; }
+@media (max-width: 780px) {
+  .listing-row { grid-template-columns: minmax(0, 1fr); }
+}
 .wizard-actions { padding: 16px 22px 20px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .wizard-owner-note { display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); font-size: 11px; }
 .wizard-resume {

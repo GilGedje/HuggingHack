@@ -26,6 +26,42 @@ else:
 NAMED_PARAMETER_PATTERN = re.compile(r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)")
 
 
+# How a model is listed, as people corrected it. Detected values stay in
+# local_models, so rescans keep refreshing them underneath; the corrections are
+# merged in whenever a model is read.
+LISTING_FIELDS = ("pipeline_tag", "precision", "parameter_count", "library_name", "license", "tags")
+LISTED_MODEL = (
+    "local_models.*, model_listing.overrides_json AS listing_json FROM local_models "
+    "LEFT JOIN model_listing ON model_listing.repo_id = local_models.repo_id"
+)
+
+
+def _listing_value(model: dict[str, Any], field: str) -> Any:
+    if field == "precision":
+        return (model.get("config") or {}).get("precision")
+    return model.get(field)
+
+
+def _apply_listing(model: dict[str, Any], raw: str | None) -> None:
+    """Merge listing corrections into a decoded model row, keeping what the files
+    said under `detected`."""
+    try:
+        overrides = json.loads(raw) if raw else {}
+    except (TypeError, json.JSONDecodeError):
+        overrides = {}
+    overrides = {
+        key: value for key, value in (overrides if isinstance(overrides, dict) else {}).items()
+        if key in LISTING_FIELDS
+    }
+    model["detected"] = {field: _listing_value(model, field) for field in LISTING_FIELDS}
+    model["listing_overrides"] = overrides
+    for field, value in overrides.items():
+        if field == "precision":
+            model["config"] = {**(model.get("config") or {}), "precision": value}
+        else:
+            model[field] = value
+
+
 def _postgres_query(query: str, parameters: object = ()) -> str:
     if isinstance(parameters, Mapping):
         return NAMED_PARAMETER_PATTERN.sub(r"%(\1)s", query)
@@ -415,6 +451,13 @@ class Database:
                     CHECK ((user_id IS NULL) <> (organization_id IS NULL))
                 );
 
+                CREATE TABLE IF NOT EXISTS model_listing (
+                    repo_id TEXT PRIMARY KEY,
+                    overrides_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    updated_by TEXT
+                );
+
                 CREATE TABLE IF NOT EXISTS config_revisions (
                     id TEXT PRIMARY KEY,
                     repo_id TEXT NOT NULL,
@@ -679,6 +722,8 @@ class Database:
                     result[output_key] = json.loads(raw or ("[]" if key in list_keys else "{}"))
                 except (TypeError, json.JSONDecodeError):
                     result[output_key] = [] if key in list_keys else {}
+        if "listing_json" in result:
+            _apply_listing(result, result.pop("listing_json"))
         if "managed" in result:
             result["managed"] = bool(result["managed"])
         if "cached" in result:
@@ -1296,24 +1341,25 @@ class Database:
             if query:
                 rows = connection.execute(
                     """
-                    SELECT * FROM local_models
-                    WHERE LOWER(repo_id) LIKE LOWER(?)
-                       OR LOWER(pipeline_tag) LIKE LOWER(?)
-                       OR LOWER(library_name) LIKE LOWER(?)
-                    ORDER BY modified_at DESC
+                    SELECT local_models.*, model_listing.overrides_json AS listing_json
+                    FROM local_models LEFT JOIN model_listing ON model_listing.repo_id = local_models.repo_id
+                    WHERE LOWER(local_models.repo_id) LIKE LOWER(?)
+                       OR LOWER(local_models.pipeline_tag) LIKE LOWER(?)
+                       OR LOWER(local_models.library_name) LIKE LOWER(?)
+                    ORDER BY local_models.modified_at DESC
                     """,
                     (f"%{query}%", f"%{query}%", f"%{query}%"),
                 ).fetchall()
             else:
                 rows = connection.execute(
-                    "SELECT * FROM local_models ORDER BY modified_at DESC"
+                    f"SELECT {LISTED_MODEL} ORDER BY local_models.modified_at DESC"
                 ).fetchall()
         return [self._decode_row(row) for row in rows]
 
     def get_local_model(self, repo_id: str) -> dict[str, Any] | None:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM local_models WHERE repo_id = ?", (repo_id,)
+                f"SELECT {LISTED_MODEL} WHERE local_models.repo_id = ?", (repo_id,)
             ).fetchone()
         return self._decode_row(row)
 
@@ -1378,8 +1424,9 @@ class Database:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT local_models.*
+                SELECT local_models.*, model_listing.overrides_json AS listing_json
                 FROM local_models
+                LEFT JOIN model_listing ON model_listing.repo_id = local_models.repo_id
                 LEFT JOIN owned_repositories
                     ON owned_repositories.repo_id = local_models.repo_id
                 WHERE """ + VISIBLE_TO_USER + """
@@ -1396,8 +1443,9 @@ class Database:
         with self.connect() as connection:
             row = connection.execute(
                 """
-                SELECT local_models.*
+                SELECT local_models.*, model_listing.overrides_json AS listing_json
                 FROM local_models
+                LEFT JOIN model_listing ON model_listing.repo_id = local_models.repo_id
                 LEFT JOIN owned_repositories
                     ON owned_repositories.repo_id = local_models.repo_id
                 WHERE local_models.repo_id = ?
@@ -1412,8 +1460,9 @@ class Database:
         with self.connect() as connection:
             row = connection.execute(
                 """
-                SELECT local_models.*
+                SELECT local_models.*, model_listing.overrides_json AS listing_json
                 FROM local_models
+                LEFT JOIN model_listing ON model_listing.repo_id = local_models.repo_id
                 LEFT JOIN owned_repositories
                     ON owned_repositories.repo_id = local_models.repo_id
                 WHERE local_models.repo_id = ?
@@ -1800,6 +1849,7 @@ class Database:
             )
             connection.execute("DELETE FROM local_models WHERE repo_id = ?", (repo_id,))
             connection.execute("DELETE FROM model_hardware WHERE repo_id = ?", (repo_id,))
+            connection.execute("DELETE FROM model_listing WHERE repo_id = ?", (repo_id,))
         return cursor.rowcount > 0
 
     # Hardware tags are kept apart from local_models so rescans never drop them.
@@ -1826,10 +1876,35 @@ class Database:
                 [(repo_id, item) for item in hardware],
             )
 
+    def listing_overrides(self, repo_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT overrides_json FROM model_listing WHERE repo_id = ?", (repo_id,)
+            ).fetchone()
+        try:
+            overrides = json.loads(row["overrides_json"]) if row else {}
+        except (TypeError, json.JSONDecodeError):
+            overrides = {}
+        return overrides if isinstance(overrides, dict) else {}
+
+    def set_listing_overrides(
+        self, repo_id: str, overrides: dict[str, Any], updated_at: str, updated_by: str | None
+    ) -> None:
+        """Replace what people changed about how a model is listed; empty clears it."""
+        with self._write_lock, self.connect() as connection:
+            connection.execute("DELETE FROM model_listing WHERE repo_id = ?", (repo_id,))
+            if overrides:
+                connection.execute(
+                    "INSERT INTO model_listing (repo_id, overrides_json, updated_at, updated_by) "
+                    "VALUES (?, ?, ?, ?)",
+                    (repo_id, json.dumps(overrides, sort_keys=True), updated_at, updated_by),
+                )
+
     # Tables whose rows belong to a repository and follow it when it is renamed.
     # `downloads` and `runtime_jobs` are history and keep the name they ran under.
     RENAMED_WITH_REPOSITORY = (
         "saved_models", "repo_commits", "file_digests", "model_hardware", "config_revisions",
+        "model_listing",
     )
 
     def rename_repository(

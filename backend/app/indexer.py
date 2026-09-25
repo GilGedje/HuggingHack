@@ -123,6 +123,11 @@ def safetensors_tensors(path: Path) -> list[tuple[str, str, int]] | None:
             header = json.loads(handle.read(length))
     except (OSError, ValueError):
         return None
+    return header_tensors(header)
+
+
+def header_tensors(header: Any) -> list[tuple[str, str, int]] | None:
+    """The tensors listed in a parsed SafeTensors header."""
     if not isinstance(header, dict):
         return None
     tensors = []
@@ -329,20 +334,31 @@ def _gguf_candidates(ggufs: list[Path]) -> list[Path]:
     ]
 
 
+def select_safetensors(paths: Iterable[str]) -> list[str]:
+    """The SafeTensors shards that hold the model, as repository-relative paths.
+    Root-level Transformers shards win; Mistral-style repos also ship
+    consolidated.safetensors with the same weights, which would double count."""
+    safetensors = [path for path in paths if path.lower().endswith(".safetensors")]
+    selected = [path for path in safetensors if "/" not in path] or safetensors
+    standard = [path for path in selected if not path.rsplit("/", 1)[-1].startswith("consolidated")]
+    return standard or selected
+
+
 def _weight_shards(root: Path, files: Iterable[Path]) -> tuple[list[Path], list[Path]]:
-    safetensors: list[Path] = []
-    ggufs: list[Path] = []
-    for path in files:
-        suffix = path.suffix.lower()
-        if suffix == ".safetensors":
-            safetensors.append(path)
-        elif suffix == ".gguf":
-            ggufs.append(path)
-    # Prefer root-level Transformers shards; Mistral-style repos also ship
-    # consolidated.safetensors with the same weights, which would double count.
-    selected = [path for path in safetensors if path.parent == root] or safetensors
-    standard = [path for path in selected if not path.name.startswith("consolidated")]
-    return standard or selected, ggufs
+    files = list(files)
+    relative = {path.relative_to(root).as_posix(): path for path in files}
+    ggufs = [path for path in files if path.suffix.lower() == ".gguf"]
+    return [relative[path] for path in select_safetensors(relative)], ggufs
+
+
+def shards_parameter_count(
+    shards: list[list[tuple[str, str, int]] | None], precision: str | None = None
+) -> int | None:
+    """A shard may hold only scales or buffers, so zero is a valid count; only an
+    unreadable header makes the total unknown."""
+    if not shards or any(tensors is None for tensors in shards):
+        return None
+    return sum(count_parameters(tensors or [], precision) for tensors in shards) or None
 
 
 def repository_parameter_count(
@@ -350,11 +366,9 @@ def repository_parameter_count(
 ) -> int | None:
     safetensors, ggufs = _weight_shards(root, files)
     if safetensors:
-        # A shard may hold only scales or buffers, so zero is a valid count; only an
-        # unreadable header makes the total unknown.
-        counts = [safetensors_parameter_count(path, precision) for path in safetensors]
-        if counts and all(count is not None for count in counts):
-            return sum(counts) or None
+        count = shards_parameter_count([safetensors_tensors(path) for path in safetensors], precision)
+        if count is not None:
+            return count
     if ggufs:
         counts = [gguf_parameter_count(path) for path in _gguf_candidates(ggufs)]
         if counts and all(count is not None for count in counts):
@@ -377,29 +391,46 @@ def _repository_files(root: Path) -> list[Path]:
     return files
 
 
-def repository_facts(root: Path) -> dict[str, Any]:
+def repository_facts(root: Path, manifest: dict[str, Any] | None = None) -> dict[str, Any]:
     files = _repository_files(root)
-    safetensors, _ = _weight_shards(root, files)
-    tensors = [tensor for path in safetensors for tensor in (safetensors_tensors(path) or [])]
-    precision = model_precision(
-        parse_json(root / "config.json"), parse_json(root / "hf_quant_config.json"), tensors
+    safetensors, ggufs = _weight_shards(root, files)
+    gguf_counts = [gguf_parameter_count(path) for path in _gguf_candidates(ggufs)] if ggufs else []
+    return classify(
+        [path.relative_to(root).as_posix() for path in files],
+        parse_json(root / "config.json"),
+        parse_json(root / "hf_quant_config.json"),
+        readme_metadata(root / "README.md"),
+        [safetensors_tensors(path) for path in safetensors],
+        manifest,
+        sum(gguf_counts) if gguf_counts and all(count is not None for count in gguf_counts) else None,
     )
-    return {
-        "parameter_count": repository_parameter_count(root, files, precision),
-        "formats": model_formats(path.name for path in files),
-        "precision": precision,
-    }
+
+
+README_MAX_BYTES = 1_000_000
 
 
 def readme_metadata(path: Path) -> dict[str, Any]:
     """Read model card YAML frontmatter (pipeline_tag, license, tags) from a local README."""
     try:
-        if not path.is_file() or path.is_symlink() or path.stat().st_size > 1_000_000:
+        if not path.is_file() or path.is_symlink() or path.stat().st_size > README_MAX_BYTES:
             return {}
-        from huggingface_hub import metadata_load
+        return card_metadata(path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return {}
 
-        metadata = metadata_load(path) or {}
+
+def card_metadata(text: str) -> dict[str, Any]:
+    """Model card YAML frontmatter (pipeline_tag, library_name, license, tags)."""
+    try:
+        import yaml
+        from huggingface_hub.repocard import REGEX_YAML_BLOCK
+
+        # The same parsing as huggingface_hub's metadata_load, on text.
+        match = REGEX_YAML_BLOCK.search(text)
+        metadata = yaml.safe_load(match.group(2)) if match else None
     except Exception:
+        return {}
+    if not isinstance(metadata, dict):
         return {}
     result: dict[str, Any] = {}
     for key in ("pipeline_tag", "library_name", "license"):
@@ -412,6 +443,51 @@ def readme_metadata(path: Path) -> dict[str, Any]:
     if isinstance(tags, list):
         result["tags"] = [tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()][:50]
     return result
+
+
+def classify(
+    paths: Iterable[str],
+    config: dict[str, Any],
+    quant_file: dict[str, Any],
+    card: dict[str, Any],
+    shards: list[list[tuple[str, str, int]] | None],
+    manifest: dict[str, Any] | None = None,
+    gguf_count: int | None = None,
+) -> dict[str, Any]:
+    """How the library lists a repository, from what its files say. The indexer and
+    the upload preview both call this, so a preview is what the listing will be.
+    `shards` are the tensors of `select_safetensors(paths)`, in any order."""
+    manifest = manifest or {}
+    paths = list(paths)
+    tensors = [tensor for shard in shards for tensor in (shard or [])]
+    precision = model_precision(config, quant_file, tensors)
+    parameter_count = shards_parameter_count(shards, precision) if shards else None
+    if parameter_count is None:
+        parameter_count = gguf_count
+    return {
+        # S3 syncs used to store config.model_type as the task; a real task from
+        # the model card wins over that fallback.
+        "pipeline_tag": (
+            (
+                manifest.get("pipeline_tag")
+                if manifest.get("pipeline_tag") not in {None, "", config.get("model_type")}
+                else None
+            )
+            or card.get("pipeline_tag")
+            or manifest.get("pipeline_tag")
+            or config.get("model_type")
+        ),
+        "library_name": manifest.get("library_name") or card.get("library_name"),
+        "license": manifest.get("license") or card.get("license"),
+        "tags": manifest.get("tags") or card.get("tags") or [],
+        "precision": precision,
+        "parameter_count": parameter_count,
+        "formats": model_formats(paths),
+        "architectures": config.get("architectures"),
+        "model_type": config.get("model_type"),
+        "torch_dtype": config.get("torch_dtype"),
+        "vocab_size": config.get("vocab_size"),
+    }
 
 
 def parse_json(path: Path) -> dict[str, Any]:
@@ -461,7 +537,6 @@ class LocalModelIndexer:
             raise ValueError("Model path escapes configured storage")
         relative = resolved.relative_to(self.settings.model_storage).as_posix()
         manifest = parse_json(resolved / ".hugginghack.json")
-        config = parse_json(resolved / "config.json")
         repo_id = manifest.get("repo_id") or (
             relative if "/" in relative else f"local/{relative}"
         )
@@ -472,9 +547,7 @@ class LocalModelIndexer:
                 "User-uploaded repositories require matching ownership metadata."
             )
         size, file_count, latest = directory_stats(resolved)
-        facts = repository_facts(resolved)
-        card = readme_metadata(resolved / "README.md")
-        tags = manifest.get("tags") or card.get("tags") or []
+        facts = repository_facts(resolved, manifest)
         record = {
             "repo_id": repo_id,
             "relative_path": relative,
@@ -484,28 +557,14 @@ class LocalModelIndexer:
             "downloaded_at": manifest.get("downloaded_at"),
             "revision": manifest.get("revision"),
             "sha": manifest.get("sha"),
-            # S3 syncs used to store config.model_type as the task; a real task from
-            # the model card wins over that fallback.
-            "pipeline_tag": (
-                (
-                    manifest.get("pipeline_tag")
-                    if manifest.get("pipeline_tag") not in {None, "", config.get("model_type")}
-                    else None
-                )
-                or card.get("pipeline_tag")
-                or manifest.get("pipeline_tag")
-                or config.get("model_type")
-            ),
-            "library_name": manifest.get("library_name") or card.get("library_name"),
-            "license": manifest.get("license") or card.get("license"),
-            "tags_json": json.dumps(tags),
+            "pipeline_tag": facts["pipeline_tag"],
+            "library_name": facts["library_name"],
+            "license": facts["license"],
+            "tags_json": json.dumps(facts["tags"]),
             "config_json": json.dumps(
                 {
-                    "architectures": config.get("architectures"),
-                    "model_type": config.get("model_type"),
-                    "torch_dtype": config.get("torch_dtype"),
-                    "vocab_size": config.get("vocab_size"),
-                    "precision": facts["precision"],
+                    key: facts[key]
+                    for key in ("architectures", "model_type", "torch_dtype", "vocab_size", "precision")
                 }
             ),
             "source_url": manifest.get("source_url"),

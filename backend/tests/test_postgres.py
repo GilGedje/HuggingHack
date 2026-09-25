@@ -486,3 +486,54 @@ def test_postgresql_admin_user_detail_queries():
             database.delete_user_tokens(user_id)
             database.delete_user_sessions(user_id)
             database.delete_user(user_id)
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
+def test_postgresql_listing_corrections_merge_into_reads():
+    database = Database(POSTGRES_URL or "")
+    database.initialize()
+    repo_id = f"pg-{uuid.uuid4().hex}/model"
+    renamed = f"{repo_id}-v2"
+    timestamp = "2026-09-25T12:00:00+00:00"
+    try:
+        database.upsert_local_model(
+            {
+                "repo_id": repo_id,
+                "relative_path": repo_id,
+                "size_bytes": 7,
+                "file_count": 1,
+                "modified_at": timestamp,
+                "downloaded_at": None,
+                "revision": None,
+                "sha": None,
+                "pipeline_tag": "text-generation",
+                "library_name": "transformers",
+                "license": "mit",
+                "tags_json": json.dumps(["tiny"]),
+                "config_json": json.dumps({"model_type": "llama", "precision": "fp8"}),
+                "source_url": None,
+                "managed": 0,
+                "storage_backend": "filesystem",
+                "cached": 1,
+                "remote_uri": None,
+                "parameter_count": 1000,
+            }
+        )
+        database.set_listing_overrides(repo_id, {"precision": "nvfp4", "parameter_count": 8}, timestamp, None)
+        for model in (
+            database.get_local_model(repo_id),
+            next(item for item in database.list_local_models() if item["repo_id"] == repo_id),
+            next(item for item in database.list_local_models("pg-") if item["repo_id"] == repo_id),
+        ):
+            assert model["config"]["precision"] == "nvfp4" and model["parameter_count"] == 8
+            assert model["detected"]["precision"] == "fp8" and model["detected"]["parameter_count"] == 1000
+            assert model["listing_overrides"] == {"parameter_count": 8, "precision": "nvfp4"}
+        database.rename_repository(repo_id, renamed)
+        assert database.listing_overrides(renamed) == {"parameter_count": 8, "precision": "nvfp4"}
+        assert database.listing_overrides(repo_id) == {}
+        database.set_listing_overrides(renamed, {}, timestamp, None)
+        assert database.get_local_model(renamed)["config"]["precision"] == "fp8"
+    finally:
+        for name in (repo_id, renamed):
+            database.set_listing_overrides(name, {}, timestamp, None)
+            database.delete_owned_repository(name)

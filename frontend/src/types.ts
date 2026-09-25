@@ -250,6 +250,7 @@ export interface LibraryModelDetails extends LibraryModel {
   /** Has an owner (an upload, or a model assigned to one); others are public. */
   owned: boolean
   hardware_options: Array<[string, string]>
+  listing: ModelListing
   visibility: Visibility
   /** Display name of the storage location that holds the model. */
   storage_target_name: string
@@ -593,4 +594,27 @@ export interface UploadNamespace {
   name: string
   kind: 'user' | 'organization'
   display_name: string
+}
+
+/** The fields of a model's listing that people may correct. */
+export interface ListingFields {
+  pipeline_tag: string | null
+  precision: string | null
+  parameter_count: number | null
+  library_name: string | null
+  license: string | null
+  tags: string[]
+}
+
+export type ListingOverrides = Partial<ListingFields>
+
+/** How a model is listed: what its files say, what people changed, and the result. */
+export interface ModelListing {
+  detected: Partial<ListingFields> & { model_type?: string | null; formats?: string[] }
+  overrides: ListingOverrides
+  /** The task shown, or null when only config.model_type is known. */
+  listed_task: string | null
+  /** The size the model is known by: its name's when that agrees with the count. */
+  nominal_parameters: number | null
+  precisions: string[]
 }

@@ -18,13 +18,15 @@ import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { precisionLabel } from '../catalog'
 import { useFadeOnChange, useStepDirection } from '../motion'
-import type { OwnedRepository, StorageOption, UploadNamespace, User, Visibility } from '../types'
+import type { ListingOverrides, ModelListing, OwnedRepository, StorageOption, UploadNamespace, User, Visibility } from '../types'
 import { droppedEntries, readDrop } from '../dropFiles'
+import { listingPreviewRequest } from '../listingPreview'
 import { detectPrecision, planUpload } from '../uploadPlan'
 import { relativeUploadPath, useUploads, type UploadItem } from '../uploads'
 import { formatBytes } from '../utils'
 import { VISIBILITIES, visibilityAllowed, visibilityAudience, visibilityLabel } from '../visibility'
 import { ChoiceCard } from './ChoiceCard'
+import { ListingEditor } from './ListingEditor'
 import { NamespacePicker } from './NamespacePicker'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
@@ -85,6 +87,9 @@ export function UploadWizard({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [started, setStarted] = useState<string | null>(null)
+  const [listing, setListing] = useState<ModelListing | null>(null)
+  const [listingError, setListingError] = useState('')
+  const [overrides, setOverrides] = useState<ListingOverrides>({})
   const shift = useStepDirection(step)
   const body = useFadeOnChange<HTMLDivElement>(started ? 'started' : String(step), { shift: started ? 0 : shift })
 
@@ -161,8 +166,33 @@ export function UploadWizard({
     }
   }, [plan.files])
 
+  // How the files will be listed, read from their text files and weight headers.
+  useEffect(() => {
+    setListing(null)
+    setListingError('')
+    if (!plan.files.length) return
+    let ignore = false
+    const timer = window.setTimeout(() => {
+      listingPreviewRequest(repoId, plan.files)
+        .then((request) => api.previewListing(request))
+        .then((result) => {
+          if (!ignore) setListing(result)
+        })
+        .catch((reason) => {
+          if (!ignore) setListingError(reason instanceof Error ? reason.message : 'Could not read how the model will be listed.')
+        })
+    }, 250)
+    return () => {
+      ignore = true
+      window.clearTimeout(timer)
+    }
+    // The name only changes how the size reads, not what the files say.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan.files])
+
   function reset() {
     setStep(0)
+    setOverrides({})
     setSlug('')
     setDescription('')
     setVisibility('private')
@@ -214,6 +244,15 @@ export function UploadWizard({
           namespace: owner.name,
         })
         target = created.repo_id
+      }
+      if (Object.keys(overrides).length) {
+        // Saved before any file is sent, so the model is listed right from the start.
+        await api.updateListing(target, overrides).catch((reason) =>
+          onToast(
+            `${reason instanceof Error ? reason.message : 'The listing corrections were not saved.'} Correct them later in the model's Settings.`,
+            'error',
+          ),
+        )
       }
       enqueue({
         kind: 'new',
@@ -515,6 +554,19 @@ export function UploadWizard({
                 placeholder={`Upload ${plan.files.length} file${plan.files.length === 1 ? '' : 's'}`}
               />
             </label>
+            <section className="wizard-listing" aria-labelledby="wizard-listing-title">
+              <div className="wizard-heading">
+                <h3 id="wizard-listing-title">How it will be listed</h3>
+                <p>Read from config.json, the model card, and the weight headers. Correct anything that does not fit this repository.</p>
+              </div>
+              {listing ? (
+                <ListingEditor listing={listing} overrides={overrides} onChange={setOverrides} />
+              ) : listingError ? (
+                <p className="field-hint problem">{listingError} The model is still listed from its files after upload.</p>
+              ) : (
+                <p className="choice-loading"><LoaderCircle size={14} className="spin" /> Reading the files…</p>
+              )}
+            </section>
             {error && <div className="inline-error"><AlertTriangle size={16} /> {error}</div>}
           </div>
         )}

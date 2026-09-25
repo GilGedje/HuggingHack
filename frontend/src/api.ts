@@ -1,9 +1,12 @@
+import type { ListingPreviewRequest } from './listingPreview'
 import type {
   AccountOverview,
   AccountSession,
   AdminOrganizationPage,
   AdminOrganizationQuery,
   AdminUserDetail,
+  ListingOverrides,
+  ModelListing,
   AdminUserPage,
   AdminUserQuery,
   ApiToken,
@@ -197,6 +200,13 @@ export const api = {
     request<LibrarySearchResult>(`/api/library/models?${params.toString()}`),
   libraryModelDetails: (repoId: string) =>
     request<LibraryModelDetails>(`/api/library/models/${repoPath(repoId)}`),
+  previewListing: (payload: ListingPreviewRequest) =>
+    request<ModelListing>('/api/uploads/preview', { method: 'POST', body: JSON.stringify(payload) }),
+  updateListing: (repoId: string, overrides: ListingOverrides) =>
+    request<ModelListing>(`/api/repos/listing?repo_id=${encodeURIComponent(repoId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ overrides }),
+    }),
   updateModelHardware: (repoId: string, hardware: string[]) =>
     request<{ repo_id: string; hardware: string[] }>(
       `/api/library/hardware?repo_id=${encodeURIComponent(repoId)}`,

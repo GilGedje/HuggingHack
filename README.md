@@ -229,7 +229,12 @@ models/
 stored, drop or pick the model folder, then review and upload. The folder check flags a
 missing `config.json`, tokenizer, safetensors weights, or model card, shows the detected
 precision, and skips `.git`, `.cache`, `__pycache__`, and system clutter, so a folder cloned
-from Hugging Face uploads as is. The repository is created only when the upload starts.
+from Hugging Face uploads as is. The review step shows how the library will list the model
+(task, precision, parameter count, library, license, and tags), read from `config.json`, the
+model card, and the weight headers by the same code the indexer runs after the upload, so it
+is what the listing will be. Correct any field that does not fit; corrections are saved as
+soon as the repository exists. Only those small files and the headers are read for this,
+never the weights. The repository is created only when the upload starts.
 HuggingHack sends each file in bounded chunks; interrupted uploads keep their progress and
 resume from the server's confirmed offset (choose **Resume** under **Unfinished uploads**).
 Model files stay in the model mount rather than in the metadata database.
@@ -258,6 +263,9 @@ Every model page has a **Settings** tab for the repository's admins, and for ser
 administrators on every model, including downloaded ones:
 
 - **Visibility** and **description** of owned repositories.
+- **Listing**: correct the task, precision, parameter count, library, license, or tags the
+  library shows and filters by. Each correction sits next to what the files say and can be
+  reset; rescans keep corrections and keep refreshing the detected values underneath.
 - **Rename or transfer**: change the name or move the model to yourself or an organization you
   write to (administrators: any organization). Files, commit history, saves, and hardware tags
   move with it; old links, `vllm serve` names, and git remotes stop working, with no redirect.
