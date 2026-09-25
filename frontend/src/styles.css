@@ -1895,6 +1895,28 @@ button.quiet-link:disabled { cursor: progress; opacity: 0.7; }
 }
 .upload-job-actions button:hover, .upload-job-reselect:hover { border-color: var(--border-strong); color: var(--text); }
 .upload-job-reselect input { display: none; }
+/* A job's files fold open under it, each with its size and progress. */
+.upload-job-files-toggle svg { transition: transform 280ms var(--ease-out); }
+.upload-job-files-toggle[aria-expanded='true'] svg { transform: rotate(180deg); }
+.upload-job-files:not(.open) { grid-template-rows: 0fr; opacity: 0; }
+.upload-job-files ul {
+  max-height: 220px; margin: 10px 0 0; padding: 0; overflow-y: auto; list-style: none;
+  border-top: 1px solid var(--border); overscroll-behavior: contain;
+}
+.upload-job-files li {
+  padding: 7px 0; display: grid; grid-template-columns: minmax(0, 1fr) auto 34px; align-items: center;
+  gap: 4px 10px; border-bottom: 1px solid var(--border);
+  font-family: 'IBM Plex Mono', monospace; font-size: 10px;
+}
+.upload-job-files li:last-child { border-bottom: 0; }
+.upload-file-name { overflow: hidden; color: var(--text-secondary); text-overflow: ellipsis; white-space: nowrap; }
+.upload-file-size, .upload-file-state { color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.upload-file-state { display: flex; justify-content: flex-end; }
+.upload-job-files li.current .upload-file-name { color: var(--text); font-weight: 600; }
+.upload-job-files li.complete .upload-file-state { color: var(--success); }
+.upload-job-files li.complete svg { animation: icon-turn 320ms var(--ease-out) backwards; }
+.upload-job-files li.deleted .upload-file-name { color: var(--text-muted); text-decoration: line-through; }
+.upload-job-files li .job-progress { grid-column: 1 / -1; height: 3px; margin: 0; }
 @media (max-width: 480px) {
   .upload-dock { left: 16px; bottom: 16px; }
 }
@@ -2156,6 +2178,8 @@ button.file-browser-name:hover { text-decoration: underline; text-underline-offs
 .role-badge.admin { background: color-mix(in oklch, var(--brand-primary) 30%, var(--canvas)); color: var(--text); border-color: color-mix(in oklch, var(--brand-warm) 40%, var(--border)); }
 .role-badge.member { background: var(--success-bg); color: var(--success); border-color: color-mix(in oklch, var(--success) 25%, var(--border)); }
 .account-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start; }
+.account-column { min-width: 0; display: grid; gap: 20px; }
+.account-single { max-width: 760px; }
 .account-form { margin-top: 18px; display: grid; gap: 12px; }
 .account-form label, .token-form label, .admin-create-user label {
   display: grid; gap: 5px; color: var(--text-secondary); font-size: 11px; font-weight: 600;
@@ -2257,11 +2281,11 @@ button.file-browser-name:hover { text-decoration: underline; text-underline-offs
 .admin-user-name small { overflow: hidden; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .admin-user-muted { color: var(--text-muted); font-size: 11px; }
 .admin-user-actions { display: flex; justify-content: flex-end; align-items: center; gap: 4px; }
-.admin-user-actions button {
+.admin-user-actions :is(button, a) {
   width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid var(--border);
   border-radius: 6px; background: var(--canvas); color: var(--text-secondary); cursor: pointer;
 }
-.admin-user-actions button:hover { border-color: var(--border-strong); color: var(--text); }
+.admin-user-actions :is(button, a):hover { border-color: var(--border-strong); color: var(--text); }
 .admin-user-actions button.danger-text { color: var(--danger); }
 .admin-create-user { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 14px; }
 .admin-create-user .wide { grid-column: 1 / -1; }
@@ -2365,7 +2389,18 @@ button.file-browser-name:hover { text-decoration: underline; text-underline-offs
   background: var(--canvas); color: var(--text); font-size: 12px;
 }
 .admin-user-row.org-row { min-width: 720px; grid-template-columns: minmax(240px, 1fr) 100px 90px 100px 150px; }
+.admin-user-name a { min-width: 0; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
 .admin-user-name a:hover strong { text-decoration: underline; text-underline-offset: 3px; }
+
+/* One account, opened from the Users list. */
+.admin-user-back { margin-bottom: 14px; display: inline-flex; align-items: center; gap: 6px; }
+.admin-user-card { margin-bottom: 20px; display: flex; align-items: center; gap: 16px; }
+.admin-user-card > div { min-width: 0; flex: 1; display: grid; gap: 4px; }
+.admin-user-card h2 { overflow-wrap: anywhere; }
+.admin-user-card p { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 12px; }
+.admin-user-card small { color: var(--text-muted); font-size: 11px; }
+.admin-user-detail-actions { margin-top: 16px; display: flex; flex-wrap: wrap; gap: 8px; }
+.admin-user-detail .token-list + .secondary-button { margin-top: -4px; }
 
 @media (max-width: 780px) {
   .org-add-member { grid-template-columns: minmax(0, 1fr); }
@@ -2433,7 +2468,7 @@ a, button, input, select, textarea, summary,
   transition-timing-function: var(--ease-out);
 }
 :is(.download-button, .secondary-button, .danger-button, .icon-button, .pager button, .role-filter button,
-  .snippet-copy, .snippet-variants button, .admin-user-actions button, .repository-actions :is(a, button),
+  .snippet-copy, .snippet-variants button, .admin-user-actions :is(button, a), .repository-actions :is(a, button),
   .upload-job-actions button, .file-breadcrumbs button, .account-chip > button, .namespace-trigger,
   .model-like, .save-model-button) {
   transition-property: color, background-color, border-color, box-shadow, opacity, transform;
@@ -2441,7 +2476,7 @@ a, button, input, select, textarea, summary,
   transition-timing-function: var(--ease-out);
 }
 :is(.download-button, .secondary-button, .danger-button, .icon-button, .pager button, .role-filter button,
-  .snippet-copy, .snippet-variants button, .admin-user-actions button, .repository-actions :is(a, button),
+  .snippet-copy, .snippet-variants button, .admin-user-actions :is(button, a), .repository-actions :is(a, button),
   .upload-job-actions button, .file-breadcrumbs button, .account-chip > button, .namespace-trigger,
   .model-like):active:not(:disabled) {
   transform: scale(0.97);

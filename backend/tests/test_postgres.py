@@ -425,3 +425,64 @@ def test_postgresql_config_revisions():
     finally:
         database.delete_config_revisions(repo_id)
     assert database.count_config_revisions(repo_id) == 0
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
+def test_postgresql_admin_user_detail_queries():
+    """What the admin account page reads, and revoking one token of one account."""
+    database = Database(POSTGRES_URL or "")
+    database.initialize()
+    suffix = uuid.uuid4().hex
+    timestamp = "2026-09-25T12:00:00+00:00"
+    users = [f"detail-{suffix}", f"other-{suffix}"]
+    try:
+        for user_id in users:
+            database.create_user(
+                {
+                    "id": user_id,
+                    "username": user_id,
+                    "display_name": user_id,
+                    "password_hash": "test-only",
+                    "role": "member",
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                }
+            )
+            database.create_api_token(
+                {
+                    "id": f"token-{user_id}",
+                    "user_id": user_id,
+                    "name": "ci",
+                    "token_hash": f"hash-{user_id}",
+                    "prefix": "hht_abcdef",
+                    "scope": "read",
+                    "created_at": timestamp,
+                    "expires_at": None,
+                }
+            )
+        database.create_session(
+            {
+                "token_hash": f"session-{suffix}",
+                "user_id": users[0],
+                "csrf_token": f"csrf-{suffix}",
+                "created_at": timestamp,
+                "expires_at": "2099-01-01T00:00:00+00:00",
+                "user_agent": "pytest",
+                "ip": "127.0.0.1",
+            }
+        )
+        assert [session["ip"] for session in database.list_sessions(users[0])] == ["127.0.0.1"]
+        tokens = database.list_api_tokens(users[0])
+        assert [token["prefix"] for token in tokens] == ["hht_abcdef"] and "token_hash" not in tokens[0]
+        assert database.user_organizations(users[0]) == []
+        assert database.owned_repository_ids(users[0]) == []
+        # A token id is only found under the account that owns it.
+        assert not database.delete_api_token(users[0], f"token-{users[1]}")
+        assert database.delete_api_token(users[0], f"token-{users[0]}")
+        assert database.list_api_tokens(users[0]) == []
+        assert len(database.list_api_tokens(users[1])) == 1
+    finally:
+        for user_id in users:
+            database.delete_user_tokens(user_id)
+            database.delete_user_sessions(user_id)
+            database.delete_user(user_id)

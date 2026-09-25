@@ -14,10 +14,11 @@ import { Link, NavLink, Navigate, useParams } from 'react-router-dom'
 import { useAccess } from '../access'
 import { api } from '../api'
 import { useFadeOnChange, useTabIndicator } from '../motion'
+import { PasswordForm } from '../components/PasswordForm'
 import { CopyButton } from '../components/UseModel'
 import type { AccountOverview, AccountSession, ApiToken, StorageOption } from '../types'
 import { resolveServerUrl } from '../useModel'
-import { initials, relativeTime } from '../utils'
+import { describeDevice, initials, relativeTime } from '../utils'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -31,30 +32,24 @@ function errorMessage(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback
 }
 
-function describeDevice(agent?: string | null): string {
-  if (!agent) return 'Unknown device'
-  const browser =
-    /Edg\//.test(agent) ? 'Edge'
-      : /Chrome\//.test(agent) ? 'Chrome'
-        : /Firefox\//.test(agent) ? 'Firefox'
-          : /Safari\//.test(agent) ? 'Safari'
-            : /curl|python|httpx|huggingface/i.test(agent) ? 'Command line'
-              : 'Browser'
-  const system =
-    /Windows/.test(agent) ? 'Windows'
-      : /Mac OS X|Macintosh/.test(agent) ? 'macOS'
-        : /Android/.test(agent) ? 'Android'
-          : /iPhone|iPad/.test(agent) ? 'iOS'
-            : /Linux/.test(agent) ? 'Linux'
-              : ''
-  return system ? `${browser} on ${system}` : browser
-}
-
 function ProfileTab({ overview, onToast, onSaved }: { overview: AccountOverview; onToast: ToastHandler; onSaved: () => void }) {
   const { refresh } = useAccess()
   const [displayName, setDisplayName] = useState(overview.user.display_name)
   const [email, setEmail] = useState(overview.user.email || '')
   const [saving, setSaving] = useState(false)
+  // Single sign-on accounts take their name and email from the directory at every sign-in.
+  const external = (overview.user.auth_provider || 'local') !== 'local'
+  const editable = overview.accounts_enabled && !external
+
+  async function changePassword(next: string, current: string) {
+    try {
+      await api.changePassword({ current_password: current, new_password: next })
+      onToast('Password changed. Your other sessions were signed out.')
+    } catch (reason) {
+      onToast(errorMessage(reason, 'Could not change your password.'), 'error')
+      throw reason
+    }
+  }
 
   async function save(event: FormEvent) {
     event.preventDefault()
@@ -73,32 +68,53 @@ function ProfileTab({ overview, onToast, onSaved }: { overview: AccountOverview;
 
   return (
     <div className="account-grid">
-      <section className="settings-section">
-        <div className="settings-section-title">
-          <UserCircle size={20} />
-          <div>
-            <h2>Profile</h2>
-            <p>How you appear on commits, uploads, and shared repositories.</p>
+      <div className="account-column">
+        <section className="settings-section">
+          <div className="settings-section-title">
+            <UserCircle size={20} />
+            <div>
+              <h2>Profile</h2>
+              <p>How you appear on commits, uploads, and shared repositories.</p>
+            </div>
           </div>
-        </div>
-        <form className="account-form" onSubmit={save}>
-          <label>
-            Username
-            <input value={overview.user.username} disabled />
-          </label>
-          <label>
-            Display name
-            <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={80} required disabled={!overview.accounts_enabled} />
-          </label>
-          <label>
-            Email <small>optional</small>
-            <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} maxLength={254} disabled={!overview.accounts_enabled} />
-          </label>
-          <button className="download-button" disabled={saving || !overview.accounts_enabled}>
-            {saving ? <LoaderCircle size={16} className="spin" /> : <Check size={16} />} Save profile
-          </button>
-        </form>
-      </section>
+          <form className="account-form" onSubmit={save}>
+            <label>
+              Username
+              <input value={overview.user.username} disabled />
+            </label>
+            <label>
+              Display name
+              <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={80} required disabled={!editable} />
+            </label>
+            <label>
+              Email {!external && <small>optional</small>}
+              <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} maxLength={254} disabled={!editable} />
+            </label>
+            {external ? (
+              <p className="account-note">
+                You sign in through your organization&apos;s directory, which keeps your name, email, and password.
+                They update here each time you sign in.
+              </p>
+            ) : (
+              <button className="download-button" disabled={saving || !editable}>
+                {saving ? <LoaderCircle size={16} className="spin" /> : <Check size={16} />} Save profile
+              </button>
+            )}
+          </form>
+        </section>
+        {overview.local_password && (
+          <section className="settings-section">
+            <div className="settings-section-title">
+              <KeyRound size={20} />
+              <div>
+                <h2>Password</h2>
+                <p>Changing it signs out your other sessions.</p>
+              </div>
+            </div>
+            <PasswordForm askCurrent submitLabel="Change password" onSubmit={changePassword} />
+          </section>
+        )}
+      </div>
       <section className="settings-section">
         <div className="settings-section-title">
           <ShieldCheck size={20} />
@@ -144,9 +160,6 @@ function ProfileTab({ overview, onToast, onSaved }: { overview: AccountOverview;
 
 function SecurityTab({ overview, onToast }: { overview: AccountOverview; onToast: ToastHandler }) {
   const [sessions, setSessions] = useState<AccountSession[]>([])
-  const [current, setCurrent] = useState('')
-  const [next, setNext] = useState('')
-  const [saving, setSaving] = useState(false)
 
   const load = useCallback(() => {
     if (!overview.accounts_enabled) return
@@ -156,22 +169,6 @@ function SecurityTab({ overview, onToast }: { overview: AccountOverview; onToast
   useEffect(() => {
     load()
   }, [load])
-
-  async function changePassword(event: FormEvent) {
-    event.preventDefault()
-    setSaving(true)
-    try {
-      await api.changePassword({ current_password: current, new_password: next })
-      setCurrent('')
-      setNext('')
-      onToast('Password changed. Your other sessions were signed out.')
-      load()
-    } catch (reason) {
-      onToast(errorMessage(reason, 'Could not change your password.'), 'error')
-    } finally {
-      setSaving(false)
-    }
-  }
 
   async function revoke(session: AccountSession) {
     try {
@@ -194,37 +191,11 @@ function SecurityTab({ overview, onToast }: { overview: AccountOverview; onToast
   }
 
   if (!overview.accounts_enabled) {
-    return <div className="empty-compact">Accounts are disabled on this server, so there are no passwords or sessions to manage.</div>
+    return <div className="empty-compact">Accounts are disabled on this server, so there are no sessions to manage.</div>
   }
 
   return (
-    <div className="account-grid">
-      <section className="settings-section">
-        <div className="settings-section-title">
-          <KeyRound size={20} />
-          <div>
-            <h2>Password</h2>
-            <p>At least 12 characters. Changing it signs out your other sessions.</p>
-          </div>
-        </div>
-        {overview.local_password ? (
-          <form className="account-form" onSubmit={changePassword}>
-            <label>
-              Current password
-              <input type="password" autoComplete="current-password" value={current} onChange={(event) => setCurrent(event.target.value)} required />
-            </label>
-            <label>
-              New password
-              <input type="password" autoComplete="new-password" minLength={12} value={next} onChange={(event) => setNext(event.target.value)} required />
-            </label>
-            <button className="download-button" disabled={saving}>
-              {saving ? <LoaderCircle size={16} className="spin" /> : <KeyRound size={16} />} Change password
-            </button>
-          </form>
-        ) : (
-          <p className="account-note">You sign in through your organization&apos;s identity provider, so there is no HuggingHack password to change.</p>
-        )}
-      </section>
+    <div className="account-single">
       <section className="settings-section">
         <div className="settings-section-title">
           <Monitor size={20} />

@@ -19,10 +19,11 @@ import {
   Wifi,
   X,
 } from 'lucide-react'
-import { Link, NavLink, Navigate, useParams } from 'react-router-dom'
+import { Link, NavLink, Navigate, useLocation, useParams } from 'react-router-dom'
 import { useAccess } from '../access'
 import { api } from '../api'
 import type { AdminOrganizationFilter, AdminOrganizationPage, AdminOrganizationQuery, AdminOrganizationSort, AdminUser, AdminUserPage, AdminUserQuery, AdminUserSort, Organization, OrganizationRole, PermissionMatrix, Role, ServerSettings } from '../types'
+import { AdminUserDetail } from '../components/AdminUserDetail'
 import { DialogFrame } from '../components/Dialog'
 import { ListPager, useListQuery } from '../components/ListPager'
 import { useClosingTransition, useFadeOnChange, useTabIndicator } from '../motion'
@@ -203,6 +204,7 @@ function AddUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
 
 function UsersTab({ onToast }: { onToast: ToastHandler }) {
   const { user: me } = useAccess()
+  const location = useLocation()
   const { query: listQuery, update, search, setSearch, changePageSize } = useListQuery(
     USER_QUERY_DEFAULTS,
     'hugginghack.admin.users.per-page',
@@ -257,14 +259,6 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
     } finally {
       setBusy(null)
     }
-  }
-
-  function resetPassword(user: AdminUser) {
-    const password = window.prompt(
-      `New password for ${user.username} (at least 12 characters). Their sessions will be signed out.`,
-    )
-    if (!password) return
-    act(user, () => api.adminResetPassword(user.id, password), `${user.username}'s password was reset.`)
   }
 
   function remove(user: AdminUser) {
@@ -363,7 +357,9 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
             return (
               <div className={user.disabled ? 'admin-user-row disabled' : 'admin-user-row'} role="row" key={user.id}>
                 <span className="admin-user-name">
-                  <strong>{user.display_name}{self ? ' (you)' : ''}</strong>
+                  <Link to={`/admin/users/${user.id}`} state={{ from: location.search }}>
+                    <strong>{user.display_name}{self ? ' (you)' : ''}</strong>
+                  </Link>
                   <small>@{user.username}{user.email ? ` · ${user.email}` : ''}{user.auth_provider && user.auth_provider !== 'local' ? ` · ${user.auth_provider}` : ''}</small>
                 </span>
                 <span>
@@ -399,10 +395,15 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
                       {user.disabled ? <UserCheck size={15} /> : <UserX size={15} />}
                     </button>
                   )}
-                  {accountsEnabled && (user.auth_provider || 'local') === 'local' && (
-                    <button type="button" title="Reset password" aria-label={`Reset password for ${user.username}`} onClick={() => resetPassword(user)}>
+                  {accountsEnabled && (user.auth_provider || 'local') === 'local' && !self && (
+                    <Link
+                      to={`/admin/users/${user.id}`}
+                      state={{ from: location.search }}
+                      title="Change password"
+                      aria-label={`Change password for ${user.username}`}
+                    >
                       <KeyRound size={15} />
-                    </button>
+                    </Link>
                   )}
                   <button
                     type="button"
@@ -913,11 +914,13 @@ const TABS = [
 ]
 
 export function AdminPage({ onToast }: { onToast: ToastHandler }) {
-  const { tab } = useParams()
+  const { tab: tabParam, userId } = useParams()
+  // One account opens under the Users tab, which stays underlined.
+  const tab = userId ? 'users' : tabParam
   const { can } = useAccess()
   const tabs = TABS.filter((item) => can(item.capability))
   const indicator = useTabIndicator<HTMLDivElement>(`${tab}:${tabs.length}`)
-  const body = useFadeOnChange<HTMLDivElement>(tab || '')
+  const body = useFadeOnChange<HTMLDivElement>(userId ? `user:${userId}` : tab || '')
   if (!tabs.length) return <Navigate to="/account" replace />
   const active = tabs.find((item) => item.id === tab)
   if (!active) return <Navigate to={`/admin/${tabs[0].id}`} replace />
@@ -940,7 +943,7 @@ export function AdminPage({ onToast }: { onToast: ToastHandler }) {
         </div>
       </header>
       <div className="section-body admin-content" ref={body}>
-        {active.id === 'users' && <UsersTab onToast={onToast} />}
+        {active.id === 'users' && (userId ? <AdminUserDetail userId={userId} onToast={onToast} /> : <UsersTab onToast={onToast} />)}
         {active.id === 'roles' && <RolesTab />}
         {active.id === 'organizations' && <OrganizationsTab onToast={onToast} />}
         {active.id === 'storage' && <StoragePage onToast={onToast} />}

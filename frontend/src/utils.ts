@@ -70,3 +70,22 @@ export function taskLabel(task?: string | null): string {
     .join(' ')
 }
 
+/** A short name for the browser or tool behind a session, from its user agent. */
+export function describeDevice(agent?: string | null): string {
+  if (!agent) return 'Unknown device'
+  const browser =
+    /Edg\//.test(agent) ? 'Edge'
+      : /Chrome\//.test(agent) ? 'Chrome'
+        : /Firefox\//.test(agent) ? 'Firefox'
+          : /Safari\//.test(agent) ? 'Safari'
+            : /curl|python|httpx|huggingface/i.test(agent) ? 'Command line'
+              : 'Browser'
+  const system =
+    /Windows/.test(agent) ? 'Windows'
+      : /Mac OS X|Macintosh/.test(agent) ? 'macOS'
+        : /Android/.test(agent) ? 'Android'
+          : /iPhone|iPad/.test(agent) ? 'iOS'
+            : /Linux/.test(agent) ? 'Linux'
+              : ''
+  return system ? `${browser} on ${system}` : browser
+}

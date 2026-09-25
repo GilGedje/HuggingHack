@@ -81,6 +81,79 @@ export function useUploads(): UploadContextValue {
   return value
 }
 
+/** Every file of a job with its size and how much of it has arrived, as a
+ * fraction; `null` when that is unknown (the page was reloaded mid-upload). */
+function fileProgress(job: UploadJob) {
+  const sorted = [...job.expected].sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }))
+  return sorted.map((file) => {
+    const sent = job.uploaded[file.path]
+    const fraction =
+      job.status === 'done' || job.status === 'committing'
+        ? 1
+        : sent != null
+          ? file.size ? Math.min(1, sent / file.size) : 1
+          : job.status === 'interrupted'
+            ? null
+            : 0
+    const current = job.currentFile === file.path
+    // Sending: under way now, or part-sent before a pause or an error.
+    const sending = current || (fraction != null && fraction > 0 && fraction < 1)
+    return { ...file, fraction, current, sending }
+  })
+}
+
+/** The files of one job, folded open under it: name, size, and progress each. */
+function JobFiles({ job, open, id }: { job: UploadJob; open: boolean; id: string }) {
+  const files = fileProgress(job)
+  return (
+    <div
+      id={id}
+      className={open ? 'upload-dock-fold upload-job-files open' : 'upload-dock-fold upload-job-files'}
+      ref={(element) => {
+        if (open) element?.removeAttribute('inert')
+        else element?.setAttribute('inert', '')
+      }}
+      aria-hidden={open ? undefined : true}
+    >
+      <div>
+        <ul>
+          {files.map((file) => (
+            <li key={file.path} className={file.current ? 'current' : file.fraction === 1 ? 'complete' : undefined}>
+              <span className="upload-file-name" title={file.path}>{file.path}</span>
+              <span className="upload-file-size">
+                {file.sending
+                  ? `${formatBytes(file.size * (file.fraction ?? 0))} / ${formatBytes(file.size)}`
+                  : formatBytes(file.size)}
+              </span>
+              <span className="upload-file-state">
+                {file.fraction === 1 ? (
+                  <Check size={12} aria-label="Sent" />
+                ) : file.sending ? (
+                  `${Math.floor((file.fraction ?? 0) * 100)}%`
+                ) : (
+                  <span className="sr-only">Waiting</span>
+                )}
+              </span>
+              {/* Only a file on its way gets a bar; finished ones have their check. */}
+              {file.sending && (
+                <div className={file.current ? 'job-progress live' : 'job-progress'}>
+                  <span style={{ width: `${(file.fraction ?? 0) * 100}%` }} />
+                </div>
+              )}
+            </li>
+          ))}
+          {job.deletions.map((path) => (
+            <li key={`deleted:${path}`} className="deleted">
+              <span className="upload-file-name" title={path}>{path}</span>
+              <span className="upload-file-size">deleted</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  )
+}
+
 function uploadedBytes(job: UploadJob): number {
   return Object.values(job.uploaded).reduce((sum, value) => sum + value, 0)
 }
@@ -129,6 +202,8 @@ export function UploadProvider({
   const [jobs, setJobs] = useState<UploadJob[]>(restoreJobs)
   const [minimized, setMinimized] = useState(false)
   const [leaving, setLeaving] = useState(false)
+  // Jobs whose file lists are folded open in the panel.
+  const [openFiles, setOpenFiles] = useState<Set<string>>(() => new Set())
   const leaveTimer = useRef(0)
   const jobsRef = useRef(jobs)
   const controllers = useRef(new Map<string, AbortController>())
@@ -422,6 +497,25 @@ export function UploadProvider({
                         </p>
                       )}
                       <div className="upload-job-actions">
+                        {job.expected.length + job.deletions.length > 0 && (
+                          <button
+                            type="button"
+                            className="upload-job-files-toggle"
+                            aria-expanded={openFiles.has(job.id)}
+                            aria-controls={`upload-files-${job.id}`}
+                            onClick={() =>
+                              setOpenFiles((current) => {
+                                const next = new Set(current)
+                                if (!next.delete(job.id)) next.add(job.id)
+                                return next
+                              })
+                            }
+                          >
+                            <ChevronDown size={13} />
+                            {job.expected.length} file{job.expected.length === 1 ? '' : 's'}
+                            {job.deletions.length ? `, ${job.deletions.length} deleted` : ''}
+                          </button>
+                        )}
                         {['uploading', 'queued'].includes(job.status) && (
                           <button type="button" onClick={() => cancel(job)}>
                             <X size={13} /> Cancel
@@ -452,6 +546,7 @@ export function UploadProvider({
                           </button>
                         )}
                       </div>
+                      <JobFiles job={job} open={openFiles.has(job.id)} id={`upload-files-${job.id}`} />
                     </li>
                   )
                 })}

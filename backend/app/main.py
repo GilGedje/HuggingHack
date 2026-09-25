@@ -839,9 +839,20 @@ def account_overview(user: SessionUser) -> dict:
     }
 
 
+def is_external(user: dict[str, Any]) -> bool:
+    """Single sign-on accounts take their name and email from the identity
+    provider at every sign-in, so HuggingHack does not edit them."""
+    return user.get("auth_provider", "local") != "local"
+
+
+EXTERNAL_PROFILE = "Name and email come from your organization's identity provider; change them there."
+
+
 @app.patch("/api/account/profile")
 def update_profile(payload: ProfileRequest, user: SessionWriter) -> dict:
     require_accounts()
+    if is_external(user):
+        raise HTTPException(status_code=409, detail=EXTERNAL_PROFILE)
     return database.update_user(
         user["id"],
         display_name=payload.display_name.strip(),
@@ -972,6 +983,37 @@ def admin_target(user_id: str) -> dict[str, Any]:
     return target
 
 
+@app.get("/api/admin/users/{user_id}")
+def admin_user_detail(user_id: str, _: UserManager) -> dict:
+    """One account as an administrator sees it. Tokens show only the prefix
+    kept when they were created; hashes and passwords never leave the server."""
+    target = admin_target(user_id)
+    accounts = settings.accounts_enabled
+    return {
+        "user": target,
+        "external": is_external(target),
+        "accounts_enabled": accounts,
+        "local_password": accounts and not is_external(target),
+        "organizations": database.user_organizations(user_id),
+        "repositories": database.owned_repository_ids(user_id),
+        "sessions": (
+            [public_session(session, None) for session in database.list_sessions(user_id)]
+            if accounts
+            else []
+        ),
+        "tokens": database.list_api_tokens(user_id) if accounts else [],
+    }
+
+
+@app.delete("/api/admin/users/{user_id}/tokens/{token_id}")
+def admin_revoke_token(user_id: str, token_id: str, _: UserAdmin) -> dict:
+    require_accounts()
+    admin_target(user_id)
+    if not database.delete_api_token(user_id, token_id):
+        raise HTTPException(status_code=404, detail="Token not found.")
+    return {"status": "revoked"}
+
+
 @app.patch("/api/admin/users/{user_id}")
 def admin_update_user(user_id: str, payload: AdminUserUpdate, admin: UserAdmin) -> dict:
     target = admin_target(user_id)
@@ -984,6 +1026,11 @@ def admin_update_user(user_id: str, payload: AdminUserUpdate, admin: UserAdmin) 
         if user_id == admin["id"]:
             raise HTTPException(status_code=409, detail="You cannot disable your own account.")
         changes["disabled"] = int(payload.disabled)
+    if (payload.display_name is not None or payload.email is not None) and is_external(target):
+        raise HTTPException(
+            status_code=409,
+            detail="This account's name and email come from the identity provider; change them there.",
+        )
     if payload.display_name is not None:
         changes["display_name"] = payload.display_name.strip()
     if payload.email is not None:
@@ -1001,10 +1048,16 @@ def admin_update_user(user_id: str, payload: AdminUserUpdate, admin: UserAdmin) 
 
 
 @app.post("/api/admin/users/{user_id}/password")
-def admin_reset_password(user_id: str, payload: AdminPasswordReset, _: UserAdmin) -> dict:
+def admin_reset_password(user_id: str, payload: AdminPasswordReset, admin: UserAdmin) -> dict:
     require_accounts()
     target = admin_target(user_id)
-    if target.get("auth_provider", "local") != "local":
+    if user_id == admin["id"]:
+        # A reset skips the current password and signs out every session,
+        # including this one; your own password changes from your account.
+        raise HTTPException(
+            status_code=409, detail="Change your own password from your account's Profile tab."
+        )
+    if is_external(target):
         raise HTTPException(
             status_code=409, detail="This account signs in through an external provider."
         )

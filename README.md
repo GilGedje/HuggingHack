@@ -193,8 +193,8 @@ Every account has one of three roles:
 The server enforces these roles for the web interface, API tokens, and pulls alike; the full
 matrix is under **Admin → Roles & permissions**.
 
-**Account** (the gear icon or your name) holds your profile, password and active sessions
-(sign out other browsers), preferences that follow you across browsers (theme, default sort,
+**Account** (the gear icon or your name) holds your profile (with a password change for
+local accounts), active sessions (sign out other browsers), preferences that follow you across browsers (theme, default sort,
 default upload location), and **API tokens**. A token acts as you from scripts and tools:
 use it as `HF_TOKEN` for vLLM, Transformers, and the `hf` CLI, as the git password, or as
 `Authorization: Bearer hht_…` for the REST API. Read tokens can only browse and pull; write
@@ -202,8 +202,12 @@ tokens can also upload. Tokens can never manage accounts or other tokens.
 
 **Admin** (administrators only) lists every account with its role, status, last sign-in,
 sessions, tokens, and repositories. Change roles, disable or enable accounts (which signs
-them out immediately), reset passwords, sign people out everywhere, or delete accounts that
-own no repositories. The last active administrator can never be demoted, disabled, or
+them out immediately), sign people out everywhere, or delete accounts that own no
+repositories. Click a name to open the account: its organizations and repositories, its
+sessions, and its API tokens, each shown by the first characters of the token (the full
+token is never stored) with a button to revoke it. Local accounts also get a form to set a
+new password, which signs them out everywhere; administrators change their own password
+from their profile instead. The last active administrator can never be demoted, disabled, or
 deleted. The **Server** tab shows the configuration from `.env` without revealing secrets.
 
 Use the heart on a Hub model to save it without downloading. The **Saved** workspace can
@@ -532,6 +536,9 @@ OIDC_DEFAULT_ROLE=viewer
   username or email, so single sign-on cannot take over a local account.
 - `OIDC_ALLOWED_GROUPS` limits who may sign in. To block one person, disable their account;
   deleting it only lasts until their next sign-in.
+- The provider owns the name, email, and password of these accounts: they update at each
+  sign-in, and HuggingHack offers no password change or name and email edits for them.
+  Roles and disabling stay in HuggingHack.
 - The owner account is always created with a password on first run.
 - The step-by-step Authentik setup is in the [air-gapped setup guide](docs/AIRGAPPED.md#5a-single-sign-on-with-authentik).
 

@@ -449,6 +449,7 @@ function Application({
         <Route path="/account/:tab" element={<AccountPage onToast={showToast} />} />
         <Route path="/admin" element={<AdminPage onToast={showToast} />} />
         <Route path="/admin/:tab" element={<AdminPage onToast={showToast} />} />
+        <Route path="/admin/users/:userId" element={<AdminPage onToast={showToast} />} />
         <Route path="*" element={<Navigate to="/models" replace />} />
       </Routes>
       </div>

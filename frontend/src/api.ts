@@ -3,6 +3,7 @@ import type {
   AccountSession,
   AdminOrganizationPage,
   AdminOrganizationQuery,
+  AdminUserDetail,
   AdminUserPage,
   AdminUserQuery,
   ApiToken,
@@ -126,6 +127,13 @@ export const api = {
     if (query.status) params.set('status', query.status)
     return request<AdminUserPage>(`/api/admin/users?${params.toString()}`)
   },
+  adminUser: (userId: string) =>
+    request<AdminUserDetail>(`/api/admin/users/${encodeURIComponent(userId)}`),
+  adminRevokeToken: (userId: string, tokenId: string) =>
+    request<{ status: string }>(
+      `/api/admin/users/${encodeURIComponent(userId)}/tokens/${encodeURIComponent(tokenId)}`,
+      { method: 'DELETE' },
+    ),
   adminUpdateUser: (
     userId: string,
     payload: { role?: string; disabled?: boolean; display_name?: string; email?: string | null },

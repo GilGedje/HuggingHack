@@ -102,6 +102,19 @@ export interface AdminUser extends User {
   repositories: number
 }
 
+/** One account as an administrator sees it; tokens carry only their prefix. */
+export interface AdminUserDetail {
+  user: User
+  /** Signs in through the identity provider, which owns the name, email, and password. */
+  external: boolean
+  accounts_enabled: boolean
+  local_password: boolean
+  organizations: AccountOverview['organizations']
+  repositories: string[]
+  sessions: AccountSession[]
+  tokens: ApiToken[]
+}
+
 export type AdminUserSort = 'role' | 'name' | 'last_login' | 'newest'
 
 export interface AdminUserQuery {
