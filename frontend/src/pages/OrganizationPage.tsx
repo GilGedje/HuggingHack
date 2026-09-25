@@ -6,11 +6,12 @@ import { api } from '../api'
 import { useFadeOnChange, useTabIndicator } from '../motion'
 import { LibraryModelRow } from '../components/RepositoryRows'
 import type { LibraryModel, Organization, OrganizationDetails, OrganizationRole } from '../types'
-import { initials } from '../utils'
+import { avatarUrl } from '../utils'
 import { ModelCardSkeletons, RowSkeletons } from '../components/Skeletons'
 import { useConfirm } from '../components/ConfirmDialog'
 import { MarkdownEditor, MarkdownText } from '../components/Markdown'
 import { markdownSummary } from '../markdownText'
+import { Avatar, AvatarEditor } from '../components/Avatar'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -50,7 +51,7 @@ export function OrganizationsIndex() {
         <div className="org-grid">
           {items.map((organization) => (
             <Link key={organization.id} to={`/orgs/${organization.name}`} className="org-card">
-              <span className="org-avatar">{initials(organization.name)}</span>
+              <span className="org-avatar"><Avatar name={organization.name} src={avatarUrl(organization.name, organization.avatar_updated_at)} /></span>
               <div>
                 <strong>{organization.display_name}</strong>
                 <small>@{organization.name}</small>
@@ -216,6 +217,20 @@ function SettingsTab({ organization, onChanged, onToast }: { organization: Organ
           <p>The name <code>{organization.name}</code> is permanent because repositories live under it.</p>
         </div>
       </div>
+      <AvatarEditor
+        name={organization.name}
+        label={organization.display_name}
+        src={avatarUrl(organization.name, organization.avatar_updated_at)}
+        onUpload={async (picture) => {
+          const { avatar_updated_at } = await api.uploadOrganizationAvatar(organization.name, picture)
+          onChanged({ ...organization, avatar_updated_at })
+        }}
+        onRemove={async () => {
+          await api.deleteOrganizationAvatar(organization.name)
+          onChanged({ ...organization, avatar_updated_at: null })
+        }}
+        onToast={onToast}
+      />
       <form className="account-form" onSubmit={save}>
         <label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={80} required /></label>
         <MarkdownEditor
@@ -288,7 +303,9 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
       <header className="section-hero">
         <div className="section-hero-inner">
           <div className="account-identity">
-            <span className="account-avatar org-avatar-large" aria-hidden="true">{initials(organization.name)}</span>
+            <span className="account-avatar org-avatar-large" aria-hidden="true">
+              <Avatar name={organization.name} src={avatarUrl(organization.name, organization.avatar_updated_at)} />
+            </span>
             <div>
               <span className="eyebrow"><Building2 size={11} /> Organization</span>
               <h1>{organization.display_name}</h1>

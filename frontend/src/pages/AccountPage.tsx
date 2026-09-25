@@ -18,9 +18,10 @@ import { PasswordForm } from '../components/PasswordForm'
 import { CopyButton } from '../components/UseModel'
 import type { AccountOverview, AccountSession, ApiToken, StorageOption } from '../types'
 import { resolveServerUrl } from '../useModel'
-import { describeDevice, initials, relativeTime } from '../utils'
+import { avatarUrl, describeDevice, relativeTime } from '../utils'
 import { RowSkeletons } from '../components/Skeletons'
 import { useConfirm } from '../components/ConfirmDialog'
+import { Avatar, AvatarEditor } from '../components/Avatar'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -79,6 +80,22 @@ function ProfileTab({ overview, onToast, onSaved }: { overview: AccountOverview;
               <p>How you appear on commits, uploads, and shared repositories.</p>
             </div>
           </div>
+          <AvatarEditor
+            name={overview.user.display_name || overview.user.username}
+            label="your profile"
+            src={avatarUrl(overview.user.username, overview.user.avatar_updated_at)}
+            onUpload={async (picture) => {
+              await api.uploadAvatar(picture)
+              refresh()
+              onSaved()
+            }}
+            onRemove={async () => {
+              await api.deleteAvatar()
+              refresh()
+              onSaved()
+            }}
+            onToast={onToast}
+          />
           <form className="account-form" onSubmit={save}>
             <label>
               Username
@@ -479,7 +496,9 @@ export function AccountPage({ onToast }: { onToast: ToastHandler }) {
       <header className="section-hero">
         <div className="section-hero-inner">
           <div className="account-identity">
-            <span className="account-avatar" aria-hidden="true">{initials(user.display_name || user.username)}</span>
+            <span className="account-avatar" aria-hidden="true">
+              <Avatar name={user.display_name || user.username} src={avatarUrl(user.username, user.avatar_updated_at)} />
+            </span>
             <div>
               <span className="eyebrow">Your account</span>
               <h1>{user.display_name}</h1>

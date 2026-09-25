@@ -42,11 +42,12 @@ import type {
   LibraryFile,
   LibraryModelDetails,
 } from '../types'
-import { formatBytes, formatNumber, initials, relativeTime, taskLabel } from '../utils'
+import { formatBytes, formatNumber, relativeTime, taskLabel } from '../utils'
 import { visibilityLabel } from '../visibility'
 import { ModelPageSkeleton, RowSkeletons } from '../components/Skeletons'
 import { ModelTreeCard } from '../components/ModelTree'
 import { relationOf } from '../modelTree'
+import { Avatar } from '../components/Avatar'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -570,7 +571,7 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
       <header className="model-hero">
         <div className="model-hero-inner">
           <div className="model-title-row">
-            <span className="model-avatar" aria-hidden="true">{initials(model.id)}</span>
+            <span className="model-avatar" aria-hidden="true"><Avatar name={model.id} src={model.author_avatar} /></span>
             <h1>
               <Link
                 to={model.organization ? `/orgs/${model.organization.name}` : `/models?search=${encodeURIComponent(owner)}`}

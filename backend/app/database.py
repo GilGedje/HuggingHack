@@ -147,7 +147,8 @@ USERS_COLUMNS = """
                     last_login_at TEXT,
                     preferences_json TEXT NOT NULL DEFAULT '{}',
                     auth_provider TEXT NOT NULL DEFAULT 'local',
-                    external_subject TEXT
+                    external_subject TEXT,
+                    avatar_updated_at TEXT
 """.strip("\n")
 LEGACY_USER_COLUMNS = (
     "id", "username", "display_name", "password_hash", "role", "created_at", "updated_at"
@@ -387,7 +388,8 @@ class Database:
                     display_name TEXT NOT NULL,
                     description TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    avatar_updated_at TEXT
                 );
 
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_organizations_name_nocase
@@ -551,6 +553,10 @@ class Database:
             for column in ("base_model", "base_model_relation"):
                 if column not in local_model_columns:
                     connection.execute(f"ALTER TABLE local_models ADD COLUMN {column} TEXT")
+            # When a profile picture was last set; it versions the picture's URL.
+            for table in ("users", "organizations"):
+                if "avatar_updated_at" not in self._column_names(connection, table):
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN avatar_updated_at TEXT")
             if "storage_target" not in local_model_columns:
                 connection.execute(
                     "ALTER TABLE local_models ADD COLUMN storage_target "
@@ -2044,6 +2050,36 @@ class Database:
                 (repo_id, alias, target, created_at),
             )
 
+    # Profile pictures: the file lives on disk; the timestamp says there is one.
+    def set_avatar(self, kind: str, owner_id: str, updated_at: str | None) -> None:
+        table = {"user": "users", "organization": "organizations"}[kind]
+        with self._write_lock, self.connect() as connection:
+            connection.execute(f"UPDATE {table} SET avatar_updated_at = ? WHERE id = ?", (updated_at, owner_id))
+
+    def avatar_owner(self, namespace: str) -> tuple[str, str, str] | None:
+        """(kind, id, version) of the user or organization named `namespace`, if it
+        has a picture. Users and organizations share one namespace."""
+        with self.connect() as connection:
+            for kind, table, column in (("user", "users", "username"), ("organization", "organizations", "name")):
+                row = connection.execute(
+                    f"SELECT id, avatar_updated_at FROM {table} WHERE LOWER({column}) = LOWER(?)", (namespace,)
+                ).fetchone()
+                if row:
+                    return (kind, row["id"], row["avatar_updated_at"]) if row["avatar_updated_at"] else None
+        return None
+
+    def avatar_versions(self) -> dict[str, str]:
+        """Every namespace with a picture, lowercased, and its version: one query for
+        a whole page of model cards."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT LOWER(username) AS name, avatar_updated_at AS version FROM users "
+                "WHERE avatar_updated_at IS NOT NULL "
+                "UNION ALL SELECT LOWER(name) AS name, avatar_updated_at AS version FROM organizations "
+                "WHERE avatar_updated_at IS NOT NULL"
+            ).fetchall()
+        return {row["name"]: row["version"] for row in rows}
+
     def listing_overrides(self, repo_id: str) -> dict[str, Any]:
         with self.connect() as connection:
             row = connection.execute(
@@ -2482,7 +2518,7 @@ class Database:
             rows = connection.execute(
                 """
                 SELECT organizations.id, organizations.name, organizations.display_name,
-                       organization_members.role
+                       organizations.avatar_updated_at, organization_members.role
                 FROM organization_members
                 JOIN organizations ON organizations.id = organization_members.organization_id
                 WHERE organization_members.user_id = ?

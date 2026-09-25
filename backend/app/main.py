@@ -31,6 +31,7 @@ from .auth import (
     utc_now,
     validate_password,
 )
+from .avatars import MAX_AVATAR_BYTES, AvatarStore, avatar_url
 from .catalog import HARDWARE, LocalCatalog, model_task, nominal_parameters, search_catalog
 from .config import settings, validate_namespace, validate_repo_id
 from .database import INTEGRITY_ERRORS, Database
@@ -72,6 +73,10 @@ runtimes = RuntimeManager(settings, database)
 catalog = LocalCatalog(settings, storages)
 oidc = OidcClient(settings)
 git_mirrors = GitMirrors(hub_repositories)
+
+
+def avatar_store() -> AvatarStore:
+    return AvatarStore(settings)
 
 
 def repository_busy(repo_id: str) -> str | None:
@@ -1119,6 +1124,7 @@ def admin_delete_user(user_id: str, admin: UserAdmin) -> dict:
         database.delete_user(user_id)
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    avatar_store().delete("user", user_id)
     return {"status": "deleted"}
 
 
@@ -1224,6 +1230,7 @@ def search_library_models(
             built_on=built_on,
             base_model=base_model,
             relation=relation,
+            avatars=database.avatar_versions(),
             # Only tags of models this user can see, so counts reveal nothing else.
             hardware_tags=database.model_hardware([model["repo_id"] for model in models]),
         )
@@ -1784,6 +1791,9 @@ async def library_model(repo_id: str, user: Browser) -> dict:
     details["hardware"] = [key for key in HARDWARE if key in tagged]
     details["hardware_options"] = [[key, label] for key, label in HARDWARE.items()]
     details["model_tree"] = model_tree(model, user["id"])
+    details["author_avatar"] = avatar_url(
+        details["author"] or "", database.avatar_versions().get((details["author"] or "").lower())
+    )
     details["listing"] = listing_view(
         model["repo_id"], detected_listing(model), model.get("listing_overrides") or {}
     )
@@ -2402,6 +2412,84 @@ def get_organization(name: str, user: Browser) -> dict:
     return organization_payload(organization_or_404(name), user)
 
 
+AVATAR_HEADERS = {
+    # A picture is only ever shown, never run or sniffed as something else.
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'; sandbox",
+    "Content-Disposition": "inline",
+}
+
+
+async def read_avatar_upload(request: Request) -> bytes:
+    """The request body, refused as soon as it is larger than a picture may be."""
+    too_big = HTTPException(status_code=413, detail="The picture is larger than 512 KB.")
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared = 0
+    if declared > MAX_AVATAR_BYTES:
+        raise too_big
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > MAX_AVATAR_BYTES:
+            raise too_big
+    return bytes(body)
+
+
+async def store_avatar(request: Request, kind: str, owner_id: str, namespace: str) -> dict:
+    data = await read_avatar_upload(request)
+    try:
+        await run_in_threadpool(avatar_store().save, kind, owner_id, data)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    version = utc_iso()
+    database.set_avatar(kind, owner_id, version)
+    return {"avatar_updated_at": version, "avatar": avatar_url(namespace, version)}
+
+
+@app.put("/api/account/avatar")
+async def upload_account_avatar(request: Request, user: SessionWriter) -> dict:
+    """Your own picture. Single sign-on accounts may set one too: the identity
+    provider does not supply pictures."""
+    return await store_avatar(request, "user", user["id"], user["username"])
+
+
+@app.delete("/api/account/avatar")
+def delete_account_avatar(user: SessionWriter) -> dict:
+    avatar_store().delete("user", user["id"])
+    database.set_avatar("user", user["id"], None)
+    return {"avatar_updated_at": None, "avatar": None}
+
+
+@app.put("/api/organizations/{name}/avatar")
+async def upload_organization_avatar(name: str, request: Request, user: OrgEditor) -> dict:
+    organization = organization_or_404(name)
+    require_org_admin(organization, user)
+    return await store_avatar(request, "organization", organization["id"], organization["name"])
+
+
+@app.delete("/api/organizations/{name}/avatar")
+def delete_organization_avatar(name: str, user: OrgEditor) -> dict:
+    organization = organization_or_404(name)
+    require_org_admin(organization, user)
+    avatar_store().delete("organization", organization["id"])
+    database.set_avatar("organization", organization["id"], None)
+    return {"avatar_updated_at": None, "avatar": None}
+
+
+@app.get("/api/avatars/{namespace}")
+def get_avatar(namespace: str, _: Browser, v: Annotated[str, Query(max_length=64)] = "") -> Response:
+    owner = database.avatar_owner(namespace)
+    stored = avatar_store().read(owner[0], owner[1]) if owner else None
+    if not owner or not stored:
+        raise HTTPException(status_code=404, detail="No picture.")
+    data, media_type = stored
+    # The version in the address changes with every new picture, so it can be kept.
+    cache = "private, max-age=31536000, immutable" if v == owner[2] else "private, no-cache"
+    return Response(data, media_type=media_type, headers={**AVATAR_HEADERS, "Cache-Control": cache})
+
+
 @app.patch("/api/organizations/{name}")
 def update_organization(name: str, payload: OrganizationUpdate, user: OrgEditor) -> dict:
     organization = organization_or_404(name)
@@ -2422,6 +2510,7 @@ def delete_organization(name: str, _: OrgCreator) -> dict:
         database.delete_organization(organization["id"])
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    avatar_store().delete("organization", organization["id"])
     return {"status": "deleted"}
 
 

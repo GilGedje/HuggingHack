@@ -2829,3 +2829,30 @@ a.model-tree-name:hover { text-decoration: underline; text-underline-offset: 3px
   background: transparent; color: var(--text-muted); cursor: pointer; transition: background-color 150ms var(--ease-out), color 150ms var(--ease-out);
 }
 .lineage-filter button:hover { background: var(--canvas-subtle); color: var(--text); }
+
+/* Profile pictures fill the circles that otherwise show initials. */
+:is(.model-monogram, .model-avatar, .account-avatar, .org-avatar, .namespace-avatar, .account-chip-avatar, .avatar-editor-preview) { overflow: hidden; }
+.avatar-image {
+  width: 100%; height: 100%; display: block; object-fit: cover; border-radius: inherit;
+  animation: fade-in 260ms var(--ease-out) backwards;
+}
+.account-chip-avatar { width: 22px; height: 22px; flex: none; display: grid; place-items: center; border-radius: 50%; font-size: 9px; }
+.avatar-editor {
+  margin: 4px 0 18px; padding: 14px; display: flex; align-items: center; gap: 16px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--canvas-subtle);
+}
+.avatar-editor-preview {
+  position: relative; width: 64px; height: 64px; flex: none; display: grid; place-items: center;
+  border-radius: 50%; background: var(--brand-primary); color: #111827; font-size: 18px; font-weight: 700;
+  transition: opacity 200ms var(--ease-out);
+}
+.avatar-editor-preview.busy > :not(.avatar-editor-spinner) { opacity: 0.4; }
+.avatar-editor-spinner { position: absolute; inset: 0; display: grid; place-items: center; color: #111827; }
+.avatar-editor-body { min-width: 0; display: grid; gap: 4px; }
+.avatar-editor-body strong { font-size: 13px; }
+.avatar-editor-body small { color: var(--text-muted); font-size: 11px; line-height: 1.4; }
+.avatar-editor-actions { margin-top: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.avatar-editor-actions input { display: none; }
+.avatar-editor-actions label { cursor: pointer; }
+.avatar-editor-actions label.disabled { opacity: 0.6; pointer-events: none; }
+.avatar-editor-actions .text-link { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; cursor: pointer; font-size: 12px; }

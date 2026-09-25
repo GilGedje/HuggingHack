@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Building2, Check, ChevronDown, UserRound } from 'lucide-react'
 import type { UploadNamespace } from '../types'
-import { initials } from '../utils'
+import { avatarUrl } from '../utils'
+import { Avatar } from './Avatar'
 
 interface NamespacePickerProps {
   namespaces: UploadNamespace[]
@@ -80,7 +81,7 @@ export function NamespacePicker({ namespaces, value, onChange, id }: NamespacePi
         aria-expanded={single ? undefined : open}
         disabled={single}
       >
-        <span className={`namespace-avatar ${selected.kind}`}>{initials(selected.name)}</span>
+        <span className={`namespace-avatar ${selected.kind}`}><Avatar name={selected.name} src={avatarUrl(selected.name, selected.avatar_updated_at)} /></span>
         <span className="namespace-name">{selected.name}</span>
         {!single && <ChevronDown size={15} className="namespace-chevron" />}
       </button>
@@ -99,7 +100,7 @@ export function NamespacePicker({ namespaces, value, onChange, id }: NamespacePi
                 choose(item)
               }}
             >
-              <span className={`namespace-avatar ${item.kind}`}>{initials(item.name)}</span>
+              <span className={`namespace-avatar ${item.kind}`}><Avatar name={item.name} src={avatarUrl(item.name, item.avatar_updated_at)} /></span>
               <span className="namespace-option-text">
                 <strong>{item.name}</strong>
                 <small><Kind item={item} /> {item.kind === 'organization' ? item.display_name : 'Personal'}</small>

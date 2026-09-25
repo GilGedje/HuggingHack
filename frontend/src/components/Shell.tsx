@@ -18,6 +18,8 @@ import { ADMIN_CAPABILITIES, useAccess } from '../access'
 import { api } from '../api'
 import { crossfadeTheme, useTabIndicator } from '../motion'
 import type { User } from '../types'
+import { avatarUrl } from '../utils'
+import { Avatar } from './Avatar'
 
 interface ShellProps {
   children: ReactNode
@@ -170,7 +172,13 @@ export default function Shell({ children, user, onLogout }: ShellProps) {
           </button>
           <div className="account-chip" title={`${user.display_name} · ${user.role}`}>
             <Link to="/account" className="account-chip-link" aria-label="Your account">
-              <UserCircle size={18} />
+              {user.avatar_updated_at ? (
+                <span className="account-chip-avatar" aria-hidden="true">
+                  <Avatar name={user.display_name || user.username} src={avatarUrl(user.username, user.avatar_updated_at)} />
+                </span>
+              ) : (
+                <UserCircle size={18} />
+              )}
               <span>{user.display_name}</span>
             </Link>
             <button type="button" onClick={onLogout} aria-label="Sign out" title="Sign out">

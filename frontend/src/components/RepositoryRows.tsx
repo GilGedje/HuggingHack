@@ -12,8 +12,9 @@ import {
 } from 'lucide-react'
 import { precisionLabel } from '../catalog'
 import type { LibraryModel, ModelFormat } from '../types'
-import { formatBytes, formatNumber, initials, relativeTime, taskLabel } from '../utils'
+import { formatBytes, formatNumber, relativeTime, taskLabel } from '../utils'
 import { relationOf } from '../modelTree'
+import { Avatar } from './Avatar'
 
 function visualClass(task?: string | null): string {
   if (!task) return 'model-visual-neutral'
@@ -103,7 +104,7 @@ export function LibraryModelRow({ model, onOpen, onUse, onSave, saving, hardware
           </span>
         </div>
         <div className="model-visual-core">
-          <span className="model-monogram">{initials(model.id)}</span>
+          <span className="model-monogram"><Avatar name={model.id} src={model.author_avatar} /></span>
           <div className="parameter-viz">
             {Array.from({ length: 6 }).map((_, index) => (
               <span key={index} className={index < level ? 'filled' : ''} />

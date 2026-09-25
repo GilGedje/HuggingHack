@@ -173,7 +173,15 @@ class UploadManager:
 
     def namespaces(self, user: dict[str, Any]) -> list[dict[str, Any]]:
         """Where this user may create repositories: their own name and writable orgs."""
-        choices = [{"name": user["username"], "kind": "user", "display_name": user["display_name"]}]
+        account = self.database.get_user(user["id"], include_secret=False) or user
+        choices = [
+            {
+                "name": user["username"],
+                "kind": "user",
+                "display_name": user["display_name"],
+                "avatar_updated_at": account.get("avatar_updated_at"),
+            }
+        ]
         for organization in self.database.user_organizations(user["id"]):
             if organization["role"] in {"admin", "write"}:
                 choices.append(
@@ -181,6 +189,7 @@ class UploadManager:
                         "name": organization["name"],
                         "kind": "organization",
                         "display_name": organization["display_name"],
+                        "avatar_updated_at": organization.get("avatar_updated_at"),
                     }
                 )
         return choices

@@ -612,3 +612,34 @@ def test_postgresql_models_keep_their_base_model():
     finally:
         database.set_listing_overrides(repo_id, {}, timestamp, None)
         database.delete_owned_repository(repo_id)
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
+def test_postgresql_profile_pictures():
+    database = Database(POSTGRES_URL or "")
+    database.initialize()
+    suffix = uuid.uuid4().hex[:12]
+    timestamp = "2026-09-25T12:00:00+00:00"
+    user_id, org_id = f"user-{suffix}", f"org-{suffix}"
+    try:
+        database.create_user(
+            {"id": user_id, "username": f"Pic{suffix}", "display_name": "Pic", "password_hash": "test-only",
+             "role": "member", "created_at": timestamp, "updated_at": timestamp}
+        )
+        database.create_organization(
+            {"id": org_id, "name": f"Org{suffix}", "display_name": "Org", "description": "",
+             "created_at": timestamp, "updated_at": timestamp}
+        )
+        assert database.avatar_owner(f"pic{suffix}") is None
+        database.set_avatar("user", user_id, timestamp)
+        database.set_avatar("organization", org_id, "v2")
+        assert database.avatar_owner(f"PIC{suffix}") == ("user", user_id, timestamp)
+        assert database.avatar_owner(f"org{suffix}") == ("organization", org_id, "v2")
+        versions = database.avatar_versions()
+        assert versions[f"pic{suffix}"] == timestamp and versions[f"org{suffix}"] == "v2"
+        assert database.get_user(user_id, include_secret=False)["avatar_updated_at"] == timestamp
+        database.set_avatar("user", user_id, None)
+        assert f"pic{suffix}" not in database.avatar_versions()
+    finally:
+        database.delete_organization(org_id)
+        database.delete_user(user_id)

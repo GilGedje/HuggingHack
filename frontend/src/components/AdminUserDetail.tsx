@@ -16,9 +16,10 @@ import { Link, useLocation } from 'react-router-dom'
 import { useAccess } from '../access'
 import { api } from '../api'
 import type { AdminUserDetail as Detail, ApiToken, Role } from '../types'
-import { describeDevice, initials, relativeTime } from '../utils'
+import { avatarUrl, describeDevice, relativeTime } from '../utils'
 import { PasswordForm } from './PasswordForm'
 import { useConfirm } from './ConfirmDialog'
+import { Avatar } from './Avatar'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -106,7 +107,9 @@ export function AdminUserDetail({ userId, onToast }: { userId: string; onToast: 
     <div className="admin-user-detail">
       {back}
       <section className="settings-section admin-user-card">
-        <span className="account-avatar" aria-hidden="true">{initials(user.display_name || user.username)}</span>
+        <span className="account-avatar" aria-hidden="true">
+          <Avatar name={user.display_name || user.username} src={avatarUrl(user.username, user.avatar_updated_at)} />
+        </span>
         <div>
           <h2>{user.display_name}{self ? ' (you)' : ''}</h2>
           <p>

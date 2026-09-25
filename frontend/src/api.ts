@@ -171,6 +171,22 @@ export const api = {
     request<OrganizationDetails>(`/api/organizations/${encodeURIComponent(name)}`),
   createOrganization: (payload: { name: string; display_name?: string; description?: string }) =>
     request<OrganizationDetails>('/api/organizations', { method: 'POST', body: JSON.stringify(payload) }),
+  // Pictures go up as the image itself; request() only sets JSON for text bodies.
+  uploadAvatar: (picture: Blob) =>
+    request<{ avatar_updated_at: string; avatar: string }>('/api/account/avatar', {
+      method: 'PUT',
+      body: picture,
+      headers: { 'Content-Type': picture.type || 'application/octet-stream' },
+    }),
+  deleteAvatar: () => request<{ avatar_updated_at: null }>('/api/account/avatar', { method: 'DELETE' }),
+  uploadOrganizationAvatar: (name: string, picture: Blob) =>
+    request<{ avatar_updated_at: string; avatar: string }>(`/api/organizations/${encodeURIComponent(name)}/avatar`, {
+      method: 'PUT',
+      body: picture,
+      headers: { 'Content-Type': picture.type || 'application/octet-stream' },
+    }),
+  deleteOrganizationAvatar: (name: string) =>
+    request<{ avatar_updated_at: null }>(`/api/organizations/${encodeURIComponent(name)}/avatar`, { method: 'DELETE' }),
   updateOrganization: (name: string, payload: { display_name?: string; description?: string }) =>
     request<OrganizationDetails>(`/api/organizations/${encodeURIComponent(name)}`, {
       method: 'PATCH',

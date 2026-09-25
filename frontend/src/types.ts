@@ -54,6 +54,8 @@ export interface User {
   last_login_at?: string | null
   preferences?: UserPreferences
   auth_provider?: string
+  /** When the profile picture was last set; none means initials. */
+  avatar_updated_at?: string | null
 }
 
 export interface AuthStatus {
@@ -200,6 +202,8 @@ export type BaseModelRelation = 'quantized' | 'finetune' | 'adapter' | 'merge'
 export interface LibraryModel {
   id: string
   author?: string | null
+  /** The owner's profile picture, when the user or organization has one. */
+  author_avatar?: string | null
   /** The model this one was made from, as its card or a correction names it. */
   base_model?: string | null
   base_model_relation?: BaseModelRelation | null
@@ -594,6 +598,7 @@ export interface Organization {
   description: string
   created_at: string
   updated_at: string
+  avatar_updated_at?: string | null
   member_count?: number
   repository_count?: number
   my_role?: OrganizationRole | null
@@ -639,6 +644,7 @@ export interface UploadNamespace {
   name: string
   kind: 'user' | 'organization'
   display_name: string
+  avatar_updated_at?: string | null
 }
 
 /** The fields of a model's listing that people may correct. */

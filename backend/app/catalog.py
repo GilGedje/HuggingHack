@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .config import Settings
+from .avatars import avatar_url
 from .indexer import BASE_MODEL_RELATIONS, UNSAFE_EXTENSIONS
 from .reads import reads
 from .storage import FilesystemModelStorage, StorageRegistry
@@ -108,12 +109,18 @@ def compatible_apps(model: dict[str, Any]) -> list[str]:
 
 
 def catalog_item(
-    model: dict[str, Any], saved_ids: set[str], hardware: list[str] | None = None
+    model: dict[str, Any],
+    saved_ids: set[str],
+    hardware: list[str] | None = None,
+    avatars: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     repo_id = model["repo_id"]
+    author = repo_id.split("/", 1)[0] if "/" in repo_id else None
     return {
         "id": repo_id,
-        "author": repo_id.split("/", 1)[0] if "/" in repo_id else None,
+        "author": author,
+        # The owner's picture, when the user or organization has set one.
+        "author_avatar": avatar_url(author, (avatars or {}).get(author.lower())) if author else None,
         "pipeline_tag": model_task(model),
         "library_name": model.get("library_name"),
         "tags": model.get("tags") or [],
@@ -275,6 +282,7 @@ def search_catalog(
     base_model: str = "",
     relation: str = "",
     hardware_tags: dict[str, list[str]] | None = None,
+    avatars: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if relation and relation not in BASE_MODEL_RELATIONS:
         raise ValueError(f"Unknown relation: {relation}.")
@@ -286,7 +294,7 @@ def search_catalog(
     }
     chosen_hardware = parse_choices(hardware, HARDWARE, "hardware")
     tags = hardware_tags or {}
-    items = [catalog_item(model, saved_ids, tags.get(model["repo_id"])) for model in models]
+    items = [catalog_item(model, saved_ids, tags.get(model["repo_id"]), avatars) for model in models]
     matched = [
         item
         for item in items

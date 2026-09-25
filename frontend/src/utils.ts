@@ -89,3 +89,8 @@ export function describeDevice(agent?: string | null): string {
               : ''
   return system ? `${browser} on ${system}` : browser
 }
+
+/** Where a user's or organization's picture is served; none when they have not set one. */
+export function avatarUrl(namespace: string, version?: string | null): string | null {
+  return version ? `/api/avatars/${encodeURIComponent(namespace)}?v=${encodeURIComponent(version)}` : null
+}
