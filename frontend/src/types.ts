@@ -190,6 +190,10 @@ export interface LibraryModel {
   tags: string[]
   license?: string | null
   parameter_count?: number | null
+  /** Weight number format: bf16, fp8, nvfp4, and a few others. */
+  precision?: string | null
+  /** Hardware ids the model is tagged as running on. */
+  hardware: string[]
   formats: ModelFormat[]
   apps: string[]
   size_bytes: number
@@ -205,10 +209,12 @@ export interface LibraryModel {
   saved: boolean
 }
 
+/** How many visible models match each filter value. */
 export interface LibraryFacets {
-  tasks: string[][]
-  libraries: string[][]
-  apps: string[][]
+  tasks: Record<string, number>
+  precision: Record<string, number>
+  /** Every known hardware tag, in display order: [id, label, count]. */
+  hardware: Array<[string, string, number]>
 }
 
 export interface LibrarySearchResult {
@@ -224,6 +230,7 @@ export interface LibraryModelDetails extends LibraryModel {
   latest_commit?: CommitSummary | null
   commit_count: number
   can_edit: boolean
+  hardware_options: Array<[string, string]>
   visibility: 'public' | 'shared' | 'private'
   description: string
   organization?: { name: string; display_name: string } | null

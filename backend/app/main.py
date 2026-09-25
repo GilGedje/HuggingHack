@@ -31,7 +31,7 @@ from .auth import (
     utc_now,
     validate_password,
 )
-from .catalog import LocalCatalog, search_catalog
+from .catalog import HARDWARE, LocalCatalog, search_catalog
 from .config import settings, validate_namespace, validate_repo_id
 from .database import INTEGRITY_ERRORS, Database
 from .downloads import DownloadManager
@@ -1113,26 +1113,52 @@ def search_library_models(
     user: Browser,
     search: Annotated[str, Query(max_length=200)] = "",
     sort: Literal["updated", "name", "size", "parameters"] = "updated",
-    task: Annotated[str, Query(max_length=100)] = "",
-    library: Annotated[str, Query(max_length=100)] = "",
-    app_filter: Annotated[str, Query(alias="app", max_length=100)] = "",
+    task: Annotated[str, Query(max_length=400)] = "",
+    precision: Annotated[str, Query(max_length=100)] = "",
+    hardware: Annotated[str, Query(max_length=200)] = "",
     parameters: Annotated[str, Query(max_length=100)] = "",
     owner: Annotated[str, Query(max_length=64)] = "",
 ) -> dict:
+    models = database.list_visible_local_models(user["id"])
     try:
         return search_catalog(
-            database.list_visible_local_models(user["id"]),
+            models,
             database.saved_repo_ids(user["id"]),
-            search,
-            sort,
-            task,
-            library,
-            app_filter,
-            parameters,
-            owner,
+            search=search,
+            sort=sort,
+            task=task,
+            precision=precision,
+            hardware=hardware,
+            parameters=parameters,
+            owner=owner,
+            # Only tags of models this user can see, so counts reveal nothing else.
+            hardware_tags=database.model_hardware([model["repo_id"] for model in models]),
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+class HardwareRequest(BaseModel):
+    hardware: list[str] = Field(default_factory=list, max_length=len(HARDWARE))
+
+
+@app.put("/api/library/hardware")
+def update_model_hardware(
+    payload: HardwareRequest,
+    user: Editor,
+    repo_id: Annotated[str, Query(max_length=200)],
+) -> dict:
+    """Tag a model with the GPUs it is known to run on. Anyone who may upload
+    changes to the repository may edit its tags."""
+    model = visible_model(repo_id, user["id"])
+    if not uploads.can_edit(model["repo_id"], user):
+        raise HTTPException(status_code=403, detail="You cannot edit this model.")
+    unknown = sorted(set(payload.hardware) - set(HARDWARE))
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown hardware: {', '.join(unknown)}.")
+    chosen = [item for item in HARDWARE if item in payload.hardware]
+    database.set_model_hardware(model["repo_id"], chosen)
+    return {"repo_id": model["repo_id"], "hardware": chosen}
 
 
 def library_listing(model: dict[str, Any]) -> dict[str, Any]:
@@ -1384,6 +1410,9 @@ async def library_model(repo_id: str, user: Browser) -> dict:
     details["latest_commit"] = public_commit(latest) if latest else None
     details["commit_count"] = database.count_commits(model["repo_id"])
     details["can_edit"] = uploads.can_edit(model["repo_id"], user)
+    tagged = database.model_hardware([model["repo_id"]]).get(model["repo_id"], [])
+    details["hardware"] = [key for key in HARDWARE if key in tagged]
+    details["hardware_options"] = [[key, label] for key, label in HARDWARE.items()]
     owned = database.get_owned_repository(model["repo_id"])
     details["visibility"] = owned["visibility"] if owned else "public"
     details["description"] = owned["description"] if owned else ""

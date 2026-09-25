@@ -273,3 +273,19 @@ def test_postgresql_admin_organization_search():
             database.remove_organization_member(organization["id"], user_id, force=True)
             database.delete_organization(organization["id"])
         database.delete_user(user_id)
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
+def test_postgresql_model_hardware_tags():
+    database = Database(POSTGRES_URL or "")
+    database.initialize()
+    repo_id = f"pg-{uuid.uuid4().hex}/model"
+    try:
+        database.set_model_hardware(repo_id, ["l40", "b300"])
+        assert database.model_hardware([repo_id]) == {repo_id: ["b300", "l40"]}
+        database.set_model_hardware(repo_id, ["a100"])
+        assert database.model_hardware([repo_id]) == {repo_id: ["a100"]}
+        assert database.model_hardware([]) == {}
+    finally:
+        database.set_model_hardware(repo_id, [])
+    assert repo_id not in database.model_hardware()

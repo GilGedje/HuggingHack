@@ -2,12 +2,14 @@ import {
   Boxes,
   Check,
   Cloud,
+  Cpu,
   FileBox,
   HardDrive,
   Heart,
   RefreshCw,
   Rocket,
 } from 'lucide-react'
+import { precisionLabel } from '../catalog'
 import type { LibraryModel, ModelFormat } from '../types'
 import { formatBytes, formatNumber, initials, relativeTime, taskLabel } from '../utils'
 
@@ -43,7 +45,9 @@ export const formatLabels: Record<ModelFormat, string> = {
 }
 
 function libraryTags(model: LibraryModel): string[] {
-  const labels = model.formats.map((format) => formatLabels[format] || format)
+  // Every library model is SafeTensors, so the precision says more than the format.
+  const precision = precisionLabel(model.precision)
+  const labels = precision ? [precision] : model.formats.map((format) => formatLabels[format] || format)
   if (model.library_name && !model.formats.includes(model.library_name as ModelFormat)) {
     labels.push(model.library_name)
   }
@@ -64,9 +68,11 @@ interface LibraryRowProps {
   onUse: (model: LibraryModel) => void
   onSave: (model: LibraryModel) => void
   saving?: boolean
+  /** Hardware id → label, from the search facets. */
+  hardwareLabels?: Record<string, string>
 }
 
-export function LibraryModelRow({ model, onOpen, onUse, onSave, saving }: LibraryRowProps) {
+export function LibraryModelRow({ model, onOpen, onUse, onSave, saving, hardwareLabels = {} }: LibraryRowProps) {
   const [owner, ...nameParts] = model.id.split('/')
   const name = nameParts.join('/')
   const level = parameterLevel(model.parameter_count)
@@ -125,6 +131,11 @@ export function LibraryModelRow({ model, onOpen, onUse, onSave, saving }: Librar
           <span>
             <FileBox size={13} /> {formatNumber(model.file_count)}
           </span>
+          {model.hardware.length > 0 && (
+            <span title="Tested hardware">
+              <Cpu size={13} /> {model.hardware.map((id) => hardwareLabels[id] || id).join(', ')}
+            </span>
+          )}
         </div>
         <div className="model-card-actions">
           <button

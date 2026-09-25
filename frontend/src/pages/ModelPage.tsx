@@ -5,6 +5,7 @@ import {
   Boxes,
   ChevronRight,
   Cloud,
+  Cpu,
   Download,
   File,
   Folder,
@@ -15,6 +16,7 @@ import {
   History,
   LoaderCircle,
   LockKeyhole,
+  Pencil,
   Rocket,
   ShieldCheck,
   UploadCloud,
@@ -23,6 +25,7 @@ import {
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useAccess } from '../access'
 import { api } from '../api'
+import { precisionLabel } from '../catalog'
 import { useFadeOnChange, useTabIndicator } from '../motion'
 import { ModelActions, ModelCardDocument } from '../components/ModelDetails'
 import { GgufInspector } from '../components/GgufInspector'
@@ -200,6 +203,84 @@ function FilesSection({
       </div>
       {model.truncated && (
         <p className="file-browser-note">Only the first {model.files.length} files are listed.</p>
+      )}
+    </section>
+  )
+}
+
+function HardwareCard({
+  model,
+  onSaved,
+  onToast,
+}: {
+  model: LibraryModelDetails
+  onSaved: (hardware: string[]) => void
+  onToast: ToastHandler
+}) {
+  const [editing, setEditing] = useState(false)
+  const [chosen, setChosen] = useState<string[]>(model.hardware)
+  const [saving, setSaving] = useState(false)
+  const labels = Object.fromEntries(model.hardware_options)
+
+  async function save() {
+    setSaving(true)
+    try {
+      const result = await api.updateModelHardware(model.id, chosen)
+      onSaved(result.hardware)
+      setEditing(false)
+    } catch (reason) {
+      onToast(reason instanceof Error ? reason.message : 'Could not save the hardware tags.', 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <section className="aside-card hardware-card">
+      <div className="aside-card-heading">
+        <h2>Hardware</h2>
+        {model.can_edit && !editing && (
+          <button
+            type="button"
+            className="quiet-link"
+            onClick={() => {
+              setChosen(model.hardware)
+              setEditing(true)
+            }}
+          >
+            <Pencil size={13} /> Edit
+          </button>
+        )}
+      </div>
+      {editing ? (
+        <>
+          <div className="hardware-options">
+            {model.hardware_options.map(([id, label]) => (
+              <label key={id}>
+                <input
+                  type="checkbox"
+                  checked={chosen.includes(id)}
+                  onChange={() => setChosen((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]))}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+          <div className="hardware-actions">
+            <button type="button" className="secondary-button compact" onClick={() => setEditing(false)}>Cancel</button>
+            <button type="button" className="download-button compact" onClick={save} disabled={saving}>
+              {saving && <LoaderCircle size={14} className="spin" />} Save
+            </button>
+          </div>
+        </>
+      ) : model.hardware.length ? (
+        <div className="repo-tags hardware-tags">
+          {model.hardware.map((id) => (
+            <span key={id}><Cpu size={12} /> {labels[id] || id}</span>
+          ))}
+        </div>
+      ) : (
+        <p>{model.can_edit ? 'Not tagged yet. Mark the GPUs this model runs on.' : 'No hardware tagged yet.'}</p>
       )}
     </section>
   )
@@ -665,6 +746,8 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
               <dl className="model-facts">
                 <dt>Parameters</dt>
                 <dd>{model.parameter_count ? formatNumber(model.parameter_count) : '—'}</dd>
+                <dt>Precision</dt>
+                <dd>{precisionLabel(model.precision) || '—'}</dd>
                 <dt>{remoteOnly ? 'Size in S3' : 'Size'}</dt>
                 <dd>{formatBytes(model.size_bytes)}</dd>
                 <dt>Files</dt>
@@ -693,6 +776,13 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
               </dl>
               {model.description && <p className="model-description">{model.description}</p>}
             </section>
+
+            <HardwareCard
+              key={model.id}
+              model={model}
+              onSaved={(hardware) => setModel((current) => (current ? { ...current, hardware } : current))}
+              onToast={onToast}
+            />
 
             <section className="aside-card aside-actions">
               <ModelActions

@@ -219,6 +219,7 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
   const navigate = useNavigate()
   const [organization, setOrganization] = useState<OrganizationDetails | null>(null)
   const [models, setModels] = useState<LibraryModel[] | null>(null)
+  const [hardwareLabels, setHardwareLabels] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
   const indicator = useTabIndicator<HTMLDivElement>(`${tab}:${organization?.name}:${organization?.can_manage}`)
   const body = useFadeOnChange<HTMLDivElement>(tab)
@@ -227,7 +228,10 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
     api.organization(name).then(setOrganization).catch((reason) => setError(reason.message))
     api
       .libraryModels(new URLSearchParams({ owner: name, sort: 'updated' }))
-      .then((payload) => setModels(payload.items))
+      .then((payload) => {
+        setModels(payload.items)
+        setHardwareLabels(Object.fromEntries(payload.facets.hardware.map(([id, label]) => [id, label])))
+      })
       .catch(() => setModels([]))
   }, [name])
 
@@ -301,6 +305,7 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
                   onOpen={(repoId) => navigate(`/models/${repoId}`)}
                   onUse={(item) => navigate(`/models/${item.id}?${item.apps.includes('vllm') ? 'local-app=vllm' : 'clone=true'}`)}
                   onSave={toggleSaved}
+                  hardwareLabels={hardwareLabels}
                 />
               ))}
             </div>

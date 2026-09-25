@@ -161,6 +161,75 @@ p { text-wrap: pretty; }
   padding: 0; border: 0; border-bottom: 1px solid var(--border-strong);
   background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 12px;
 }
+.filter-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.filter-count {
+  margin-left: auto; padding-left: 8px; color: var(--text-muted);
+  font-size: 11px; font-variant-numeric: tabular-nums;
+}
+.filter-group button.empty:not(.selected) { color: var(--text-muted); }
+.filter-group button.empty .filter-count { opacity: 0.55; }
+.filter-subgroup + .filter-subgroup { margin-top: 6px; }
+.filter-subgroup h4 { margin: 4px 0 1px; color: var(--text-muted); font-size: 11px; font-weight: 500; }
+
+/* Parameter size: two native range inputs share one track. The track is inset by
+   half a thumb so the fill lines up with where the thumbs actually sit. */
+.parameter-range h3 { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.parameter-range h3 span {
+  color: var(--text); font-size: 12px; font-weight: 600; letter-spacing: 0; text-transform: none;
+}
+.range-slider { --thumb: 18px; position: relative; height: 28px; margin: 6px 0 0; }
+.range-track {
+  position: absolute; top: 12px; right: calc(var(--thumb) / 2); left: calc(var(--thumb) / 2);
+  height: 4px; border-radius: 2px;
+  background: linear-gradient(to right,
+    var(--border-strong) var(--range-start), var(--brand-warm) var(--range-start),
+    var(--brand-warm) var(--range-end), var(--border-strong) var(--range-end));
+}
+.range-slider input {
+  position: absolute; inset: 0; width: 100%; height: 28px; margin: 0;
+  -webkit-appearance: none; appearance: none; background: none; pointer-events: none;
+}
+.range-slider input.on-top { z-index: 2; }
+.range-slider input::-webkit-slider-runnable-track { height: 28px; background: none; }
+.range-slider input::-moz-range-track { background: none; }
+.range-slider input::-webkit-slider-thumb {
+  width: var(--thumb); height: var(--thumb); margin-top: 5px; -webkit-appearance: none; appearance: none;
+  border: 2px solid var(--brand-warm); border-radius: 50%; background: var(--canvas);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.2); cursor: grab; pointer-events: auto;
+  transition: transform 120ms var(--ease-out), box-shadow 160ms var(--ease-out);
+}
+.range-slider input::-moz-range-thumb {
+  width: 14px; height: 14px; border: 2px solid var(--brand-warm); border-radius: 50%;
+  background: var(--canvas); box-shadow: 0 1px 3px rgb(0 0 0 / 0.2); cursor: grab; pointer-events: auto;
+}
+.range-slider input:active::-webkit-slider-thumb { transform: scale(1.12); cursor: grabbing; }
+.range-slider input:focus-visible { outline: none; }
+.range-slider input:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--brand-primary) 35%, transparent);
+}
+.range-slider input:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--brand-primary) 35%, transparent);
+}
+.range-ticks { position: relative; height: 20px; margin: 0 9px; }
+.range-ticks span { position: absolute; top: 0; width: 1px; height: 4px; background: var(--border-strong); }
+.range-ticks em {
+  position: absolute; top: 6px; left: 0; transform: translateX(-50%);
+  color: var(--text-muted); font-size: 10px; font-style: normal; white-space: nowrap;
+}
+.range-ticks span:first-child em { transform: none; }
+.range-ticks span:last-child em { transform: translateX(-100%); }
+
+.aside-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.aside-card-heading .quiet-link { padding: 0; border: 0; background: none; cursor: pointer; font-size: 12px; }
+.hardware-card > p { margin-top: 6px; color: var(--text-muted); font-size: 12px; }
+.hardware-tags { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+.hardware-tags span { font-size: 11px; color: var(--text-secondary); }
+.hardware-options { margin-top: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.hardware-options label {
+  display: flex; align-items: center; gap: 8px; color: var(--text-secondary); cursor: pointer; font-size: 12px;
+}
+.hardware-options input { width: 15px; height: 15px; margin: 0; accent-color: var(--brand-warm); }
+.hardware-actions { margin-top: 14px; display: flex; justify-content: flex-end; gap: 8px; }
 .catalog-content { min-width: 0; padding: 36px clamp(24px, 4vw, 62px) 72px; }
 .standard-page { width: min(1180px, calc(100% - 48px)); margin: 0 auto; padding: 42px 0 84px; }
 .page-heading {
@@ -1241,6 +1310,7 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
   }
   .filters.mobile-open .filter-group { min-width: 0; margin-bottom: 18px; }
   .filters.mobile-open .filter-group h3 { display: block; }
+  .filters.mobile-open .parameter-range h3 { display: flex; }
   .filters.mobile-open .filter-group button {
     width: 100%; min-height: 34px; padding: 4px 2px; display: flex;
     border: 0; border-radius: 0;

@@ -28,30 +28,20 @@ ASSET_CONTENT_TYPES = {
     ".gif": "image/gif",
     ".webp": "image/webp",
 }
-FORMAT_LABELS = {
-    "safetensors": "SafeTensors",
-    "gguf": "GGUF",
-    "pytorch": "PyTorch (pickle)",
-    "onnx": "ONNX",
-    "tensorflow": "TensorFlow",
-    "flax": "Flax",
+# GPUs a model can be tagged as tested on. Ids are stored; labels are shown.
+HARDWARE = {
+    "l40": "L40",
+    "a100": "A100",
+    "rtx-pro-6000": "RTX PRO 6000",
+    "b300": "B300",
 }
-LIBRARY_LABELS = {
-    "transformers": "Transformers",
-    "diffusers": "Diffusers",
-    "sentence-transformers": "Sentence Transformers",
-    "peft": "PEFT",
-    "timm": "timm",
-    "mlx": "MLX",
-}
-APP_LABELS = {
-    "vllm": "vLLM",
-    "llama.cpp": "llama.cpp",
-    "ollama": "Ollama",
-    "lm-studio": "LM Studio",
-}
+PRECISIONS = ("bf16", "fp8", "nvfp4")
+TASK_PATTERN = re.compile(r"^[a-z0-9-]{1,60}$")
 PARAMETER_PATTERN = re.compile(r"^(min|max):(\d+(?:\.\d+)?)([KMBT]?)$", re.IGNORECASE)
 PARAMETER_UNITS = {"": 1, "K": 10**3, "M": 10**6, "B": 10**9, "T": 10**12}
+# A size in the repository name, as in Qwen3-8B-FP8 or Nemotron-3-Nano-30B-A3B. The
+# letter guard skips active-parameter counts (A3B) and expert shapes (8x7B).
+NAME_SIZE_PATTERN = re.compile(r"(?<![A-Za-z0-9.])(\d+(?:\.\d+)?)([MBT])(?![A-Za-z0-9])", re.IGNORECASE)
 
 
 def validate_gguf_filename(filename: str) -> str:
@@ -82,10 +72,6 @@ def parse_gguf_range(value: str | None) -> tuple[int, int]:
     return start, end
 
 
-def _label(value: str) -> str:
-    return " ".join(part.capitalize() for part in value.replace("_", "-").split("-"))
-
-
 def model_task(model: dict[str, Any]) -> str | None:
     """Return the pipeline task, ignoring the indexer's config.model_type fallback."""
     task = model.get("pipeline_tag")
@@ -106,7 +92,9 @@ def compatible_apps(model: dict[str, Any]) -> list[str]:
     return apps
 
 
-def catalog_item(model: dict[str, Any], saved_ids: set[str]) -> dict[str, Any]:
+def catalog_item(
+    model: dict[str, Any], saved_ids: set[str], hardware: list[str] | None = None
+) -> dict[str, Any]:
     repo_id = model["repo_id"]
     return {
         "id": repo_id,
@@ -116,6 +104,8 @@ def catalog_item(model: dict[str, Any], saved_ids: set[str]) -> dict[str, Any]:
         "tags": model.get("tags") or [],
         "license": model.get("license"),
         "parameter_count": model.get("parameter_count"),
+        "precision": (model.get("config") or {}).get("precision"),
+        "hardware": [item for item in HARDWARE if item in (hardware or [])],
         "formats": model.get("formats") or [],
         "apps": compatible_apps(model),
         "size_bytes": int(model.get("size_bytes") or 0),
@@ -148,12 +138,34 @@ def parse_parameter_range(value: str) -> tuple[int | None, int | None]:
     return minimum, maximum
 
 
+def parse_choices(value: str, allowed: Any, name: str) -> set[str]:
+    """A comma-separated filter; any one of the values matches."""
+    chosen = {item.strip() for item in value.split(",") if item.strip()}
+    invalid = sorted(item for item in chosen if not (allowed(item) if callable(allowed) else item in allowed))
+    if invalid:
+        raise ValueError(f"Unknown {name}: {', '.join(invalid)}.")
+    return chosen
+
+
+def nominal_parameters(item: dict[str, Any]) -> int | None:
+    """The size a model is known by. Counted parameters run a little over the name
+    (a "7B" model has 7.6B, a "32B" one 32.8B), so the name decides when it agrees
+    with the count; otherwise the count does."""
+    count = item.get("parameter_count")
+    match = NAME_SIZE_PATTERN.search(item["id"].rsplit("/", 1)[-1])
+    if match:
+        named = int(float(match.group(1)) * PARAMETER_UNITS[match.group(2).upper()])
+        if not count or 0.5 <= named / count <= 2:
+            return named
+    return count
+
+
 def _matches(
     item: dict[str, Any],
     search: str,
-    task: str,
-    library: str,
-    app: str,
+    tasks: set[str],
+    precisions: set[str],
+    hardware: set[str],
     parameter_range: tuple[int | None, int | None],
     owner: str = "",
 ) -> bool:
@@ -166,20 +178,21 @@ def _matches(
         ).lower()
         if not all(term in haystack for term in search.lower().split()):
             return False
-    if task and item.get("pipeline_tag") != task:
+    if tasks and item.get("pipeline_tag") not in tasks:
         return False
-    if library and library not in item["formats"] and item.get("library_name") != library:
+    if precisions and item.get("precision") not in precisions:
         return False
-    if app and app not in item["apps"]:
+    if hardware and not hardware.intersection(item["hardware"]):
         return False
     minimum, maximum = parameter_range
     if minimum is not None or maximum is not None:
-        count = item.get("parameter_count")
-        if not count:
+        size = nominal_parameters(item)
+        if not size:
             return False
-        if minimum is not None and count < minimum:
+        # Both ends are inclusive: an 8B model is in "up to 8B" and in "8B and up".
+        if minimum is not None and size < minimum * 0.95:
             return False
-        if maximum is not None and count >= maximum:
+        if maximum is not None and size > maximum * 1.05:
             return False
     return True
 
@@ -194,42 +207,47 @@ def _sort_key(sort: str):
     return lambda item: item.get("last_modified") or ""
 
 
-def catalog_facets(items: list[dict[str, Any]]) -> dict[str, list[list[str]]]:
-    tasks = sorted({item["pipeline_tag"] for item in items if item.get("pipeline_tag")})
-    formats = sorted({value for item in items for value in item["formats"]})
-    libraries = sorted(
-        {
-            item["library_name"]
-            for item in items
-            if item.get("library_name") and item["library_name"] not in formats
-        }
-    )
-    apps = [app for app in APP_LABELS if any(app in item["apps"] for item in items)]
+def _counts(values: Any) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        if value:
+            counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def catalog_facets(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """How many models each filter value would match, across the whole visible library."""
+    hardware = _counts(tag for item in items for tag in item["hardware"])
     return {
-        "tasks": [[task, _label(task)] for task in tasks],
-        "libraries": [[value, FORMAT_LABELS.get(value, _label(value))] for value in formats]
-        + [[value, LIBRARY_LABELS.get(value, _label(value))] for value in libraries],
-        "apps": [[app, APP_LABELS[app]] for app in apps],
+        "tasks": _counts(item.get("pipeline_tag") for item in items),
+        "precision": _counts(item.get("precision") for item in items),
+        "hardware": [[key, label, hardware.get(key, 0)] for key, label in HARDWARE.items()],
     }
 
 
 def search_catalog(
     models: list[dict[str, Any]],
     saved_ids: set[str],
+    *,
     search: str = "",
     sort: str = "updated",
     task: str = "",
-    library: str = "",
-    app: str = "",
+    precision: str = "",
+    hardware: str = "",
     parameters: str = "",
     owner: str = "",
+    hardware_tags: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     parameter_range = parse_parameter_range(parameters)
-    items = [catalog_item(model, saved_ids) for model in models]
+    tasks = parse_choices(task, TASK_PATTERN.fullmatch, "task")
+    precisions = parse_choices(precision, PRECISIONS, "precision")
+    chosen_hardware = parse_choices(hardware, HARDWARE, "hardware")
+    tags = hardware_tags or {}
+    items = [catalog_item(model, saved_ids, tags.get(model["repo_id"])) for model in models]
     matched = [
         item
         for item in items
-        if _matches(item, search.strip(), task, library, app, parameter_range, owner)
+        if _matches(item, search.strip(), tasks, precisions, chosen_hardware, parameter_range, owner)
     ]
     matched.sort(key=_sort_key(sort), reverse=sort == "updated")
     return {

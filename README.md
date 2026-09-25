@@ -47,7 +47,7 @@
 
 ## Features
 
-- Familiar Hub-style model catalog with visual, metadata-driven model cards plus task, format, local-app, parameter, and sort filters
+- Familiar Hub-style model catalog with visual, metadata-driven model cards; filter by parameter size (a range slider), Hugging Face task, precision (BF16, FP8, NVFP4), and hardware tags
 - Richly rendered model cards, repository file lists, and commit history from your own library
 - On-demand GGUF metadata and tensor inspection with shard position, names, shapes, data types, and parameter totals
 - Optional server-side Hugging Face downloads (API only), off by default so an air-gapped server never tries to reach the internet; see [File filtering](#file-filtering)
@@ -517,6 +517,27 @@ version of each file can be downloaded.
 
 Uploads continue in a panel at the bottom of the screen while you browse. Reloading the page
 stops them, but the server keeps what was sent: choose the same folder again to resume.
+
+## Filtering the library
+
+The **Models** page filters by:
+
+- **Parameters:** a range slider. A model counts at the size in its name when the name
+  gives one and roughly agrees with its weights (`Qwen3-8B-FP8` is 8B, even though it
+  holds 8.19B parameters), and at its counted parameters otherwise. Both ends of the range
+  are inclusive.
+- **Tasks:** Hugging Face task names, grouped as Text (Text Generation), Vision
+  (Image-Text-to-Text), Multimodal (Any-to-Any), Embedding (Feature Extraction, Sentence
+  Similarity), and Reranking (Text Ranking). Any other task in your library appears under
+  Other. The task comes from `pipeline_tag` in the model card.
+- **Precision:** BF16, FP8, or NVFP4, read at scan time from `quantization_config` in
+  `config.json`, from ModelOpt's `hf_quant_config.json`, and otherwise from the dtype. Packed
+  4-bit weights are counted as two parameters per byte, so NVFP4 models show their real size.
+- **Hardware:** L40, A100, RTX PRO 6000, and B300. Anyone who can upload changes to a
+  repository can tag it from the **Hardware** card on its model page.
+
+Precision and sizes come from the index, which the server rebuilds at startup; **Scan storage**
+refreshes it on demand.
 
 ## Storage page and multiple buckets
 

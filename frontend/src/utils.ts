@@ -37,8 +37,33 @@ export function initials(repoId: string): string {
   return (parts[0]?.slice(0, 2) || 'HH').toUpperCase()
 }
 
+// Hugging Face task names that are not plain title case (huggingface.co/api/tasks).
+const TASK_LABELS: Record<string, string> = {
+  'any-to-any': 'Any-to-Any',
+  'audio-text-to-text': 'Audio-Text-to-Text',
+  'audio-to-audio': 'Audio-to-Audio',
+  'fill-mask': 'Fill-Mask',
+  'image-text-to-image': 'Image-Text-to-Image',
+  'image-text-to-text': 'Image-Text-to-Text',
+  'image-text-to-video': 'Image-Text-to-Video',
+  'image-to-3d': 'Image-to-3D',
+  'image-to-image': 'Image-to-Image',
+  'image-to-text': 'Image-to-Text',
+  'image-to-video': 'Image-to-Video',
+  'text-to-3d': 'Text-to-3D',
+  'text-to-image': 'Text-to-Image',
+  'text-to-speech': 'Text-to-Speech',
+  'text-to-video': 'Text-to-Video',
+  'video-text-to-text': 'Video-Text-to-Text',
+  'video-to-video': 'Video-to-Video',
+  'zero-shot-classification': 'Zero-Shot Classification',
+  'zero-shot-image-classification': 'Zero-Shot Image Classification',
+  'zero-shot-object-detection': 'Zero-Shot Object Detection',
+}
+
 export function taskLabel(task?: string | null): string {
   if (!task) return 'Model'
+  if (TASK_LABELS[task]) return TASK_LABELS[task]
   return task
     .split('-')
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))

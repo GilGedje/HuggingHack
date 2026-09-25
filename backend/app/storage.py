@@ -641,6 +641,7 @@ class S3ModelStorage(FilesystemModelStorage):
                     "cached": cached,
                     "remote_uri": self.remote_uri(repo_id),
                     "parameter_count": manifest.get("parameter_count"),
+                    "precision": manifest.get("precision"),
                     "formats": model_formats(repository_keys.get(repo_id, [])),
                     "entries": repository_entries.get(repo_id, []),
                 }

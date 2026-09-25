@@ -960,6 +960,7 @@ def test_indexer_counts_parameters_from_weight_headers(tmp_path: Path):
     assert facts == {
         "parameter_count": 48,
         "formats": ["gguf", "pytorch", "safetensors"],
+        "precision": "fp32",  # no config.json, so the header's dtype decides
     }
 
     gguf_only = tmp_path / "gguf-only"
@@ -1022,7 +1023,7 @@ def test_catalog_search_filters_sorts_and_builds_facets():
             "pipeline_tag": "text-generation",
             "library_name": "transformers",
             "tags": ["chat"],
-            "config": {"model_type": "llama", "architectures": ["LlamaForCausalLM"]},
+            "config": {"model_type": "llama", "architectures": ["LlamaForCausalLM"], "precision": "bf16"},
             "parameter_count": 7_000_000_000,
             "formats": ["safetensors"],
             "size_bytes": 14,
@@ -1047,39 +1048,70 @@ def test_catalog_search_filters_sorts_and_builds_facets():
         },
     ]
 
-    everything = search_catalog(models, {"acme/chat-7b"})
+    everything = search_catalog(models, {"acme/chat-7b"}, hardware_tags={"acme/chat-7b": ["b300", "l40"]})
     assert [item["id"] for item in everything["items"]] == ["bartowski/tiny-GGUF", "acme/chat-7b"]
     assert everything["items"][0]["pipeline_tag"] is None
     assert everything["items"][0]["apps"] == ["llama.cpp", "ollama", "lm-studio"]
     assert everything["items"][1]["apps"] == ["vllm"]
     assert everything["items"][1]["saved"] is True
+    assert everything["items"][1]["precision"] == "bf16"
+    assert everything["items"][1]["hardware"] == ["l40", "b300"]  # in HARDWARE order
     assert everything["total_bytes"] == 34
-    assert everything["facets"]["tasks"] == [["text-generation", "Text Generation"]]
-    assert everything["facets"]["libraries"] == [
-        ["gguf", "GGUF"],
-        ["safetensors", "SafeTensors"],
-        ["transformers", "Transformers"],
-    ]
-    assert [app for app, _ in everything["facets"]["apps"]] == [
-        "vllm",
-        "llama.cpp",
-        "ollama",
-        "lm-studio",
+    assert everything["facets"]["tasks"] == {"text-generation": 1}
+    assert everything["facets"]["precision"] == {"bf16": 1}
+    assert everything["facets"]["hardware"] == [
+        ["l40", "L40", 1], ["a100", "A100", 0], ["rtx-pro-6000", "RTX PRO 6000", 0], ["b300", "B300", 1],
     ]
 
-    assert [item["id"] for item in search_catalog(models, set(), sort="size")["items"]] == [
-        "bartowski/tiny-GGUF",
-        "acme/chat-7b",
-    ]
-    assert search_catalog(models, set(), search="chat")["count"] == 1
-    assert search_catalog(models, set(), library="gguf")["items"][0]["id"] == "bartowski/tiny-GGUF"
-    assert search_catalog(models, set(), app="vllm")["items"][0]["id"] == "acme/chat-7b"
-    ranged = search_catalog(models, set(), parameters="min:1B,max:7B")
-    assert ranged["count"] == 0
-    assert search_catalog(models, set(), parameters="min:7B,max:32B")["count"] == 1
+    def ids(**filters):
+        return [item["id"] for item in search_catalog(models, set(), **filters)["items"]]
+
+    assert ids(sort="size") == ["bartowski/tiny-GGUF", "acme/chat-7b"]
+    assert ids(search="chat") == ["acme/chat-7b"]
+    assert ids(task="text-generation,feature-extraction") == ["acme/chat-7b"]
+    assert ids(precision="bf16") == ["acme/chat-7b"]
+    assert ids(precision="fp8,nvfp4") == []
+    assert ids(parameters="min:1B,max:7B") == ["acme/chat-7b"]  # both ends inclusive
+    assert ids(parameters="min:8B") == []
     assert parse_parameter_range("max:1B") == (None, 1_000_000_000)
-    with pytest.raises(ValueError):
-        parse_parameter_range("lots")
+    for bad in ({"parameters": "lots"}, {"precision": "fp4"}, {"hardware": "h100"}, {"task": "Text Gen"}):
+        with pytest.raises(ValueError):
+            search_catalog(models, set(), **bad)
+
+
+def test_parameter_filter_puts_models_in_the_bucket_their_name_claims():
+    """Counted parameters run over the name; the slider must follow the name."""
+    real = {
+        "meta-llama/Llama-3.2-1B-Instruct": 1_235_814_400,
+        "Qwen/Qwen2.5-7B-Instruct": 7_615_616_512,
+        "meta-llama/Llama-3.1-8B-Instruct": 8_030_261_248,
+        "Qwen/Qwen3-8B-FP8": 8_190_735_360,
+        "Qwen/Qwen2.5-14B-Instruct": 14_770_033_664,
+        "Qwen/Qwen2.5-32B-Instruct": 32_763_876_352,
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8": 31_577_937_600,
+        "meta-llama/Llama-3.3-70B-Instruct": 70_553_706_496,
+        "mistralai/Mixtral-8x7B-Instruct-v0.1": 46_702_792_704,
+        "sentence-transformers/all-MiniLM-L6-v2": 22_713_728,
+    }
+    models = [
+        {"repo_id": repo, "relative_path": repo, "parameter_count": count, "formats": [], "size_bytes": 0}
+        for repo, count in real.items()
+    ]
+
+    def within(parameters):
+        return {item["id"].split("/")[1] for item in search_catalog(models, set(), parameters=parameters)["items"]}
+
+    assert within("max:1B") == {"Llama-3.2-1B-Instruct", "all-MiniLM-L6-v2"}
+    assert within("min:3B,max:8B") == {"Qwen2.5-7B-Instruct", "Llama-3.1-8B-Instruct", "Qwen3-8B-FP8"}
+    assert within("min:8B,max:14B") == {"Llama-3.1-8B-Instruct", "Qwen3-8B-FP8", "Qwen2.5-14B-Instruct"}
+    assert within("min:14B,max:32B") == {
+        "Qwen2.5-14B-Instruct", "Qwen2.5-32B-Instruct", "NVIDIA-Nemotron-3-Nano-30B-A3B-FP8",
+    }
+    # 8x7B is a mixture of experts; the name's 7B is per expert, so the count decides.
+    assert within("min:32B,max:70B") == {
+        "Qwen2.5-32B-Instruct", "Mixtral-8x7B-Instruct-v0.1", "Llama-3.3-70B-Instruct",
+    }
+    assert within("min:128B") == set()
 
 
 def test_library_api_serves_local_data_and_hides_private_uploads(
