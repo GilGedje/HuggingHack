@@ -268,9 +268,6 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
 
   if (error) return <div className="standard-page"><div className="inline-error">{error}</div></div>
   if (!organization) return <div className="standard-page"><RowSkeletons rows={5} cells={2} label="Loading the organization" /></div>
-  // The header shows the first line; the whole text, when there is more, opens the Models tab.
-  const summary = markdownSummary(organization.description)
-  const about = organization.description.trim() !== summary
   const tabs = [
     { id: 'models', label: 'Models', count: models?.length },
     { id: 'members', label: 'Members', count: organization.members.length },
@@ -290,7 +287,11 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
                 @{organization.name}
                 {organization.my_role && <> · <span className="role-badge member">You: {ORG_ROLE_LABELS[organization.my_role]}</span></>}
               </p>
-              {summary && <p className="org-description">{summary}</p>}
+              {organization.description.trim() && (
+                <section className="org-about" aria-label={`About ${organization.display_name}`}>
+                  <MarkdownText source={organization.description} />
+                </section>
+              )}
             </div>
           </div>
           <nav className="model-tabs" aria-label="Organization sections">
@@ -313,11 +314,6 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
         </div>
       </header>
       <div className="section-body" ref={body}>
-        {tab === 'models' && about && (
-          <section className="org-about" aria-label={`About ${organization.display_name}`}>
-            <MarkdownText source={organization.description} />
-          </section>
-        )}
         {tab === 'models' && (
           models === null ? (
             <ModelCardSkeletons count={4} label="Loading the organization's models" />

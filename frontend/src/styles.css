@@ -2490,7 +2490,6 @@ button.file-browser-name:hover { text-decoration: underline; text-underline-offs
   font-family: 'IBM Plex Mono', monospace; font-size: 13px; font-weight: 700;
 }
 .org-avatar-large { border-radius: 12px; }
-.org-description { margin-top: 6px; max-width: 700px; color: var(--text-secondary); font-size: 13px; }
 .section-hero .eyebrow { display: inline-flex; align-items: center; gap: 5px; }
 .org-role-help { margin: 12px 0 0; padding: 0; display: grid; gap: 4px; list-style: none; color: var(--text-muted); font-size: 12px; }
 .org-role-help strong { display: inline-block; min-width: 52px; color: var(--text-secondary); }
@@ -2754,9 +2753,14 @@ a, button, input, select, textarea, summary,
 .markdown-empty { min-height: 200px; padding: 14px 16px; color: var(--text-muted); font-size: 13px; }
 .markdown-text { font-size: 14px; }
 .markdown-text > :first-child { margin-top: 0; }
+/* The organization's About text, in the header under its name. */
+.account-identity:has(.org-about) { align-items: flex-start; }
 .org-about {
-  margin-bottom: 24px; padding: 18px 22px; border: 1px solid var(--border); border-radius: 10px;
-  background: var(--canvas-raised, var(--canvas)); animation: fade-in 260ms var(--ease-out) backwards;
+  width: fit-content; margin-top: 12px; max-width: 860px; padding: 14px 18px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--canvas); animation: fade-in 260ms var(--ease-out) backwards;
 }
+.org-about .markdown-text { font-size: 13px; line-height: 1.65; }
+.org-about .markdown-text > * + * { margin-top: 10px; }
+.org-about .markdown-text :is(h1, h2, h3) { margin-top: 14px !important; font-size: 15px; }
 .org-about .markdown-text, .markdown-editor .markdown-text { width: auto; max-width: 820px; margin: 0; padding: 0; min-height: 0; }
 .markdown-editor-body .markdown-text.markdown-preview { padding: 14px 16px; min-height: 200px; }

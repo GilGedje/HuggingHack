@@ -317,3 +317,18 @@ def test_an_organization_description_is_markdown_with_room_to_write(org):  # noq
     assert saved.json()["description"] == about  # line breaks kept, outer space trimmed
     assert admin.get("/api/organizations/nvidia").json()["description"] == about
     assert admin.patch("/api/organizations/nvidia", json={"description": "x" * 10_001}).status_code == 422
+
+
+def test_only_members_who_may_write_are_offered_uploads(org):  # noqa: F811
+    offered = {}
+    for username in ("admin", "writer", "reader", "outsider", "viewer"):
+        client, _ = login(username)
+        response = client.get("/api/organizations/nvidia")
+        offered[username] = response.json().get("can_upload") if response.status_code == 200 else None
+    # The server admin who created it is its admin; writers upload; readers and others do not.
+    assert offered == {"admin": True, "writer": True, "reader": False, "outsider": False, "viewer": False}
+    # A viewer given the write role still cannot upload: the role decides first.
+    admin, _ = login("admin")
+    assert admin.put("/api/organizations/nvidia/members/viewer", json={"role": "write"}).status_code == 200
+    viewer, _ = login("viewer")
+    assert viewer.get("/api/organizations/nvidia").json()["can_upload"] is False
