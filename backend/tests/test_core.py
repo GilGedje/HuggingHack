@@ -8,11 +8,16 @@ import httpx
 import pytest
 
 from app.auth import AuthService, verify_password
-from app.catalog import LocalCatalog, parse_parameter_range, search_catalog
+from app.catalog import (
+    LocalCatalog,
+    parse_gguf_range,
+    parse_parameter_range,
+    search_catalog,
+    validate_gguf_filename,
+)
 from app.config import Settings, repository_path, validate_repo_id
 from app.database import Database, _postgres_query
 from app.downloads import DownloadManager
-from app.hub_service import HubService, parse_gguf_range, validate_gguf_filename
 from app.history import RepoHistory
 from app.hub_api import HubRepositories
 from app.indexer import (
@@ -129,43 +134,6 @@ def test_gguf_range_validation_is_bounded_and_path_safe():
     ):
         with pytest.raises(ValueError):
             parse_gguf_range(range_header)
-
-
-def test_hub_service_proxies_only_the_requested_gguf_range(tmp_path: Path):
-    settings = Settings(
-        model_storage=(tmp_path / "models").resolve(),
-        data_dir=(tmp_path / "data").resolve(),
-        hf_token="read-token",
-    )
-    service = HubService(settings)
-    service.range_client.close()
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path.endswith("/acme/model/resolve/main/Q4/model.gguf")
-        assert request.headers["Range"] == "bytes=0-3"
-        assert request.headers["Authorization"] == "Bearer read-token"
-        assert request.headers["Accept-Encoding"] == "identity"
-        return httpx.Response(
-            206,
-            content=b"GGUF",
-            headers={"Content-Range": "bytes 0-3/100"},
-        )
-
-    service.range_client = httpx.Client(
-        transport=httpx.MockTransport(handler),
-        follow_redirects=True,
-    )
-    try:
-        result = service.read_gguf_range(
-            "acme/model", "Q4/model.gguf", "main", "bytes=0-3"
-        )
-    finally:
-        service.close()
-
-    assert result["status_code"] == 206
-    assert result["content"] == b"GGUF"
-    assert result["headers"]["Content-Range"] == "bytes 0-3/100"
-    assert result["headers"]["Cache-Control"] == "private, max-age=3600"
 
 
 def test_database_target_defaults_to_sqlite_and_accepts_postgresql(tmp_path: Path):

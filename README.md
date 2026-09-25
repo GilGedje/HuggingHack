@@ -633,9 +633,7 @@ npm run build
 - S3 mode: durable model objects in `S3_BUCKET` and working copies in `MODEL_STORAGE_PATH`
 - Accounts, sessions, saved collections, repository ownership, download history, and local
   index: `./data/hugginghack.sqlite3` by default, or the database named by `DATABASE_URL`
-- Hub metadata cache: `./data/hub-cache`
 
-Back up the models folder and metadata database together. Keep backing up `data` for the Hub
-cache and for SQLite deployments. The model index can be rebuilt from model files, but the
-database preserves accounts, saved-model organization, ownership, and download history.
+Back up the models folder and metadata database together. Keep backing up `data` for SQLite
+deployments. The model index can be rebuilt from model files, but the database preserves accounts, saved-model organization, ownership, and download history.
 Store backups securely because it contains password hashes and active session hashes.
