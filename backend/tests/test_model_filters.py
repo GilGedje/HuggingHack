@@ -100,10 +100,37 @@ def test_hardware_tags_are_edited_by_repository_editors_only(server):  # noqa: F
     # Counts only cover models the viewer can see, so the private repo stays hidden.
     counts = {key: count for key, _, count in viewer.get("/api/library/models").json()["facets"]["hardware"]}
     assert counts == {"l40": 1, "a100": 0, "rtx-pro-6000": 0, "b300": 0}
-    assert viewer.get("/api/library/models", params={"precision": "fp4"}).status_code == 400
+    assert viewer.get("/api/library/models", params={"precision": "fp16"}).status_code == 400
 
     deleted = member.request(
         "DELETE", "/api/uploads/repositories", params={"repo_id": "member/secret"}, json={"confirmation": "member/secret"}
     )
     assert deleted.status_code == 200
     assert "member/secret" not in server["database"].model_hardware()
+
+
+def test_the_precision_filter_groups_formats_by_width():
+    from app.catalog import search_catalog
+
+    def model(repo_id: str, precision: str) -> dict:
+        return {
+            "repo_id": repo_id, "config": {"precision": precision}, "size_bytes": 1, "file_count": 1,
+            "modified_at": "2026-09-25T00:00:00+00:00", "storage_target": "local", "cached": True,
+        }
+
+    models = [
+        model("a/bf16", "bf16"), model("a/fp8", "fp8"), model("a/int8", "int8"),
+        model("a/nvfp4", "nvfp4"), model("a/mxfp4", "mxfp4"), model("a/w4a16", "int4"), model("a/fp16", "fp16"),
+    ]
+
+    def ids(precision: str) -> list[str]:
+        return sorted(item["id"] for item in search_catalog(models, set(), precision=precision, sort="name")["items"])
+
+    assert ids("fp8") == ["a/fp8", "a/int8"]
+    assert ids("fp4") == ["a/mxfp4", "a/nvfp4", "a/w4a16"]
+    assert ids("nvfp4") == ids("fp4")  # older links
+    assert ids("bf16,fp8") == ["a/bf16", "a/fp8", "a/int8"]
+    facets = search_catalog(models, set())["facets"]["precision"]
+    assert facets == {"bf16": 1, "fp8": 2, "fp4": 3}
+    # Each model still reports its own precision.
+    assert {item["id"]: item["precision"] for item in search_catalog(models, set(), precision="fp4")["items"]}["a/w4a16"] == "int4"

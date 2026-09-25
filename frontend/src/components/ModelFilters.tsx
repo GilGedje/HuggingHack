@@ -1,7 +1,7 @@
 import { Check } from 'lucide-react'
 import {
   PARAMETER_STOPS,
-  PRECISIONS,
+  PRECISION_FILTERS,
   TASKS,
   isFullRange,
   parameterQuery,
@@ -152,7 +152,7 @@ export function ModelFilters({
       </section>
       <section className="filter-group">
         <h3>Precision</h3>
-        {PRECISIONS.map(([id, label]) => (
+        {PRECISION_FILTERS.map(([id, label]) => (
           <Option
             key={id}
             label={label}

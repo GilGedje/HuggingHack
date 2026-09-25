@@ -36,7 +36,21 @@ HARDWARE = {
     "rtx-pro-6000": "RTX PRO 6000",
     "b300": "B300",
 }
-PRECISIONS = ("bf16", "fp8", "nvfp4")
+# The precision filter groups number formats by width: FP8 and INT8 weights take
+# the same room, and so do FP4 (NVFP4, MXFP4) and INT4. Each model keeps its exact
+# precision; only the filter and its counts group them.
+PRECISION_GROUPS: dict[str, frozenset[str]] = {
+    "bf16": frozenset({"bf16"}),
+    "fp8": frozenset({"fp8", "int8"}),
+    "fp4": frozenset({"nvfp4", "mxfp4", "int4"}),
+}
+# Links made before the groups existed asked for nvfp4.
+PRECISION_ALIASES = {"nvfp4": "fp4"}
+PRECISIONS = tuple(PRECISION_GROUPS)
+
+
+def precision_group(precision: str | None) -> str | None:
+    return next((group for group, members in PRECISION_GROUPS.items() if precision in members), None)
 TASK_PATTERN = re.compile(r"^[a-z0-9-]{1,60}$")
 PARAMETER_PATTERN = re.compile(r"^(min|max):(\d+(?:\.\d+)?)([KMBT]?)$", re.IGNORECASE)
 PARAMETER_UNITS = {"": 1, "K": 10**3, "M": 10**6, "B": 10**9, "T": 10**12}
@@ -185,7 +199,7 @@ def _matches(
             return False
     if tasks and item.get("pipeline_tag") not in tasks:
         return False
-    if precisions and item.get("precision") not in precisions:
+    if precisions and precision_group(item.get("precision")) not in precisions:
         return False
     if hardware and not hardware.intersection(item["hardware"]):
         return False
@@ -225,7 +239,7 @@ def catalog_facets(items: list[dict[str, Any]]) -> dict[str, Any]:
     hardware = _counts(tag for item in items for tag in item["hardware"])
     return {
         "tasks": _counts(item.get("pipeline_tag") for item in items),
-        "precision": _counts(item.get("precision") for item in items),
+        "precision": _counts(precision_group(item.get("precision")) for item in items),
         "hardware": [[key, label, hardware.get(key, 0)] for key, label in HARDWARE.items()],
     }
 
@@ -245,7 +259,10 @@ def search_catalog(
 ) -> dict[str, Any]:
     parameter_range = parse_parameter_range(parameters)
     tasks = parse_choices(task, TASK_PATTERN.fullmatch, "task")
-    precisions = parse_choices(precision, PRECISIONS, "precision")
+    precisions = {
+        PRECISION_ALIASES.get(item, item)
+        for item in parse_choices(precision, lambda value: value in PRECISIONS or value in PRECISION_ALIASES, "precision")
+    }
     chosen_hardware = parse_choices(hardware, HARDWARE, "hardware")
     tags = hardware_tags or {}
     items = [catalog_item(model, saved_ids, tags.get(model["repo_id"])) for model in models]

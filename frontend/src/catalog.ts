@@ -10,14 +10,18 @@ export const TASKS = [
   'text-ranking',
 ]
 
-export const PRECISIONS: Array<[string, string]> = [
+/** Precision filter options. Formats of the same width share one, so INT8 models
+ * sit with FP8 and INT4, MXFP4, and NVFP4 with FP4; each model keeps its own label. */
+export const PRECISION_FILTERS: Array<[string, string]> = [
   ['bf16', 'BF16'],
-  ['fp8', 'FP8'],
-  ['nvfp4', 'NVFP4'],
+  ['fp8', 'FP8 / INT8'],
+  ['fp4', 'FP4 / INT4'],
 ]
 
 const PRECISION_LABELS: Record<string, string> = {
-  ...Object.fromEntries(PRECISIONS),
+  bf16: 'BF16',
+  fp8: 'FP8',
+  nvfp4: 'NVFP4',
   fp16: 'FP16',
   fp32: 'FP32',
   mxfp4: 'MXFP4',

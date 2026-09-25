@@ -1089,7 +1089,7 @@ def test_catalog_search_filters_sorts_and_builds_facets():
     assert ids(parameters="min:1B,max:7B") == ["acme/chat-7b"]  # both ends inclusive
     assert ids(parameters="min:8B") == []
     assert parse_parameter_range("max:1B") == (None, 1_000_000_000)
-    for bad in ({"parameters": "lots"}, {"precision": "fp4"}, {"hardware": "h100"}, {"task": "Text Gen"}):
+    for bad in ({"parameters": "lots"}, {"precision": "fp16"}, {"hardware": "h100"}, {"task": "Text Gen"}):
         with pytest.raises(ValueError):
             search_catalog(models, set(), **bad)
 

@@ -25,3 +25,11 @@ test('precision labels', () => {
   assert.equal(precisionLabel('int4'), 'INT4')
   assert.equal(precisionLabel(null), null)
 })
+
+test('precision filters group by width while labels stay exact', async () => {
+  const { PRECISION_FILTERS } = await import('../src/catalog.ts')
+  assert.deepEqual(PRECISION_FILTERS.map(([id]) => id), ['bf16', 'fp8', 'fp4'])
+  assert.equal(precisionLabel('fp8'), 'FP8')
+  assert.equal(precisionLabel('int8'), 'INT8')
+  assert.equal(precisionLabel('mxfp4'), 'MXFP4')
+})
