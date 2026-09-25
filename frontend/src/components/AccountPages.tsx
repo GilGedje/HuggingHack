@@ -213,6 +213,12 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
   const confirm = useConfirm()
   const navigate = useNavigate()
   const [editing, setEditing] = useState<string | null>(null)
+  // Closing the editor brings back that model's Organize button; focus returns to it.
+  const refocusOrganize = useRef<string | null>(null)
+  function closeEditor(id: string) {
+    refocusOrganize.current = id
+    setEditing(null)
+  }
   const [draftNote, setDraftNote] = useState('')
   const [draftCollections, setDraftCollections] = useState<string[]>([])
 
@@ -319,7 +325,7 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
         collection_ids: draftCollections,
         metadata: item.metadata,
       })
-      setEditing(null)
+      closeEditor(item.id)
       await load()
       onToast('Saved model updated.')
     } catch (reason) {
@@ -441,7 +447,7 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
                           <button className="download-button compact" onClick={() => saveChanges(item)}>
                             <Check size={14} /> Save
                           </button>
-                          <button className="secondary-button compact" onClick={() => setEditing(null)}>
+                          <button className="secondary-button compact" onClick={() => closeEditor(item.id)}>
                             <X size={14} /> Cancel
                           </button>
                         </div>
@@ -453,6 +459,12 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
                           <small>Saved {relativeTime(item.created_at)}</small>
                           <div>
                             <button
+                              ref={(node) => {
+                                if (node && refocusOrganize.current === item.id) {
+                                  refocusOrganize.current = null
+                                  node.focus()
+                                }
+                              }}
                               onClick={() => {
                                 setEditing(item.id)
                                 setDraftNote(item.note)

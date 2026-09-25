@@ -2259,7 +2259,7 @@ def visible_model(repo_id: str, user_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(error)) from error
     model = database.get_visible_local_model(user_id, validated)
     if not model:
-        raise HTTPException(status_code=404, detail="Local model not found")
+        raise HTTPException(status_code=404, detail="Repository not found.")
     return model
 
 
@@ -2286,7 +2286,7 @@ async def restore_local_model(repo_id: str, user: CacheManager) -> dict:
         raise HTTPException(status_code=409, detail=str(error)) from error
     result = indexer.files_for_model(model["repo_id"])
     if not result:
-        raise HTTPException(status_code=404, detail="Local model not found")
+        raise HTTPException(status_code=404, detail="Repository not found.")
     return listing_for(user, result)
 
 
@@ -2566,7 +2566,7 @@ def load_runtime_model(
         else visible_model(payload.repo_id, principal["id"])
     )
     if not model:
-        raise HTTPException(status_code=404, detail="Local model not found")
+        raise HTTPException(status_code=404, detail="Repository not found.")
     if moving := moves.moving(model["repo_id"]):
         raise HTTPException(status_code=409, detail=moving)
     try:

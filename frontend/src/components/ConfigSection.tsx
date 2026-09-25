@@ -610,6 +610,8 @@ function NewRevision({
   const [withResults, setWithResults] = useState(false)
   const [draft, setDraft] = useState<ResultsDraft>(() => toDraft(latest ? { ...latest.results, values: pickContext(latest.results, listing.metrics), custom: [], notes: '' } : null))
   const [newPath, setNewPath] = useState('')
+  // A file written from scratch opens its editor; typing starts there.
+  const focusEditor = useRef<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const [problems, setProblems] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
@@ -761,6 +763,12 @@ function NewRevision({
                   </div>
                   {file.open && !file.removed && (
                     <textarea
+                      ref={(node) => {
+                        if (node && focusEditor.current === file.path) {
+                          focusEditor.current = null
+                          node.focus()
+                        }
+                      }}
                       className="draft-file-editor"
                       aria-label={`Contents of ${file.path}`}
                       value={file.content}
@@ -810,6 +818,7 @@ function NewRevision({
             className="secondary-button compact"
             disabled={!newPath.trim() || files.some((file) => file.path === newPath.trim())}
             onClick={() => {
+              focusEditor.current = newPath.trim()
               setFiles([...files, { path: newPath.trim(), content: '', removed: false, open: true }].sort((a, b) => a.path.localeCompare(b.path)))
               setNewPath('')
             }}

@@ -40,7 +40,7 @@ export function RuntimesPage() {
       })
       .catch((reason) => {
         if (request !== latest.current) return
-        setError(reason instanceof Error ? reason.message : 'Unable to read runtime targets.')
+        setError(reason instanceof Error ? reason.message : 'Could not load the runtime destinations.')
       })
       .finally(() => {
         if (request !== latest.current || stopped.current) return

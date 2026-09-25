@@ -603,7 +603,7 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
       updateModel((current) => (current.id === model.id ? { ...current, saved } : current))
       onToast(saved ? `${model.id} was saved for later.` : `${model.id} was removed from your saved library.`)
     } catch (reason) {
-      onToast(reason instanceof Error ? reason.message : 'Unable to update saved models', 'error')
+      onToast(reason instanceof Error ? reason.message : 'Could not update your saved models.', 'error')
     } finally {
       setSaving(false)
     }

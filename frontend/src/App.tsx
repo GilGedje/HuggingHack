@@ -260,7 +260,7 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
         ),
       )
     } catch (reason) {
-      onToast(reason instanceof Error ? reason.message : 'Unable to update saved models', 'error')
+      onToast(reason instanceof Error ? reason.message : 'Could not update your saved models.', 'error')
     } finally {
       setSaving(null)
     }

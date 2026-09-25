@@ -242,9 +242,11 @@ export function crossfade(apply: () => void) {
 }
 
 /** A transition the browser skips (the window resized, another one started) rejects
- * `ready`; the change itself has still been applied, so that is not an error. */
+ * its promises; the change itself has still been applied, so that is not an error. */
 function quietly(transition: ViewTransition): ViewTransition {
-  transition.ready.catch(() => undefined)
+  for (const step of [transition.ready, transition.updateCallbackDone, transition.finished]) {
+    step.catch(() => undefined)
+  }
   return transition
 }
 
@@ -258,7 +260,7 @@ export function crossfadeTheme(apply: () => void) {
   const settle = () =>
     requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove('theme-switching')))
   if (document.startViewTransition && !prefersReducedMotion()) {
-    quietly(document.startViewTransition(apply)).finished.catch(() => undefined).finally(settle)
+    quietly(document.startViewTransition(apply)).finished.finally(settle).catch(() => undefined)
   } else {
     apply()
     settle()
