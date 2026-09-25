@@ -79,6 +79,11 @@ class Settings:
     s3_multipart_chunk_mb: int = _positive_int("S3_MULTIPART_CHUNK_MB", 64, 512)
     storage_targets_json: str = os.getenv("STORAGE_TARGETS_JSON", "[]")
     default_storage_target: str | None = (os.getenv("DEFAULT_STORAGE_TARGET") or "").strip() or None
+    # Where the site keeps its own files (profile pictures, git mirrors): "local" (the
+    # data folder) or the id of an S3 target, under <its prefix>/_system unless
+    # SYSTEM_STORAGE_PREFIX says otherwise.
+    system_storage_target: str = (os.getenv("SYSTEM_STORAGE_TARGET") or "local").strip() or "local"
+    system_storage_prefix: str | None = (os.getenv("SYSTEM_STORAGE_PREFIX") or "").strip().strip("/") or None
     hub_api_enabled: bool = _boolean("HUB_API_ENABLED", True)
     # Downloading models from Hugging Face needs internet access, so air-gapped
     # servers leave it off; turn it on only where HF_ENDPOINT is reachable.

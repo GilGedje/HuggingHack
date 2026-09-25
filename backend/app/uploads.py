@@ -87,6 +87,8 @@ class UploadManager:
         self.history = history
         # Set by the app: why a repository cannot change while a storage move runs.
         self.move_guard: Callable[[str], str | None] | None = None
+        # Set by the app: remove a repository's git mirror, locally and in the system folder.
+        self.mirror_forget: Callable[[str], None] | None = None
         self._write_lock = threading.RLock()
 
     def _repository_root(self, repo_id: str) -> Path:
@@ -513,16 +515,19 @@ class UploadManager:
             self.database.delete_owned_repository(repo_id)
             self._forget(repo_id)
 
+    def _forget_mirror(self, repo_id: str) -> None:
+        if self.mirror_forget:
+            self.mirror_forget(repo_id)
+        else:
+            shutil.rmtree(self.settings.data_dir / "git-mirrors" / repo_id, ignore_errors=True)
+
     def _forget(self, repo_id: str) -> None:
         self.database.delete_commits(repo_id)
         self.database.delete_file_digests(repo_id)
         self.database.delete_config_revisions(repo_id)
         # A repository created later with the same name must not inherit this
         # one's git history.
-        shutil.rmtree(
-            self.settings.data_dir / "git-mirrors" / validate_repo_id(repo_id),
-            ignore_errors=True,
-        )
+        self._forget_mirror(validate_repo_id(repo_id))
 
     def delete_model(self, repo_id: str, user: dict[str, Any], confirmation: str) -> None:
         """Delete any model from storage: an upload through its owner's checks, a
@@ -713,7 +718,7 @@ class UploadManager:
             if old_root.parent.name.lower() != new_root.parent.name.lower():
                 self._remove_empty_namespace(old_root.parent)
             self._drop_stale_changes(old)
-            shutil.rmtree(self.settings.data_dir / "git-mirrors" / old, ignore_errors=True)
+            self._forget_mirror(old)
         return {"repo_id": new, "visibility": visibility if ownership else "public"}
 
     # Changes to existing repositories are uploaded into a hidden staging area and

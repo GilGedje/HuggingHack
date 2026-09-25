@@ -152,6 +152,8 @@ export interface ServerSettings {
     model_path: string
     data_path: string
     default_target: string
+    /** Where the site keeps its own files: SYSTEM_STORAGE_TARGET. */
+    system: { target: string; location: string; remote: boolean }
     targets: Array<StorageTargetSummary>
   }
   uploads: { chunk_mb: number; max_file_gb: number }
@@ -478,6 +480,8 @@ export interface StorageOverview {
   cache: StorageCapacity & { path: string; model_count: number; model_bytes: number }
   targets: StorageTarget[]
   conflicts: Array<{ repo_id: string; kept_target: string; skipped_target: string }>
+  /** The site's own folder (profile pictures, git mirrors) and whether it answered. */
+  system: { target: string; name: string; location: string; remote: boolean; ok: boolean; error?: string | null }
 }
 
 export interface StorageOption {

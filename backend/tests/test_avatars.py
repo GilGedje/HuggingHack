@@ -32,7 +32,7 @@ def test_a_picture_is_what_its_bytes_say_and_nothing_else(org):  # noqa: F811
 
     assert writer.delete("/api/account/avatar").status_code == 200
     assert writer.get("/api/avatars/writer").status_code == 404
-    assert not list((main.settings.data_dir / "avatars" / "users").iterdir())
+    assert not list((main.settings.data_dir / "system" / "avatars" / "users").iterdir())
 
 
 def test_only_organization_admins_change_its_picture(org):  # noqa: F811
@@ -58,14 +58,14 @@ def test_only_organization_admins_change_its_picture(org):  # noqa: F811
     admin.request("DELETE", "/api/repos", params={"repo_id": "Nvidia/pic"}, json={"confirmation": "Nvidia/pic"})
     organization = main.database.get_organization("nvidia")
     assert admin.delete("/api/organizations/nvidia").status_code == 200
-    assert not (main.settings.data_dir / "avatars" / "organizations" / organization["id"]).exists()
+    assert not (main.settings.data_dir / "system" / "avatars" / "organizations" / organization["id"]).exists()
 
 
 def test_deleting_an_account_deletes_its_picture(org):  # noqa: F811
     add_user(org, "leaving", "member")
     leaving, status = login("leaving")
     assert put(leaving, "/api/account/avatar", PNG).status_code == 200
-    path = main.settings.data_dir / "avatars" / "users" / status["user"]["id"]
+    path = main.settings.data_dir / "system" / "avatars" / "users" / status["user"]["id"]
     assert path.exists()
     admin, _ = login("admin")
     assert admin.delete(f"/api/admin/users/{status['user']['id']}").status_code == 200

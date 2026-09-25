@@ -616,6 +616,27 @@ Administrators can always use every location.
 If the same repository exists in two locations, the earlier target wins and the Storage page
 reports the conflict.
 
+### Site data in S3
+
+The site's own files, profile pictures and the git history behind `git clone` and `git pull`,
+live in one system folder. `SYSTEM_STORAGE_TARGET=local` (the default) keeps it in `DATA_DIR`;
+set it to an S3 target id to keep it in that bucket as `<prefix>/_system/`
+(`SYSTEM_STORAGE_PREFIX` overrides the path). With PostgreSQL for the database and every
+model in a bucket, the server keeps no lasting data of its own.
+
+```text
+_system/
+  README.txt
+  avatars/users/<user id>
+  avatars/organizations/<organization id>
+  git-mirrors/<owner>/<name>/
+```
+
+An unknown target id stops the server at start. Pictures already on local disk are copied into
+the folder on the next start and removed locally only once the copy reads back. The Storage
+page shows where the folder is and checks it answers; while a bucket is unreachable, pictures
+fall back to initials and uploads of new ones are refused with a message.
+
 ### Moving a model to another location
 
 Each model on the Storage page has a **Move** button (administrators). Choose the new location

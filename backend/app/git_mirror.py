@@ -10,18 +10,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
+import shutil
 import threading
 import uuid
 import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 
 from .hub_api import HubRepositories, RepoEntry, RepoSnapshot
 from .indexer import UNSAFE_EXTENSIONS, WEIGHT_EXTENSIONS
+from .system import SystemStoreError
+
+logger = logging.getLogger("hugginghack.git")
 
 
 LFS_THRESHOLD_BYTES = 10 * 1024 * 1024
@@ -93,9 +98,13 @@ class _ObjectWriter:
 
 
 class GitMirrors:
-    def __init__(self, repositories: HubRepositories):
+    def __init__(self, repositories: HubRepositories, system: Callable[[], Any] | None = None):
         self.repositories = repositories
         self.base = repositories.settings.data_dir / "git-mirrors"
+        # With the system folder in S3, each mirror is kept there too: a new commit
+        # builds on the previous one, and `git pull` needs that chain to survive the
+        # server's disk being replaced.
+        self.system = system
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
 
@@ -132,11 +141,67 @@ class GitMirrors:
         snapshot = self.repositories.snapshot(repo_id, user)
         root = self._path(snapshot.repo_id)
         with self._lock(snapshot.repo_id):
+            if not (root / METADATA_NAME).exists():
+                self._restore(snapshot.repo_id, root)
             if self._metadata_sha(root) == snapshot.sha:
                 mirror = self._load(root)
                 if mirror:
                     return mirror
-            return self._build(snapshot, root)
+            mirror = self._build(snapshot, root)
+            self._persist(snapshot.repo_id, root)
+            return mirror
+
+    # ---- keeping mirrors in the system folder -------------------------------------
+
+    def _remote(self) -> Any:
+        store = self.system() if self.system else None
+        return store if store is not None and store.remote else None
+
+    @staticmethod
+    def _key(repo_id: str) -> str:
+        return f"git-mirrors/{repo_id}"
+
+    def _restore(self, repo_id: str, root: Path) -> None:
+        store = self._remote()
+        if store is None:
+            return
+        prefix = self._key(repo_id)
+        try:
+            for key in store.keys(prefix):
+                data = store.get(key)
+                if data is not None:
+                    _atomic_write(root.joinpath(*key[len(prefix) + 1 :].split("/")), data)
+        except SystemStoreError:
+            logger.warning("Could not restore the git mirror of %s; it is rebuilt.", repo_id)
+
+    def _persist(self, repo_id: str, root: Path) -> None:
+        store = self._remote()
+        if store is None or not root.is_dir():
+            return
+        prefix = self._key(repo_id)
+        try:
+            stored = store.keys(prefix)
+            for path in sorted(root.rglob("*")):
+                if not path.is_file() or path.name.startswith("."):
+                    continue
+                relative = path.relative_to(root).as_posix()
+                key = f"{prefix}/{relative}"
+                # Objects are named by their content, so one already there is the same.
+                if relative.startswith("objects/") and key in stored:
+                    continue
+                store.put(key, path.read_bytes())
+        except SystemStoreError:
+            logger.warning("Could not keep the git mirror of %s in the system folder.", repo_id)
+
+    def forget(self, repo_id: str) -> None:
+        """Remove a repository's mirror everywhere, when it is deleted or renamed."""
+        shutil.rmtree(self._path(repo_id), ignore_errors=True)
+        store = self._remote()
+        if store is not None:
+            try:
+                store.delete_prefix(self._key(repo_id))
+            except SystemStoreError:
+                logger.warning("Could not remove the git mirror of %s from the system folder.", repo_id)
 
     def relabel(self, repo_id: str, old_sha: str, new_sha: str) -> None:
         """The same files now carry another snapshot id (a storage move changed their
@@ -150,6 +215,7 @@ class GitMirrors:
             if metadata.get("snapshot") == old_sha:
                 metadata["snapshot"] = new_sha
                 _atomic_write(root / METADATA_NAME, json.dumps(metadata).encode("utf-8"))
+                self._persist(repo_id, root)
 
     def _build(self, snapshot: RepoSnapshot, root: Path) -> Mirror:
         """Write a new snapshot commit on top of the previous one.

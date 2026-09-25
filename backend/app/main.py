@@ -32,6 +32,7 @@ from .auth import (
     validate_password,
 )
 from .avatars import MAX_AVATAR_BYTES, AvatarStore, avatar_url
+from .system import SystemStoreError, create_system_store, ensure_readme, migrate_local_data
 from .catalog import HARDWARE, LocalCatalog, model_task, nominal_parameters, search_catalog
 from .config import settings, validate_namespace, validate_repo_id
 from .database import INTEGRITY_ERRORS, Database
@@ -72,11 +73,16 @@ uploads = UploadManager(settings, database, indexer, storages, history)
 runtimes = RuntimeManager(settings, database)
 catalog = LocalCatalog(settings, storages)
 oidc = OidcClient(settings)
-git_mirrors = GitMirrors(hub_repositories)
+git_mirrors = GitMirrors(hub_repositories, lambda: system_store())
+
+
+def system_store() -> Any:
+    """The site's own folder (see system.py), built from the current settings."""
+    return create_system_store(settings, storages)
 
 
 def avatar_store() -> AvatarStore:
-    return AvatarStore(settings)
+    return AvatarStore(system_store())
 
 
 def repository_busy(repo_id: str) -> str | None:
@@ -90,6 +96,7 @@ moves = MoveManager(
     settings, database, storages, hub_repositories, history, git_mirrors, reads, repository_busy
 )
 uploads.move_guard = moves.moving
+uploads.mirror_forget = git_mirrors.forget
 
 
 # Repositories found in more than one storage target during the last scan.
@@ -167,6 +174,16 @@ def log_startup_scan(task: "asyncio.Task[Any]") -> None:
         logger.error("Startup library scan failed", exc_info=task.exception())
 
 
+def prepare_system_folder() -> None:
+    """Check SYSTEM_STORAGE_TARGET, then move older local site files into the system
+    folder. An unreachable bucket leaves them where they are until the next start."""
+    store = system_store()  # an unknown target id stops the server here, on purpose
+    ensure_readme(store)
+    moved = migrate_local_data(settings, store)
+    if moved["copied"] or moved["kept"]:
+        logger.info("System folder %s: moved %s file(s), kept %s", store.location(), moved["copied"], moved["kept"])
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings.ensure_directories()
@@ -175,6 +192,7 @@ async def lifespan(_: FastAPI):
     auth.ensure_local_user()
     # Before the first scan: undo moves cut short, and finish those that switched.
     await run_in_threadpool(moves.recover)
+    await run_in_threadpool(prepare_system_folder)
     # Index in the background so the server answers immediately, even when a
     # bucket is offline or a large library records its first history.
     startup_scan = asyncio.create_task(run_in_threadpool(refresh_model_index))
@@ -1124,7 +1142,7 @@ def admin_delete_user(user_id: str, admin: UserAdmin) -> dict:
         database.delete_user(user_id)
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
-    avatar_store().delete("user", user_id)
+    forget_avatar("user", user_id)
     return {"status": "deleted"}
 
 
@@ -1159,6 +1177,7 @@ def admin_server(_: SettingsViewer) -> dict:
             "model_path": str(settings.model_storage),
             "data_path": str(settings.data_dir),
             "default_target": storages.default_id,
+            "system": {"target": settings.system_storage_target, "location": system_store().location(), "remote": system_store().remote},
             "targets": [
                 {
                     **storage.describe(),
@@ -2009,6 +2028,17 @@ def storage_model_summary(model: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def system_overview() -> dict[str, Any]:
+    store = system_store()
+    return {
+        "target": settings.system_storage_target,
+        "name": store.name,
+        "location": store.location(),
+        "remote": store.remote,
+        **store.probe(),
+    }
+
+
 @app.get("/api/storage/targets")
 async def storage_targets(_: StorageViewer) -> dict:
     models = database.list_local_models()
@@ -2057,6 +2087,7 @@ async def storage_targets(_: StorageViewer) -> dict:
         },
         "targets": targets,
         "conflicts": storage_conflicts,
+        "system": await run_in_threadpool(system_overview),
     }
 
 
@@ -2420,6 +2451,14 @@ AVATAR_HEADERS = {
 }
 
 
+def forget_avatar(kind: str, owner_id: str) -> None:
+    try:
+        avatar_store().delete(kind, owner_id)
+    except SystemStoreError:
+        # The account or organization still goes; the orphan is harmless and small.
+        logger.warning("Could not delete the picture of %s %s from the system folder.", kind, owner_id)
+
+
 async def read_avatar_upload(request: Request) -> bytes:
     """The request body, refused as soon as it is larger than a picture may be."""
     too_big = HTTPException(status_code=413, detail="The picture is larger than 512 KB.")
@@ -2443,6 +2482,8 @@ async def store_avatar(request: Request, kind: str, owner_id: str, namespace: st
         await run_in_threadpool(avatar_store().save, kind, owner_id, data)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    except SystemStoreError as error:
+        raise HTTPException(status_code=503, detail=f"{error} Try again later.") from error
     version = utc_iso()
     database.set_avatar(kind, owner_id, version)
     return {"avatar_updated_at": version, "avatar": avatar_url(namespace, version)}
@@ -2457,7 +2498,7 @@ async def upload_account_avatar(request: Request, user: SessionWriter) -> dict:
 
 @app.delete("/api/account/avatar")
 def delete_account_avatar(user: SessionWriter) -> dict:
-    avatar_store().delete("user", user["id"])
+    forget_avatar("user", user["id"])
     database.set_avatar("user", user["id"], None)
     return {"avatar_updated_at": None, "avatar": None}
 
@@ -2473,7 +2514,7 @@ async def upload_organization_avatar(name: str, request: Request, user: OrgEdito
 def delete_organization_avatar(name: str, user: OrgEditor) -> dict:
     organization = organization_or_404(name)
     require_org_admin(organization, user)
-    avatar_store().delete("organization", organization["id"])
+    forget_avatar("organization", organization["id"])
     database.set_avatar("organization", organization["id"], None)
     return {"avatar_updated_at": None, "avatar": None}
 
@@ -2481,7 +2522,11 @@ def delete_organization_avatar(name: str, user: OrgEditor) -> dict:
 @app.get("/api/avatars/{namespace}")
 def get_avatar(namespace: str, _: Browser, v: Annotated[str, Query(max_length=64)] = "") -> Response:
     owner = database.avatar_owner(namespace)
-    stored = avatar_store().read(owner[0], owner[1]) if owner else None
+    try:
+        stored = avatar_store().read(owner[0], owner[1]) if owner else None
+    except SystemStoreError as error:
+        # The page shows initials instead.
+        raise HTTPException(status_code=503, detail=str(error)) from error
     if not owner or not stored:
         raise HTTPException(status_code=404, detail="No picture.")
     data, media_type = stored
@@ -2510,7 +2555,7 @@ def delete_organization(name: str, _: OrgCreator) -> dict:
         database.delete_organization(organization["id"])
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
-    avatar_store().delete("organization", organization["id"])
+    forget_avatar("organization", organization["id"])
     return {"status": "deleted"}
 
 

@@ -2856,3 +2856,20 @@ a.model-tree-name:hover { text-decoration: underline; text-underline-offset: 3px
 .avatar-editor-actions label { cursor: pointer; }
 .avatar-editor-actions label.disabled { opacity: 0.6; pointer-events: none; }
 .avatar-editor-actions .text-link { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; cursor: pointer; font-size: 12px; }
+
+/* Where the site keeps its own files, on the Storage page. */
+.system-strip {
+  margin-top: 14px; padding: 14px 16px; display: grid; grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: start; gap: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--canvas);
+  animation: fade-in 260ms var(--ease-out) backwards;
+}
+.system-strip.warning { border-color: color-mix(in oklch, var(--warning) 40%, var(--border)); background: var(--warning-bg); }
+.system-strip > svg { margin-top: 2px; color: var(--text-secondary); }
+.system-strip > div { min-width: 0; display: grid; gap: 3px; }
+.system-strip strong { font-size: 13px; }
+.system-strip code { overflow-wrap: anywhere; color: var(--text-muted); font-size: 11px; }
+.system-strip small { color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
+@media (max-width: 640px) {
+  .system-strip { grid-template-columns: 22px minmax(0, 1fr); }
+  .system-strip > .status-pill { grid-column: 2; justify-self: start; }
+}

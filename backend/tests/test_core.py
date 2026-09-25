@@ -93,7 +93,7 @@ class FakeS3Client:
             self.objects.pop(item["Key"], None)
         return {}
 
-    def put_object(self, *, Bucket: str, Key: str, Body: bytes):
+    def put_object(self, *, Bucket: str, Key: str, Body: bytes, **kwargs):
         self.objects[Key] = bytes(Body)
         self.uploads.append(Key)
         self._touch(Key)

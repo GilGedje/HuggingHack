@@ -597,6 +597,11 @@ function ServerTab() {
             <Fact label="Model folder" value={server.storage.model_path} />
             <Fact label="App data" value={server.storage.data_path} />
             <Fact label="Default location" value={server.storage.default_target} />
+            <Fact
+              label="Site data"
+              value={server.storage.system.location}
+              good={server.storage.system.remote}
+            />
             {server.storage.targets.map((target) => (
               <Fact
                 key={target.id}

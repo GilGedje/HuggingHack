@@ -7,6 +7,7 @@ import {
   Check,
   Cloud,
   Database,
+  FolderCog,
   HardDrive,
   LoaderCircle,
   LockKeyhole,
@@ -534,6 +535,25 @@ export function StoragePage({ onToast }: { onToast: ToastHandler }) {
                 </span>
               </div>
             </div>
+          </section>
+
+          <section className={overview.system.remote && overview.system.ok ? 'system-strip' : 'system-strip warning'} aria-label="Site data">
+            <FolderCog size={18} />
+            <div>
+              <strong>Site data · {overview.system.name}</strong>
+              <code>{overview.system.location}</code>
+              <small>
+                {!overview.system.ok
+                  ? `Not reachable right now: ${overview.system.error || 'unknown error'}. Pictures show initials until it is back.`
+                  : overview.system.remote
+                    ? 'Profile pictures and git history live here, in a hidden _system folder, so the server keeps no data of its own besides the database and its caches.'
+                    : 'Profile pictures and git history are on this server’s disk. Set SYSTEM_STORAGE_TARGET to an S3 location to keep them in S3 with the models.'}
+              </small>
+            </div>
+            <span className={overview.system.ok ? 'status-pill ok' : 'status-pill danger'}>
+              {overview.system.ok ? <Check size={13} /> : <AlertCircle size={13} />}
+              {overview.system.ok ? (overview.system.remote ? 'In S3' : 'Local disk') : 'Offline'}
+            </span>
           </section>
 
           {overview.conflicts.length > 0 && (

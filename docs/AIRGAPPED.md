@@ -79,6 +79,7 @@ Settings that matter for an air-gapped install:
 | `MODEL_STORAGE_BACKEND` | `filesystem` (default) | Plain folders, no S3 needed. Use `s3` only with an internal MinIO or Ceph (see the README). |
 | `STORAGE_TARGETS_JSON` | `[]` | Optional extra S3-compatible buckets. See [6b](#6b-storage-locations-and-buckets). |
 | `DEFAULT_STORAGE_TARGET` | empty | Where new uploads go when there are several locations. |
+| `SYSTEM_STORAGE_TARGET` | `local` (default) | Where the site keeps its own files: profile pictures and git history. Set an S3 target id to keep them in the bucket. See [6b](#6b-storage-locations-and-buckets). |
 | `PUBLIC_URL` | `http://<server-LAN-IP>:7860` | **Set this.** It is the address shown in every copy-paste command. Without it, commands use the address in your browser, which is wrong when you browse via `localhost`. |
 | `HUB_API_ENABLED` | `true` (default) | Lets other machines pull without a token. Set `false` to require a personal API token for every pull. |
 | `ACCOUNTS_ENABLED` | `true` (default) | Web UI sign-in, roles, and API tokens. `false` skips sign-in on a single-user trusted network. |
@@ -283,6 +284,26 @@ DEFAULT_STORAGE_TARGET=minio-main
 
 Models in a bucket are pulled directly from the bucket, so they work with vLLM, `git clone`,
 and the `hf` CLI without being copied to the server first.
+
+**Keeping everything in S3.** Besides the models and the database, the site keeps a few
+files of its own: profile pictures and the git history that `git clone` and `git pull`
+use. Set `SYSTEM_STORAGE_TARGET=minio-main` to keep them in that bucket, in a `_system`
+folder under its prefix (`models/_system/`; `SYSTEM_STORAGE_PREFIX` changes it):
+
+```text
+models/_system/
+  README.txt
+  avatars/users/<user id>
+  avatars/organizations/<organization id>
+  git-mirrors/<owner>/<name>/
+```
+
+The underscore keeps the folder from ever being taken for a model. On the next start,
+pictures already on the server's disk are copied into it, checked, and only then removed
+locally; if the bucket cannot be reached they stay and are tried again next time. The
+Storage page shows where the site data is and whether it answers. With the database in
+PostgreSQL and every model in a bucket (move local ones with **Admin → Storage → Move**),
+the server's own disk only holds caches and uploads in progress.
 
 ## 7. Use models from other machines
 
