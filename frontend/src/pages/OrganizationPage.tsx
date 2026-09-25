@@ -3,6 +3,7 @@ import { Box, Building2, LoaderCircle, LogOut, Pencil, Plus, Trash2, UploadCloud
 import { Link, NavLink, useNavigate, useParams } from 'react-router-dom'
 import { useAccess } from '../access'
 import { api } from '../api'
+import { useFadeOnChange, useTabIndicator } from '../motion'
 import { LibraryModelRow } from '../components/RepositoryRows'
 import type { LibraryModel, Organization, OrganizationDetails, OrganizationRole } from '../types'
 import { initials } from '../utils'
@@ -219,6 +220,8 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
   const [organization, setOrganization] = useState<OrganizationDetails | null>(null)
   const [models, setModels] = useState<LibraryModel[] | null>(null)
   const [error, setError] = useState('')
+  const indicator = useTabIndicator<HTMLDivElement>(`${tab}:${organization?.name}:${organization?.can_manage}`)
+  const body = useFadeOnChange<HTMLDivElement>(tab)
 
   const load = useCallback(() => {
     api.organization(name).then(setOrganization).catch((reason) => setError(reason.message))
@@ -267,7 +270,7 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
             </div>
           </div>
           <nav className="model-tabs" aria-label="Organization sections">
-            <div>
+            <div ref={indicator}>
               {tabs.map((item) => (
                 <NavLink key={item.id} to={item.id === 'models' ? `/orgs/${organization.name}` : `/orgs/${organization.name}/${item.id}`} end className={({ isActive }) => (isActive ? 'active' : '')}>
                   {item.label}
@@ -285,7 +288,7 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
           </nav>
         </div>
       </header>
-      <div className="section-body">
+      <div className="section-body" ref={body}>
         {tab === 'models' && (
           models === null ? (
             <div className="drawer-loading"><LoaderCircle size={22} className="spin" /></div>

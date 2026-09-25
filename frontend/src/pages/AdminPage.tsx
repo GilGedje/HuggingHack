@@ -23,7 +23,9 @@ import { Link, NavLink, Navigate, useParams } from 'react-router-dom'
 import { useAccess } from '../access'
 import { api } from '../api'
 import type { AdminOrganizationFilter, AdminOrganizationPage, AdminOrganizationQuery, AdminOrganizationSort, AdminUser, AdminUserPage, AdminUserQuery, AdminUserSort, Organization, OrganizationRole, PermissionMatrix, Role, ServerSettings } from '../types'
+import { DialogFrame } from '../components/Dialog'
 import { ListPager, useListQuery } from '../components/ListPager'
+import { useClosingTransition, useFadeOnChange, useTabIndicator } from '../motion'
 import { relativeTime } from '../utils'
 import { ORG_ROLE_LABELS } from './OrganizationPage'
 import { RuntimesPage } from './RuntimesPage'
@@ -69,6 +71,7 @@ function AddUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
   const firstField = useRef<HTMLInputElement>(null)
+  const { closing, close } = useClosingTransition(onClose)
   // Only organizations this admin may add members to.
   const choices = organizations.filter((item) => can('orgs.manage') || item.my_role === 'admin')
   const unused = choices.filter((item) => !memberships.some((chosen) => chosen.organization === item.name))
@@ -82,14 +85,7 @@ function AddUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
     setMemberships((current) => current.map((item, position) => (position === index ? { ...item, ...changes } : item)))
   }
 
-  useEffect(() => {
-    firstField.current?.focus()
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', escape)
-    return () => window.removeEventListener('keydown', escape)
-  }, [onClose])
+  useEffect(() => firstField.current?.focus(), [])
 
   async function create(event: FormEvent) {
     event.preventDefault()
@@ -98,6 +94,7 @@ function AddUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
     try {
       await api.createUser({ ...form, email: form.email.trim() || undefined, organizations: memberships })
       onCreated(form.username, memberships.length)
+      close()
     } catch (reason) {
       setError(errorMessage(reason, 'Could not create the account.'))
       setCreating(false)
@@ -105,111 +102,102 @@ function AddUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
   }
 
   return (
-    <div className="use-model-backdrop" role="presentation" onMouseDown={onClose}>
-      <form
-        className="use-model-dialog add-user-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="add-user-title"
-        onMouseDown={(event) => event.stopPropagation()}
-        onSubmit={create}
-      >
-        <header className="use-model-header">
-          <div>
-            <span className="eyebrow">New account</span>
-            <h2 id="add-user-title">Add a user</h2>
-          </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">
-            <X size={20} />
-          </button>
-        </header>
-        <div className="use-model-body">
-          <div className="admin-create-user">
-            <label>
-              <span>Username</span>
-              <input ref={firstField} value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} autoComplete="off" required />
-            </label>
-            <label>
-              <span>Display name <small>optional</small></span>
-              <input value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} />
-            </label>
-            <label>
-              <span>Email <small>optional</small></span>
-              <input type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
-            </label>
-            <label>
-              <span>Role</span>
-              <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as Role })}>
-                {Object.entries(ROLE_LABELS).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
-              </select>
-            </label>
-            <label className="wide">
-              <span>Temporary password <small>at least 12 characters</small></span>
-              <input type="password" autoComplete="new-password" minLength={12} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} required />
-            </label>
-          </div>
-          {choices.length > 0 && (
-            <fieldset className="add-user-orgs">
-              <legend>Organizations <small>optional</small></legend>
-              {memberships.map((item, index) => (
-                <div className="add-user-org-row" key={index}>
-                  <select
-                    value={item.organization}
-                    onChange={(event) => changeMembership(index, { organization: event.target.value })}
-                    aria-label={`Organization ${index + 1}`}
-                  >
-                    {choices
-                      .filter((choice) => choice.name === item.organization || !memberships.some((chosen) => chosen.organization === choice.name))
-                      .map((choice) => (
-                        <option key={choice.id} value={choice.name}>
-                          {choice.display_name && choice.display_name !== choice.name ? `${choice.display_name} (${choice.name})` : choice.name}
-                        </option>
-                      ))}
-                  </select>
-                  <select
-                    value={item.role}
-                    onChange={(event) => changeMembership(index, { role: event.target.value as OrganizationRole })}
-                    aria-label={`Role in ${item.organization}`}
-                  >
-                    {(Object.keys(ORG_ROLE_LABELS) as OrganizationRole[]).map((role) => (
-                      <option key={role} value={role}>{ORG_ROLE_LABELS[role]}</option>
+    <DialogFrame labelledBy="add-user-title" className="add-user-dialog" closing={closing} onDismiss={close} onSubmit={create}>
+      <header className="use-model-header">
+        <div>
+          <span className="eyebrow">New account</span>
+          <h2 id="add-user-title">Add a user</h2>
+        </div>
+        <button type="button" className="icon-button" onClick={close} aria-label="Close">
+          <X size={20} />
+        </button>
+      </header>
+      <div className="use-model-body">
+        <div className="admin-create-user">
+          <label>
+            <span>Username</span>
+            <input ref={firstField} value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} autoComplete="off" required />
+          </label>
+          <label>
+            <span>Display name <small>optional</small></span>
+            <input value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} />
+          </label>
+          <label>
+            <span>Email <small>optional</small></span>
+            <input type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
+          </label>
+          <label>
+            <span>Role</span>
+            <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as Role })}>
+              {Object.entries(ROLE_LABELS).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+            </select>
+          </label>
+          <label className="wide">
+            <span>Temporary password <small>at least 12 characters</small></span>
+            <input type="password" autoComplete="new-password" minLength={12} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} required />
+          </label>
+        </div>
+        {choices.length > 0 && (
+          <fieldset className="add-user-orgs">
+            <legend>Organizations <small>optional</small></legend>
+            {memberships.map((item, index) => (
+              <div className="add-user-org-row" key={index}>
+                <select
+                  value={item.organization}
+                  onChange={(event) => changeMembership(index, { organization: event.target.value })}
+                  aria-label={`Organization ${index + 1}`}
+                >
+                  {choices
+                    .filter((choice) => choice.name === item.organization || !memberships.some((chosen) => chosen.organization === choice.name))
+                    .map((choice) => (
+                      <option key={choice.id} value={choice.name}>
+                        {choice.display_name && choice.display_name !== choice.name ? `${choice.display_name} (${choice.name})` : choice.name}
+                      </option>
                     ))}
-                  </select>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    onClick={() => setMemberships((current) => current.filter((_, position) => position !== index))}
-                    aria-label={`Remove ${item.organization}`}
-                  >
-                    <X size={16} />
-                  </button>
-                </div>
-              ))}
-              {unused.length > 0 && (
+                </select>
+                <select
+                  value={item.role}
+                  onChange={(event) => changeMembership(index, { role: event.target.value as OrganizationRole })}
+                  aria-label={`Role in ${item.organization}`}
+                >
+                  {(Object.keys(ORG_ROLE_LABELS) as OrganizationRole[]).map((role) => (
+                    <option key={role} value={role}>{ORG_ROLE_LABELS[role]}</option>
+                  ))}
+                </select>
                 <button
                   type="button"
-                  className="secondary-button compact add-user-org-add"
-                  onClick={() => setMemberships((current) => [...current, { organization: unused[0].name, role: 'read' }])}
+                  className="icon-button"
+                  onClick={() => setMemberships((current) => current.filter((_, position) => position !== index))}
+                  aria-label={`Remove ${item.organization}`}
                 >
-                  <Building2 size={15} /> Add to an organization
+                  <X size={16} />
                 </button>
-              )}
-              {limitedByRole && (
-                <p className="add-user-org-note">Viewers can only read, whatever their organization role.</p>
-              )}
-            </fieldset>
-          )}
-          {error && <div className="inline-error add-user-error">{error}</div>}
-          <div className="add-user-footer">
-            <span>They can change the password after signing in.</span>
-            <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
-            <button type="submit" className="download-button" disabled={creating}>
-              {creating ? <LoaderCircle size={16} className="spin" /> : <UserPlus size={16} />} Create account
-            </button>
-          </div>
+              </div>
+            ))}
+            {unused.length > 0 && (
+              <button
+                type="button"
+                className="secondary-button compact add-user-org-add"
+                onClick={() => setMemberships((current) => [...current, { organization: unused[0].name, role: 'read' }])}
+              >
+                <Building2 size={15} /> Add to an organization
+              </button>
+            )}
+            {limitedByRole && (
+              <p className="add-user-org-note">Viewers can only read, whatever their organization role.</p>
+            )}
+          </fieldset>
+        )}
+        {error && <div className="inline-error add-user-error">{error}</div>}
+        <div className="add-user-footer">
+          <span>They can change the password after signing in.</span>
+          <button type="button" className="secondary-button" onClick={close}>Cancel</button>
+          <button type="submit" className="download-button" disabled={creating}>
+            {creating ? <LoaderCircle size={16} className="spin" /> : <UserPlus size={16} />} Create account
+          </button>
         </div>
-      </form>
-    </div>
+      </div>
+    </DialogFrame>
   )
 }
 
@@ -454,7 +442,6 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
         <AddUserDialog
           onClose={() => setAdding(false)}
           onCreated={(username, organizations) => {
-            setAdding(false)
             onToast(
               organizations
                 ? `${username} can now sign in and is in ${organizations} organization${organizations === 1 ? '' : 's'}.`
@@ -682,15 +669,9 @@ function NewOrganizationDialog({ onClose, onCreated }: { onClose: () => void; on
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const firstField = useRef<HTMLInputElement>(null)
+  const { closing, close } = useClosingTransition(onClose)
 
-  useEffect(() => {
-    firstField.current?.focus()
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', escape)
-    return () => window.removeEventListener('keydown', escape)
-  }, [onClose])
+  useEffect(() => firstField.current?.focus(), [])
 
   async function create(event: FormEvent) {
     event.preventDefault()
@@ -699,6 +680,7 @@ function NewOrganizationDialog({ onClose, onCreated }: { onClose: () => void; on
     try {
       const created = await api.createOrganization(form)
       onCreated(created.name)
+      close()
     } catch (reason) {
       setError(errorMessage(reason, 'Could not create the organization.'))
       setSaving(false)
@@ -706,54 +688,45 @@ function NewOrganizationDialog({ onClose, onCreated }: { onClose: () => void; on
   }
 
   return (
-    <div className="use-model-backdrop" role="presentation" onMouseDown={onClose}>
-      <form
-        className="use-model-dialog add-user-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="new-org-title"
-        onMouseDown={(event) => event.stopPropagation()}
-        onSubmit={create}
-      >
-        <header className="use-model-header">
-          <div>
-            <span className="eyebrow">New organization</span>
-            <h2 id="new-org-title">Create an organization</h2>
-          </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Close">
-            <X size={20} />
-          </button>
-        </header>
-        <div className="use-model-body">
-          <div className="admin-create-user">
-            <label>
-              <span>Name</span>
-              <input ref={firstField} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Nvidia" autoComplete="off" required />
-            </label>
-            <label>
-              <span>Display name <small>optional</small></span>
-              <input value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} placeholder="NVIDIA" />
-            </label>
-            <label className="wide">
-              <span>Description <small>optional</small></span>
-              <input value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
-            </label>
-          </div>
-          <p className="add-user-org-note new-org-hint">
-            The name becomes a namespace, as in <code>{form.name.trim() || 'Nvidia'}/GLM-5.3-NVFP4</code>, and cannot be
-            changed later. You become its first admin.
-          </p>
-          {error && <div className="inline-error add-user-error">{error}</div>}
-          <div className="add-user-footer">
-            <span>Add members from the organization page afterwards.</span>
-            <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
-            <button type="submit" className="download-button" disabled={saving}>
-              {saving ? <LoaderCircle size={16} className="spin" /> : <Building2 size={16} />} Create organization
-            </button>
-          </div>
+    <DialogFrame labelledBy="new-org-title" className="add-user-dialog" closing={closing} onDismiss={close} onSubmit={create}>
+      <header className="use-model-header">
+        <div>
+          <span className="eyebrow">New organization</span>
+          <h2 id="new-org-title">Create an organization</h2>
         </div>
-      </form>
-    </div>
+        <button type="button" className="icon-button" onClick={close} aria-label="Close">
+          <X size={20} />
+        </button>
+      </header>
+      <div className="use-model-body">
+        <div className="admin-create-user">
+          <label>
+            <span>Name</span>
+            <input ref={firstField} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Nvidia" autoComplete="off" required />
+          </label>
+          <label>
+            <span>Display name <small>optional</small></span>
+            <input value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} placeholder="NVIDIA" />
+          </label>
+          <label className="wide">
+            <span>Description <small>optional</small></span>
+            <input value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
+          </label>
+        </div>
+        <p className="add-user-org-note new-org-hint">
+          The name becomes a namespace, as in <code>{form.name.trim() || 'Nvidia'}/GLM-5.3-NVFP4</code>, and cannot be
+          changed later. You become its first admin.
+        </p>
+        {error && <div className="inline-error add-user-error">{error}</div>}
+        <div className="add-user-footer">
+          <span>Add members from the organization page afterwards.</span>
+          <button type="button" className="secondary-button" onClick={close}>Cancel</button>
+          <button type="submit" className="download-button" disabled={saving}>
+            {saving ? <LoaderCircle size={16} className="spin" /> : <Building2 size={16} />} Create organization
+          </button>
+        </div>
+      </div>
+    </DialogFrame>
   )
 }
 
@@ -921,7 +894,6 @@ function OrganizationsTab({ onToast }: { onToast: ToastHandler }) {
         <NewOrganizationDialog
           onClose={() => setCreating(false)}
           onCreated={(name) => {
-            setCreating(false)
             onToast(`${name} was created. You are its first admin.`)
             load()
           }}
@@ -944,6 +916,8 @@ export function AdminPage({ onToast }: { onToast: ToastHandler }) {
   const { tab } = useParams()
   const { can } = useAccess()
   const tabs = TABS.filter((item) => can(item.capability))
+  const indicator = useTabIndicator<HTMLDivElement>(`${tab}:${tabs.length}`)
+  const body = useFadeOnChange<HTMLDivElement>(tab || '')
   if (!tabs.length) return <Navigate to="/account" replace />
   const active = tabs.find((item) => item.id === tab)
   if (!active) return <Navigate to={`/admin/${tabs[0].id}`} replace />
@@ -955,7 +929,7 @@ export function AdminPage({ onToast }: { onToast: ToastHandler }) {
           <span className="eyebrow">Administration</span>
           <h1>Server administration</h1>
           <nav className="model-tabs" aria-label="Administration sections">
-            <div>
+            <div ref={indicator}>
               {tabs.map((item) => (
                 <NavLink key={item.id} to={`/admin/${item.id}`} className={({ isActive }) => (isActive ? 'active' : '')}>
                   {item.label}
@@ -965,7 +939,7 @@ export function AdminPage({ onToast }: { onToast: ToastHandler }) {
           </nav>
         </div>
       </header>
-      <div className="section-body admin-content">
+      <div className="section-body admin-content" ref={body}>
         {active.id === 'users' && <UsersTab onToast={onToast} />}
         {active.id === 'roles' && <RolesTab />}
         {active.id === 'organizations' && <OrganizationsTab onToast={onToast} />}

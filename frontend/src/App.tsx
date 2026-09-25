@@ -18,6 +18,7 @@ import {
   Route,
   Routes,
   useNavigate,
+  useLocation,
   useSearchParams,
 } from 'react-router-dom'
 import { api } from './api'
@@ -28,6 +29,7 @@ import { AccountPage } from './pages/AccountPage'
 import { AdminPage } from './pages/AdminPage'
 import { ModelPage } from './pages/ModelPage'
 import { OrganizationPage, OrganizationsIndex } from './pages/OrganizationPage'
+import { TOAST_EXIT_MS, useFadeOnChange } from './motion'
 import { UploadProvider } from './uploads'
 import Shell from './components/Shell'
 import type {
@@ -380,10 +382,15 @@ function Application({
   authStatus: AuthStatus
   onAuthChange: (status: AuthStatus) => void
 }) {
-  const [toast, setToast] = useState<{ message: string; tone: ToastTone } | null>(null)
+  const [toast, setToast] = useState<{ id: number; message: string; tone: ToastTone } | null>(null)
+  const [leavingToast, setLeavingToast] = useState(0)
+  const location = useLocation()
+  // One fade per page, not per tab or filter: tabbed pages fade their own body.
+  const segments = location.pathname.split('/')
+  const view = useFadeOnChange<HTMLDivElement>(segments.slice(0, segments[1] === 'models' ? 4 : 2).join('/'), { initial: true })
 
   const showToast = useCallback((message: string, tone: ToastTone = 'success') => {
-    setToast({ message, tone })
+    setToast((current) => ({ id: (current?.id ?? 0) + 1, message, tone }))
   }, [])
 
   const capabilities = authStatus.capabilities || []
@@ -395,8 +402,12 @@ function Application({
 
   useEffect(() => {
     if (!toast) return
-    const timer = window.setTimeout(() => setToast(null), 4500)
-    return () => window.clearTimeout(timer)
+    const leave = window.setTimeout(() => setLeavingToast(toast.id), 4500)
+    const clear = window.setTimeout(() => setToast(null), 4500 + TOAST_EXIT_MS)
+    return () => {
+      window.clearTimeout(leave)
+      window.clearTimeout(clear)
+    }
   }, [toast])
 
   const user = authStatus.user as User
@@ -413,6 +424,7 @@ function Application({
     <AccessProvider user={user} capabilities={capabilities} refresh={refreshAccess}>
     <UploadProvider onToast={showToast}>
     <Shell user={user} onLogout={logout}>
+      <div ref={view}>
       <Routes>
         <Route path="/" element={<Navigate to="/models" replace />} />
         <Route
@@ -442,8 +454,9 @@ function Application({
         <Route path="/admin/:tab" element={<AdminPage onToast={showToast} />} />
         <Route path="*" element={<Navigate to="/models" replace />} />
       </Routes>
+      </div>
       {toast && (
-        <div className={`toast ${toast.tone}`} role="status">
+        <div key={toast.id} className={`toast ${toast.tone}${leavingToast === toast.id ? ' leaving' : ''}`} role="status">
           {toast.tone === 'error' ? <AlertCircle size={16} /> : <Check size={16} />}
           {toast.message}
         </div>

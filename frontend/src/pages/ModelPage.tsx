@@ -23,6 +23,7 @@ import {
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useAccess } from '../access'
 import { api } from '../api'
+import { useFadeOnChange, useTabIndicator } from '../motion'
 import { ModelActions, ModelCardDocument } from '../components/ModelDetails'
 import { GgufInspector } from '../components/GgufInspector'
 import { formatLabels } from '../components/RepositoryRows'
@@ -412,6 +413,8 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
         : rest === 'gguf'
           ? 'gguf'
           : 'card'
+  const indicator = useTabIndicator<HTMLDivElement>(`${section}:${model?.id}:${model?.files.length}:${model?.commit_count}`)
+  const body = useFadeOnChange<HTMLDivElement>(rest)
   const useMode: UseModelMode | null =
     searchParams.get('local-app') === 'vllm'
       ? 'vllm'
@@ -572,7 +575,7 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
             </span>
           </div>
           <nav className="model-tabs" aria-label="Model sections">
-            <div>
+            <div ref={indicator}>
               {tabs.map((tab) => (
                 <Link
                   key={tab.id}
@@ -603,7 +606,7 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
         </div>
       </header>
 
-      <div className={section === 'card' ? 'model-page-body with-aside' : 'model-page-body'}>
+      <div className={section === 'card' ? 'model-page-body with-aside' : 'model-page-body'} ref={body}>
         <main className="model-page-main">
           {section === 'card' && (
             model.model_card ? (
@@ -735,7 +738,6 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
           directory={section === 'files' ? searchParams.get('path') || '' : ''}
           onClose={() => setParam({ upload: null })}
           onQueued={() => {
-            setParam({ upload: null })
             onToast('Uploading your change. You can keep browsing; progress stays at the bottom of the screen.')
           }}
         />

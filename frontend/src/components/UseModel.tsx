@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Check, Copy, GitBranch, Rocket, Terminal, X } from 'lucide-react'
 import { api } from '../api'
+import { useClosingTransition, useFadeOnChange, useTabIndicator } from '../motion'
+import { DialogFrame } from './Dialog'
 import {
   gitCloneSnippets,
   hfCliSnippets,
@@ -107,139 +109,125 @@ export function UseModelDialog({
       .catch(() => undefined)
   }, [])
 
-  useEffect(() => {
-    closeButtonRef.current?.focus()
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.stopPropagation()
-        onClose()
-      }
-    }
-    window.addEventListener('keydown', handleKeyDown, true)
-    return () => window.removeEventListener('keydown', handleKeyDown, true)
-  }, [onClose])
+  const { closing, close } = useClosingTransition(onClose)
+  const tabs = useTabIndicator<HTMLDivElement>(`${activeMode}:${vllmSupported}`)
+  const body = useFadeOnChange<HTMLDivElement>(activeMode)
+
+  useEffect(() => closeButtonRef.current?.focus(), [])
 
   const server = resolveServerUrl(publicUrl, window.location.origin)
 
   return (
-    <div className="use-model-backdrop" role="presentation" onMouseDown={onClose}>
-      <section
-        className="use-model-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="use-model-title"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <header className="use-model-header">
-          <div>
-            <span className="eyebrow">Use this model</span>
-            <h2 id="use-model-title">{repoId}</h2>
-          </div>
-          <button
-            ref={closeButtonRef}
-            type="button"
-            className="icon-button"
-            onClick={onClose}
-            aria-label="Close"
-          >
-            <X size={20} />
-          </button>
-        </header>
+    <DialogFrame labelledBy="use-model-title" closing={closing} onDismiss={close}>
+      <header className="use-model-header">
+        <div>
+          <span className="eyebrow">Use this model</span>
+          <h2 id="use-model-title">{repoId}</h2>
+        </div>
+        <button
+          ref={closeButtonRef}
+          type="button"
+          className="icon-button"
+          onClick={close}
+          aria-label="Close"
+        >
+          <X size={20} />
+        </button>
+      </header>
 
-        <div className="drawer-tabs" role="tablist" aria-label="How to use this model">
-          {vllmSupported && (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeMode === 'vllm'}
-              className={activeMode === 'vllm' ? 'active' : ''}
-              onClick={() => onModeChange('vllm')}
-            >
-              <Rocket size={14} /> vLLM
-            </button>
-          )}
+      <div className="drawer-tabs" role="tablist" aria-label="How to use this model" ref={tabs}>
+        {vllmSupported && (
           <button
             type="button"
             role="tab"
-            aria-selected={activeMode === 'clone'}
-            className={activeMode === 'clone' ? 'active' : ''}
-            onClick={() => onModeChange('clone')}
+            aria-selected={activeMode === 'vllm'}
+            className={activeMode === 'vllm' ? 'active' : ''}
+            onClick={() => onModeChange('vllm')}
           >
-            <GitBranch size={14} /> Clone repository
+            <Rocket size={14} /> vLLM
           </button>
-        </div>
+        )}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeMode === 'clone'}
+          className={activeMode === 'clone' ? 'active' : ''}
+          onClick={() => onModeChange('clone')}
+        >
+          <GitBranch size={14} /> Clone repository
+        </button>
+      </div>
 
-        <div className="use-model-body">
-          <div className="pull-endpoint">
-            <div>
-              <span>Pull endpoint</span>
-              <code>HF_ENDPOINT={server}</code>
-            </div>
-            <CopyButton text={server} label="Copy pull endpoint" />
+      <div className="use-model-body" ref={body}>
+        <div className="pull-endpoint">
+          <div>
+            <span>Pull endpoint</span>
+            <code>HF_ENDPOINT={server}</code>
           </div>
-          {!hubEnabled && (
-            <div className="security-note warning">
-              <AlertTriangle size={16} />
-              Pulling is turned off on this server. Set HUB_API_ENABLED=true to allow it.
-            </div>
-          )}
-          {isLoopbackUrl(server) && (
-            <div className="security-note warning">
-              <AlertTriangle size={16} />
-              This address only works on this computer. Set PUBLIC_URL in .env to the
-              server&apos;s LAN address so other machines can pull.
-            </div>
-          )}
-
-          {activeMode === 'vllm' ? (
-            <>
-              <div className="snippet-variants" role="radiogroup" aria-label="vLLM install method">
-                {(
-                  [
-                    ['pip', 'Install from pip'],
-                    ['docker', 'Use Docker images'],
-                  ] as const
-                ).map(([id, label]) => (
-                  <button
-                    type="button"
-                    key={id}
-                    role="radio"
-                    aria-checked={vllmVariant === id}
-                    className={vllmVariant === id ? 'selected' : ''}
-                    onClick={() => setVllmVariant(id)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-              <SnippetList
-                snippets={
-                  vllmVariant === 'pip'
-                    ? vllmPipSnippets(repoId, server, pipelineTag)
-                    : vllmDockerSnippets(repoId, server, pipelineTag)
-                }
-              />
-            </>
-          ) : (
-            <>
-              <h3 className="snippet-heading">
-                <GitBranch size={15} /> Git
-              </h3>
-              <SnippetList snippets={gitCloneSnippets(repoId, server)} />
-              <h3 className="snippet-heading">
-                <Terminal size={15} /> Hugging Face CLI
-              </h3>
-              <SnippetList snippets={hfCliSnippets(repoId, server)} />
-              {!vllmSupported && (
-                <p className="use-model-note">
-                  vLLM needs SafeTensors weights with a model config. Use the files from a clone
-                  with llama.cpp, Ollama, or LM Studio instead.
-                </p>
-              )}
-            </>
-          )}
+          <CopyButton text={server} label="Copy pull endpoint" />
         </div>
-      </section>
-    </div>
+        {!hubEnabled && (
+          <div className="security-note warning">
+            <AlertTriangle size={16} />
+            Pulling is turned off on this server. Set HUB_API_ENABLED=true to allow it.
+          </div>
+        )}
+        {isLoopbackUrl(server) && (
+          <div className="security-note warning">
+            <AlertTriangle size={16} />
+            This address only works on this computer. Set PUBLIC_URL in .env to the
+            server&apos;s LAN address so other machines can pull.
+          </div>
+        )}
+
+        {activeMode === 'vllm' ? (
+          <>
+            <div className="snippet-variants" role="radiogroup" aria-label="vLLM install method">
+              {(
+                [
+                  ['pip', 'Install from pip'],
+                  ['docker', 'Use Docker images'],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  type="button"
+                  key={id}
+                  role="radio"
+                  aria-checked={vllmVariant === id}
+                  className={vllmVariant === id ? 'selected' : ''}
+                  onClick={() => setVllmVariant(id)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <SnippetList
+              snippets={
+                vllmVariant === 'pip'
+                  ? vllmPipSnippets(repoId, server, pipelineTag)
+                  : vllmDockerSnippets(repoId, server, pipelineTag)
+              }
+            />
+          </>
+        ) : (
+          <>
+            <h3 className="snippet-heading">
+              <GitBranch size={15} /> Git
+            </h3>
+            <SnippetList snippets={gitCloneSnippets(repoId, server)} />
+            <h3 className="snippet-heading">
+              <Terminal size={15} /> Hugging Face CLI
+            </h3>
+            <SnippetList snippets={hfCliSnippets(repoId, server)} />
+            {!vllmSupported && (
+              <p className="use-model-note">
+                vLLM needs SafeTensors weights with a model config. Use the files from a clone
+                with llama.cpp, Ollama, or LM Studio instead.
+              </p>
+            )}
+          </>
+        )}
+      </div>
+    </DialogFrame>
   )
 }
