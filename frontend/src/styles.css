@@ -1978,7 +1978,8 @@ a, button, input, select, textarea, summary,
   transform: scale(0.97);
 }
 .save-model-button:active:not(:disabled) { transform: translateY(7px) scale(0.92); }
-.model-card:active { transform: translateY(-1px) scale(0.99); transition-duration: 120ms; }
+/* The card presses only when the press is on the card, not on a button inside it. */
+.model-card:active:not(:has(button:active, a:active)) { transform: translateY(-1px) scale(0.99); transition-duration: 120ms; }
 .skeleton-card:active { transform: none; }
 
 /* Swapped icons turn in rather than blink: the theme toggle and copy buttons. */
