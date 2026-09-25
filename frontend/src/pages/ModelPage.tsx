@@ -23,12 +23,11 @@ import {
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useAccess } from '../access'
 import { api } from '../api'
-import { ModelActions, ModelCardDocument } from '../components/Drawers'
+import { ModelActions, ModelCardDocument } from '../components/ModelDetails'
 import { GgufInspector } from '../components/GgufInspector'
 import { formatLabels } from '../components/RepositoryRows'
 import { UploadChangeDialog } from '../components/UploadChangeDialog'
 import { CopyButton, UseModelDialog, type UseModelMode } from '../components/UseModel'
-import { LIBRARY_GGUF_ENDPOINT } from '../gguf'
 import type {
   CommitDetail,
   CommitSummary,
@@ -633,7 +632,6 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
               repoId={model.id}
               revision={model.revision || 'main'}
               files={ggufFiles}
-              endpoint={LIBRARY_GGUF_ENDPOINT}
             />
           )}
         </main>

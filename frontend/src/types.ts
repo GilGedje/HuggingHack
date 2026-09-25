@@ -180,36 +180,6 @@ export interface HubFile {
   blob_id?: string | null
 }
 
-export interface HubModel {
-  id: string
-  author?: string | null
-  pipeline_tag?: string | null
-  library_name?: string | null
-  tags: string[]
-  downloads: number
-  downloads_all_time: number
-  likes: number
-  trending_score: number
-  last_modified?: string | null
-  created_at?: string | null
-  private: boolean
-  gated: boolean | string
-  sha?: string | null
-  license?: string | null
-  parameter_count?: number | null
-  local?: boolean
-  saved?: boolean
-}
-
-export interface HubModelDetails extends HubModel {
-  revision: string
-  files: HubFile[]
-  total_bytes: number
-  security_status?: unknown
-  source_url: string
-  model_card?: string | null
-}
-
 export type ModelFormat = 'safetensors' | 'gguf' | 'pytorch' | 'onnx' | 'tensorflow' | 'flax'
 
 export interface LibraryModel {
@@ -264,30 +234,6 @@ export interface LibraryModelDetails extends LibraryModel {
   remote_uri?: string | null
   source_url?: string | null
   model_card?: string | null
-}
-
-export type DownloadMode = 'full' | 'safetensors' | 'gguf' | 'metadata' | 'custom'
-
-export interface DownloadJob {
-  id: string
-  repo_id: string
-  revision: string
-  status: 'queued' | 'preparing' | 'downloading' | 'complete' | 'failed' | 'cancelled'
-  total_bytes: number
-  downloaded_bytes: number
-  progress: number
-  speed_bps: number
-  error?: string | null
-  target_path?: string | null
-  payload: {
-    allow_patterns?: string[]
-    ignore_patterns?: string[]
-    mode?: DownloadMode
-  }
-  metadata: Record<string, unknown>
-  created_at: string
-  updated_at: string
-  completed_at?: string | null
 }
 
 export interface LocalModel {

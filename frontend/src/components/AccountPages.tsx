@@ -104,7 +104,7 @@ export function AuthScreen({
         <p>
           {setup
             ? 'The first account administers this HuggingHack instance. Your models stay on this machine or NAS.'
-            : 'Sign in to your saved models, collections, downloads, and uploaded repositories.'}
+            : 'Sign in to your saved models, collections, and uploaded repositories.'}
         </p>
         <div className="auth-benefits">
           <span><FolderHeart size={18} /> Personal collections</span>
@@ -544,7 +544,7 @@ export function UploadsPage({
         <div>
           <HardDrive size={25} />
           <strong>{health ? formatBytes(health.storage.free_bytes) : 'Reading…'} free</strong>
-          <p>Uploads land in the same plain owner/repository layout as Hub downloads.</p>
+          <p>Uploads land in the same plain owner/repository layout as the rest of the library.</p>
         </div>
       </section>
       <div className="upload-columns">

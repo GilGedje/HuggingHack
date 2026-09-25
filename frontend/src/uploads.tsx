@@ -37,7 +37,7 @@ type JobStatus =
   | 'cancelled'
   | 'interrupted'
 
-export interface UploadJob {
+interface UploadJob {
   id: string
   kind: 'new' | 'change'
   repoId: string
@@ -54,7 +54,7 @@ export interface UploadJob {
   sessionId?: string
 }
 
-export interface NewUploadJob {
+interface NewUploadJob {
   kind: 'new' | 'change'
   repoId: string
   items: UploadItem[]
