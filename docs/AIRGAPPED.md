@@ -7,6 +7,9 @@ machines pull those models with vLLM, `git clone`, the `hf` CLI, or Transformers
 HuggingHack never needs the internet in this mode. The **Models** tab, model cards,
 parameter counts, GGUF inspection, and every pull are served from your own storage.
 
+To run with nothing stored on the server itself, only an S3-compatible bucket and
+PostgreSQL, follow [Serve from S3 and PostgreSQL](SERVE_FROM_S3.md) instead of sections 2–4.
+
 - [1. How it works](#1-how-it-works)
 - [2. Move HuggingHack onto the offline network](#2-move-hugginghack-onto-the-offline-network)
 - [3. Configure](#3-configure)
@@ -97,7 +100,8 @@ docker compose logs -f        # follow logs
 ```
 
 Open `http://<server>:7860`. Models, the database, and the git mirrors live in the mounted
-folders (`MODEL_STORAGE_PATH` and `./data`) and survive restarts and upgrades.
+folders (`MODEL_STORAGE_PATH` and `./data`) and survive restarts and upgrades. To keep them
+in a bucket and PostgreSQL instead, see [Serve from S3 and PostgreSQL](SERVE_FROM_S3.md).
 
 To upgrade, repeat [section 2](#2-move-hugginghack-onto-the-offline-network) with the new
 version, then `docker compose up -d`. Hard-refresh the browser once if the UI looks stale.
@@ -303,7 +307,8 @@ pictures already on the server's disk are copied into it, checked, and only then
 locally; if the bucket cannot be reached they stay and are tried again next time. The
 Storage page shows where the site data is and whether it answers. With the database in
 PostgreSQL and every model in a bucket (move local ones with **Admin → Storage → Move**),
-the server's own disk only holds caches and uploads in progress.
+the server's own disk only holds caches and uploads in progress. The full setup, from the
+bucket policy to backups, is in [Serve from S3 and PostgreSQL](SERVE_FROM_S3.md).
 
 ## 7. Use models from other machines
 

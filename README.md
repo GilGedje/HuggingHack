@@ -36,6 +36,8 @@
 > [!TIP]
 > Running without internet access? Follow the [air-gapped setup guide](docs/AIRGAPPED.md)
 > to install HuggingHack offline, load models, and pull them with vLLM, `git clone`, or the `hf` CLI.
+> To keep everything in an S3-compatible bucket and PostgreSQL, see
+> [Serve from S3 and PostgreSQL](docs/SERVE_FROM_S3.md).
 
 <table>
   <tr>
@@ -635,7 +637,8 @@ _system/
 An unknown target id stops the server at start. Pictures already on local disk are copied into
 the folder on the next start and removed locally only once the copy reads back. The Storage
 page shows where the folder is and checks it answers; while a bucket is unreachable, pictures
-fall back to initials and uploads of new ones are refused with a message.
+fall back to initials and uploads of new ones are refused with a message. The step-by-step
+setup is in [Serve from S3 and PostgreSQL](docs/SERVE_FROM_S3.md).
 
 ### Moving a model to another location
 
