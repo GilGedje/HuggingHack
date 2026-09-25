@@ -111,6 +111,9 @@ class AuthService:
         self._attempt_lock = threading.Lock()
         self._setup_lock = threading.Lock()
         self._touched: dict[str, float] = {}
+        # The last administrator can never be deleted, so once an account exists
+        # setup is over for good, and anonymous requests stop asking the database.
+        self._has_users = False
 
     def ensure_local_user(self) -> None:
         if self.settings.accounts_enabled:
@@ -129,7 +132,10 @@ class AuthService:
             )
 
     def setup_required(self) -> bool:
-        return self.settings.accounts_enabled and self.database.count_users() == 0
+        if not self.settings.accounts_enabled or self._has_users:
+            return False
+        self._has_users = self.database.count_users() > 0
+        return not self._has_users
 
     def create_user(
         self,

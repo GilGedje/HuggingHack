@@ -7,8 +7,12 @@ from pathlib import Path
 
 
 ORGANIZATION_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?$")
-# Names that would collide with server paths such as /api/models/... or /assets/...
-RESERVED_NAMESPACES = frozenset({"api", "assets", "static"})
+# Names that would collide with server paths such as /api/models/... or /assets/...,
+# or read like the web app's own pages (#/orgs, #/models, #/account) in repo ids.
+RESERVED_NAMESPACES = frozenset({"api", "assets", "static", "orgs", "models", "account"})
+# Organizations may not be called "admin" either. Accounts may, since it is the name
+# many owners pick for themselves, and existing sign-ins must keep working.
+RESERVED_ORGANIZATION_NAMES = RESERVED_NAMESPACES | {"admin"}
 
 
 def validate_namespace(name: str) -> str:
@@ -18,8 +22,8 @@ def validate_namespace(name: str) -> str:
             "Names use 2-64 letters, numbers, dots, underscores, or hyphens, "
             "and start and end with a letter or number."
         )
-    if value.lower() in RESERVED_NAMESPACES:
-        raise ValueError(f"{value!r} is reserved.")
+    if value.lower() in RESERVED_ORGANIZATION_NAMES:
+        raise ValueError(f"{value!r} is reserved; choose another name.")
     return value
 
 

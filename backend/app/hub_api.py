@@ -10,6 +10,7 @@ every account can already see are served; private uploads are never exposed.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -19,7 +20,9 @@ from typing import Any, Iterator
 from .config import Settings, validate_repo_id
 from .database import Database
 from .indexer import hidden_path
-from .storage import FilesystemModelStorage, StorageRegistry
+from .storage import BOTO_ERRORS, FilesystemModelStorage, StorageRegistry, StorageUnavailableError
+
+logger = logging.getLogger("hugginghack")
 
 
 STREAM_CHUNK_BYTES = 1024 * 1024
@@ -190,7 +193,12 @@ class HubRepositories:
 
     def remote_entries(self, model: dict[str, Any]) -> list[RepoEntry]:
         storage = self.storages.for_model(model)
-        return remote_entries(storage.list_repository_entries(model["repo_id"]) or [])
+        try:
+            listed = storage.list_repository_entries(model["repo_id"], interactive=True)
+        except BOTO_ERRORS as error:
+            logger.warning("Could not list %s: %s", model["repo_id"], error.__class__.__name__)
+            raise StorageUnavailableError(storage.unreachable_message()) from error
+        return remote_entries(listed or [])
 
     def check_revision(self, snapshot: RepoSnapshot, revision: str) -> RepoSnapshot:
         """The snapshot a revision names. Besides the current one, a revision the

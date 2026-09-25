@@ -85,6 +85,11 @@ function RepositoryRow({
           ) : (
             <span className="status-pill pending">Waiting for files</span>
           )}
+          {repository.missing && (
+            <span className="status-pill danger" title="The last scan found none of its files in storage. Copy them back and rescan, or delete the repository.">
+              Files missing
+            </span>
+          )}
           {repository.size_bytes != null && <span>{formatBytes(repository.size_bytes)}</span>}
           {repository.file_count != null && <span>{repository.file_count} files</span>}
           <span>Updated {relativeTime(repository.updated_at)}</span>

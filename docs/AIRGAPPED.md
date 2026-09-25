@@ -504,7 +504,8 @@ Set `HF_ENDPOINT` before Python starts; it is read at import time.
 ### Behind a reverse proxy
 
 A reverse proxy (nginx, Traefik, Caddy) in front of HuggingHack must pass the original
-`Host` header (or `X-Forwarded-Host`) and `X-Forwarded-For`/`X-Forwarded-Proto`. Then:
+`Host` header (or `X-Forwarded-Host`) and `X-Forwarded-For`/`X-Forwarded-Proto`.
+HuggingHack believes the forwarded headers only from the addresses in `FORWARDED_ALLOW_IPS`. Then:
 
 - Set `FORWARDED_ALLOW_IPS` to the proxy's IP address, as the container sees it (for
   example `172.18.0.1` for a proxy on the Docker host). Only then does HuggingHack see each
@@ -586,7 +587,7 @@ from, `PUBLIC_URL=https://hugginghack.example.internal`, and
 | A bucket shows **Offline** on the Storage page | Check its `endpoint_url`, the credential variables it names, and the bucket permissions. Its models stay listed until it reconnects. |
 | Storage page warns that a model exists in two locations | Delete one copy; the earlier storage target in the list is the one being served. |
 | Upload panel says "Choose the same folder again" | The page was reloaded mid-upload. Pick the same folder; already-sent bytes are skipped. |
-| `Requests from other sites are not allowed` | The browser's address differs from how the server is reached, typically behind a proxy that rewrites `Host`. Pass the original `Host` or `X-Forwarded-Host`, or set `PUBLIC_URL` to the address in the browser. |
+| `Requests from other sites are not allowed` | The browser's address differs from how the server is reached, typically behind a proxy that rewrites `Host`. Pass the original `Host`, or pass `X-Forwarded-Host` with `FORWARDED_ALLOW_IPS` set to the proxy (the header is ignored from anyone else), or set `PUBLIC_URL` to the address in the browser. |
 | `Invalid host header` | The name in the browser's address bar is not in `ALLOWED_HOSTS`. Add it and restart. |
 | Everyone is told there were too many sign-in attempts | All sign-ins share one address. Behind a proxy, set `FORWARDED_ALLOW_IPS` to the proxy's IP. On Docker Desktop every client shares one address; see [section 8](#8-network-and-security). |
 | Uploads through the proxy fail with `413 Request Entity Too Large` | The proxy's request-body limit is below the upload chunk size. Raise it, for example nginx `client_max_body_size 64m;` (see [Behind a reverse proxy](#behind-a-reverse-proxy)). |

@@ -20,6 +20,7 @@ from typing import Any
 
 from .database import Database
 from .hub_api import HubRepositories, RepoEntry, local_entries
+from .storage import StorageUnavailableError
 
 
 TEXT_EXTENSIONS = {
@@ -78,7 +79,7 @@ class RepoHistory:
             if len(payload) > TEXT_MAX_BYTES or b"\0" in payload:
                 return None
             return payload.decode("utf-8")
-        except (OSError, UnicodeDecodeError, ValueError):
+        except (OSError, UnicodeDecodeError, ValueError, StorageUnavailableError):
             return None
 
     def _store_text(self, content: str) -> str:

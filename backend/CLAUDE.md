@@ -138,7 +138,9 @@ Last come the **Hub routes** (`/api/models/{owner}/{name}…`, `/{owner}/{name}/
 - `main.model_for` strips `STORAGE_LOCATION_FIELDS` unless the user has `storage.view`.
   Use it for every model row returned to a client.
 - `/api/health` has three tiers: anonymous callers get only status, app and version; signed-in
-  users get UI limits; `settings.view` adds disk, database, S3 and HF details.
+  users get UI limits; `settings.view` adds disk, database (`Database.ping`), S3 and HF details.
+  The anonymous tier never touches the database once an account exists (`AuthService.setup_required`
+  remembers it), so it answers while PostgreSQL is down.
 - Last admin: `Database.update_user_guarded` and `delete_user` keep at least one enabled
   admin. `set_organization_member` and `remove_organization_member` keep one acting org
   admin (`ORG_ROLE_ACTS`: enabled and able to create repos) unless `force=True`.
@@ -161,13 +163,24 @@ mirrored in `frontend/src/uploadPlan.ts` `isRecorded`, so change both together.
 - `UploadManager._storage_errors` logs the redacted S3 error and raises
   `StorageUnavailableError` with a generic message. The routes (`commit_repository_change`,
   `create_upload_repository`, `finalize_upload_repository`) turn it into **502 with that
-  message**. Never put raw boto errors in a response. Use `storage.redact()` in logs.
+  message**. Never put raw boto errors in a response. Use `storage.redact()` in logs, and
+  `S3ModelStorage.describe_error()` for a sentence people see (health, Storage page).
+- Anywhere else, `StorageUnavailableError` and any botocore error become **503** with a fixed
+  sentence (app exception handlers), and an unreachable PostgreSQL (`database_unreachable`:
+  pool timeout, connection errors) becomes **503** "The database is not reachable."
+- `S3ModelStorage` has three clients: `client` (patient retries: transfers, streaming GETs,
+  manifests, commits), `read_client` (2 attempts, 5 s reads: listings, HEAD, small reads and the
+  system folder, where someone is waiting) and `health_client`. The PostgreSQL pool waits
+  `POOL_TIMEOUT_SECONDS` for a connection and its `check_connection` has a deadline, so a
+  frozen database answers in seconds.
 - Upload paths go through `validate_upload_path`, and repo paths through
   `config.repository_path`, which refuses to escape `MODEL_STORAGE`.
 
 **HTTP security (main.py)**
 - `reject_cross_site_writes`: a POST/PUT/PATCH/DELETE carrying a foreign `Origin` gets 403.
-  Allowed origins are the Host, `X-Forwarded-Host`, `PUBLIC_URL` and `CORS_ORIGINS`.
+  Allowed origins are the Host, `PUBLIC_URL`, `CORS_ORIGINS`, and `X-Forwarded-Host` only when
+  `from_trusted_proxy` holds: the peer is in `FORWARDED_ALLOW_IPS` (`TRUSTED_PROXIES`, parsed as
+  uvicorn does), or uvicorn already swapped the client for its `X-Forwarded-For` (port 0).
   Clients that send no Origin (git, hf, curl) pass.
 - `security_headers` sets `CONTENT_SECURITY_POLICY`: `script-src 'self'`,
   `connect-src 'self'`, no external origins (styles may be inline). The built UI must have no
@@ -267,7 +280,7 @@ Not in `config.py`: `FORWARDED_ALLOW_IPS` (read by uvicorn `--proxy-headers`, se
 - Threads: downloads (`ThreadPoolExecutor` plus a subprocess), runtime jobs, the move worker, S3 transfers (`use_threads=True`) and sync routes in Starlette's threadpool. Shared state needs locks, and file reads must take a `reads` lease (`main.leased`, `reads.hold`).
 - `/api/health` checks storage (an S3 `ListObjects`) only for callers with `settings.view`; anonymous calls, including the container health check, never touch S3.
 - `ACCOUNTS_ENABLED=false` makes `verify_csrf` always true. The Origin check is then the only CSRF defence.
-- User and org names are the repo namespace. `_system` and the `RESERVED_NAMESPACES` can never be names.
+- User and org names are the repo namespace. `_system` and the `RESERVED_NAMESPACES` can never be names; new organizations also can't take `RESERVED_ORGANIZATION_NAMES` (adds `admin`, which accounts may keep).
 
 ## Pointers
 

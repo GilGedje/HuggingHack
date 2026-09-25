@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+import select
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +30,56 @@ if psycopg is None:
     INTEGRITY_ERRORS = (sqlite3.IntegrityError,)
 else:
     INTEGRITY_ERRORS = (sqlite3.IntegrityError, psycopg.IntegrityError)
+
+# How long a request waits for a PostgreSQL connection before it is told the
+# database is unreachable, and how soon a silent server is noticed.
+POOL_TIMEOUT_SECONDS = 5.0
+CONNECTION_OPTIONS = {
+    "connect_timeout": 5,
+    "keepalives": 1,
+    "keepalives_idle": 10,
+    "keepalives_interval": 5,
+    "keepalives_count": 3,
+    # Linux: give up on a query whose packets the server stops acknowledging.
+    "tcp_user_timeout": 15000,
+}
+
+
+CHECK_TIMEOUT_SECONDS = 3.0
+
+
+def check_connection(connection: Any) -> None:
+    """The pool's check of an idle connection before handing it out, with a deadline.
+    A server that stops answering without closing the connection (paused or frozen)
+    would otherwise hold the request, and its worker thread, forever."""
+    pgconn = connection.pgconn
+    try:
+        pgconn.send_query(b"")
+        deadline = time.monotonic() + CHECK_TIMEOUT_SECONDS
+        while True:
+            pgconn.consume_input()
+            if not pgconn.is_busy():
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([pgconn.socket], [], [], remaining)[0]:
+                raise psycopg.OperationalError("The database did not answer in time.")
+        while (result := pgconn.get_result()) is not None:
+            if result.status == psycopg.pq.ExecStatus.FATAL_ERROR:
+                raise psycopg.OperationalError((result.error_message or b"").decode(errors="replace"))
+    except Exception:
+        # The pool replaces a closed connection instead of handing it out again.
+        connection.close()
+        raise
+
+
+def database_unreachable(error: BaseException) -> bool:
+    """Whether an error means PostgreSQL could not be reached, rather than that it
+    refused a statement: no connection in time, a refused or dropped connection, or
+    a server shutting down."""
+    if psycopg is None or not isinstance(error, psycopg.OperationalError):
+        return False
+    sqlstate = getattr(error, "sqlstate", None)
+    return sqlstate is None or sqlstate.startswith(("08", "57P"))
 
 
 NAMED_PARAMETER_PATTERN = re.compile(r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)")
@@ -254,9 +306,10 @@ class Database:
                     self._database_url,
                     min_size=1,
                     max_size=self._pool_size,
-                    kwargs={"row_factory": dict_row},
+                    kwargs={"row_factory": dict_row, **CONNECTION_OPTIONS},
+                    timeout=POOL_TIMEOUT_SECONDS,
                     # A connection the server dropped (a restart) is replaced, not handed out.
-                    check=ConnectionPool.check_connection,
+                    check=check_connection,
                     name="hugginghack",
                     open=True,
                 )
@@ -878,6 +931,20 @@ class Database:
     @classmethod
     def _public_user(cls, row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | None:
         return cls._user(row, include_secret=False)
+
+    def ping(self) -> dict[str, Any]:
+        """Whether a query runs right now, for the health check."""
+        try:
+            with self.connect() as connection:
+                connection.execute("SELECT 1").fetchone()
+        except Exception as error:  # noqa: BLE001 - any failure is reported, not raised
+            reason = (
+                "The database is not reachable."
+                if database_unreachable(error)
+                else f"The database failed a test query ({error.__class__.__name__})."
+            )
+            return {"backend": self.backend, "connected": False, "error": reason}
+        return {"backend": self.backend, "connected": True, "error": None}
 
     def count_users(self) -> int:
         with self.connect() as connection:
@@ -1767,11 +1834,14 @@ class Database:
                     ON collection_items.collection_id = collections.id
                 WHERE collections.user_id = ?
                 GROUP BY collections.id
-                ORDER BY LOWER(collections.name)
                 """,
                 (user_id,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        # Sorted here: SQLite's LOWER() folds only ASCII, so "Ü" and "ü" would
+        # order differently than on PostgreSQL.
+        collections = [dict(row) for row in rows]
+        collections.sort(key=lambda item: (item["name"].casefold(), item["name"], item["id"]))
+        return collections
 
     def delete_collection(self, collection_id: str, user_id: str) -> bool:
         with self._write_lock, self.connect() as connection:
@@ -1959,7 +2029,8 @@ class Database:
                        users.display_name AS owner_display_name,
                        organizations.name AS organization_name,
                        local_models.size_bytes, local_models.file_count,
-                       local_models.modified_at
+                       local_models.modified_at,
+                       local_models.repo_id IS NOT NULL AS indexed
                 FROM owned_repositories
                 JOIN users ON users.id = owned_repositories.owner_id
                 LEFT JOIN organizations

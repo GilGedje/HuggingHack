@@ -148,8 +148,9 @@ Organizations are shared namespaces for teams and companies, so a model can live
 - Private and organization repositories stay inside the organization, including through API
   tokens and `git clone`.
 - Organization names and usernames share one namespace (case-insensitive), so a user cannot
-  take an organization's name or the reverse. `api`, `assets`, `static`, `admin`, `orgs`,
-  `models`, and `account` are reserved.
+  take an organization's name or the reverse. `api`, `assets`, `static`, `orgs`, `models`,
+  and `account` are reserved, and no organization can be called `admin`. Names taken before
+  1.2.1 keep working.
 - Repositories stay with the organization when the account that created them leaves or is
   deleted.
 

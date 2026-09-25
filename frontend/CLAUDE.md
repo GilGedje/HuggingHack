@@ -9,7 +9,7 @@ Paths below are relative to `frontend/` unless marked *(repo root)*.
 | Command | What it does |
 |---|---|
 | `npm ci` | Installs exactly what `package-lock.json` pins. Needs Node ≥ 22 (`engines`); the lockfile is kept with npm 10.9.8. Run it on a machine that can reach a registry or mirror. |
-| `npm run dev` | Vite dev server. `vite.config.ts` proxies `/api` to `http://127.0.0.1:7860` with `changeOrigin` and `xfwd: true`. `xfwd` sends `X-Forwarded-Host`, which the backend's `same_site_origin` (`backend/app/main.py`) accepts, so writes from the dev origin pass the cross-site write check. |
+| `npm run dev` | Vite dev server. `vite.config.ts` proxies `/api` to `http://127.0.0.1:7860` with `changeOrigin` and `xfwd: true`. `xfwd` sends `X-Forwarded-Host` (and `X-Forwarded-For`). The backend's `same_site_origin` (`backend/app/main.py`) believes it only from a proxy in `FORWARDED_ALLOW_IPS`, whose default `127.0.0.1` covers the dev server, so writes from the dev origin pass the cross-site write check. |
 | `npm run build` | Runs `tsc -b && vite build`. This is the real type check, because `tsc -b` follows the references in `tsconfig.json`. The output goes to `dist/`, which is gitignored. Expect a ">500 kB chunk" warning; it is normal. |
 | `npx tsc -p tsconfig.app.json` | Type-checks `src/` without building (`noEmit` is set in that config). |
 | `npm test` | Runs `node --experimental-strip-types --test`, which picks up `test/*.test.mjs`. |

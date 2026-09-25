@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
 import hashlib
 import hmac
 import secrets
 from datetime import datetime, timedelta
 import json
 import logging
+import os
 import re
 from urllib.parse import quote, urlsplit
 import shutil
@@ -23,8 +25,14 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
+from uvicorn.middleware.proxy_headers import _TrustedHosts
 from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError, RevisionNotFoundError
 from pydantic import BaseModel, Field, field_validator
+
+try:
+    import psycopg
+except ImportError:
+    psycopg = None
 
 from .auth import (
     API_TOKEN_PREFIX,
@@ -38,7 +46,7 @@ from .avatars import MAX_AVATAR_BYTES, AvatarStore, avatar_url
 from .system import SystemStoreError, create_system_store, ensure_readme, migrate_local_data
 from .catalog import HARDWARE, LocalCatalog, model_task, nominal_parameters, search_catalog
 from .config import settings, validate_namespace, validate_repo_id
-from .database import INTEGRITY_ERRORS, Database
+from .database import INTEGRITY_ERRORS, Database, database_unreachable
 from .downloads import DownloadManager
 from .git_mirror import GitMirrors
 from .deploy_configs import METRICS, ConfigRevisions
@@ -59,7 +67,7 @@ from .moves import MoveManager
 from .reads import LeasedResponse, reads
 from .listing import PRECISIONS, preview as preview_listing, validate_overrides
 from .runtimes import RuntimeManager
-from .storage import StorageUnavailableError, create_storage_registry
+from .storage import BOTO_ERRORS, StorageUnavailableError, create_storage_registry
 from .uploads import UploadManager
 
 
@@ -105,6 +113,9 @@ uploads.mirror_forget = git_mirrors.forget
 # Repositories found in more than one storage target during the last scan.
 storage_conflicts: list[dict[str, str]] = []
 storage_errors: dict[str, str] = {}
+# Whether a scan has finished since the server started, so a finished upload that
+# is not in the index is known to be missing rather than not yet scanned.
+index_state = {"scanned": False}
 
 
 def record_history(model: dict[str, Any], entries: list[RepoEntry] | None = None) -> None:
@@ -131,7 +142,8 @@ def refresh_model_index() -> dict[str, Any]:
             discovered = storage.discover_repositories()
         except Exception as error:
             # Keep the existing index for a target that is temporarily unreachable.
-            errors[storage.id] = storage.redact(str(error).strip() or error.__class__.__name__)[:500]
+            logger.warning("Could not list storage %s: %s", storage.id, storage.redact(str(error)))
+            errors[storage.id] = storage.describe_error(error)[:500]
             continue
         found: set[str] = set()
         for model in discovered:
@@ -160,6 +172,7 @@ def refresh_model_index() -> dict[str, Any]:
     storage_conflicts[:] = conflicts
     storage_errors.clear()
     storage_errors.update(errors)
+    index_state["scanned"] = True
     models = database.list_local_models()
     return {
         "count": len(models),
@@ -181,6 +194,10 @@ def prepare_system_folder() -> None:
     """Check SYSTEM_STORAGE_TARGET, then move older local site files into the system
     folder. An unreachable bucket leaves them where they are until the next start."""
     store = system_store()  # an unknown target id stops the server here, on purpose
+    if store.remote and not store.storage.health()["connected"]:
+        # One quick check instead of a slow failure per file; startup goes on.
+        logger.warning("System folder %s is not reachable; its files are checked at the next start.", store.location())
+        return
     ensure_readme(store)
     moved = migrate_local_data(settings, store)
     if moved["copied"] or moved["kept"]:
@@ -190,7 +207,16 @@ def prepare_system_folder() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings.ensure_directories()
-    database.initialize()
+    try:
+        database.initialize()
+    except Exception as error:
+        if database_unreachable(error):
+            logger.error(
+                "HuggingHack could not connect to the database in DATABASE_URL (%s). "
+                "Check that PostgreSQL is running and that the user name and password are right.",
+                error,
+            )
+        raise
     database.fail_unfinished_runtime_jobs(utc_iso())
     auth.ensure_local_user()
     # Before the first scan: undo moves cut short, and finish those that switched.
@@ -256,13 +282,31 @@ def _authority(value: str, *, bare: bool = False) -> str | None:
     return hostname if port is None or port in defaults else f"{hostname}:{port}"
 
 
+# The proxies uvicorn's --proxy-headers believes, with uvicorn's own parsing.
+TRUSTED_PROXIES = _TrustedHosts(os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1"))
+
+
+def from_trusted_proxy(request: Request) -> bool:
+    """Whether a proxy in FORWARDED_ALLOW_IPS passed this request on. When uvicorn
+    believes a proxy's X-Forwarded-For it replaces the client with that address and
+    port 0; a proxy that sends no X-Forwarded-For is still the client itself."""
+    client = request.scope.get("client")
+    if not client:
+        return False
+    host, port = client[0], client[1]
+    return host in TRUSTED_PROXIES or (port == 0 and "x-forwarded-for" in request.headers)
+
+
 def same_site_origin(request: Request, origin: str) -> bool:
     """Whether a browser's Origin header names this server: the address the request
-    came to, the one a reverse proxy forwarded, PUBLIC_URL, or a CORS_ORIGINS entry."""
+    came to, the one a trusted reverse proxy forwarded, PUBLIC_URL, or a CORS_ORIGINS entry."""
     if urlsplit(origin).scheme not in {"http", "https"}:
         return False  # includes "null", sent by sandboxed pages and file:// documents
     wanted = _authority(origin)
-    hosts = [request.headers.get("host"), *request.headers.get("x-forwarded-host", "").split(",")]
+    hosts = [request.headers.get("host")]
+    if from_trusted_proxy(request):
+        # Anyone can send X-Forwarded-Host; only a proxy we trust is believed.
+        hosts += request.headers.get("x-forwarded-host", "").split(",")
     allowed = {_authority(host.strip(), bare=True) for host in hosts if host and host.strip()}
     allowed |= {_authority(url) for url in (settings.public_url, *settings.cors_origin_list) if url}
     return wanted is not None and wanted in allowed
@@ -636,7 +680,14 @@ def health(request: Request) -> dict:
     # Checking the bucket lists objects in it, so only settings.view callers do;
     # the container health check calls this every 30 seconds.
     result = {"status": "ok", "app": settings.app_name, "version": settings.app_version}
-    user = optional_user(request)
+    # Anonymous callers never reach the database once an account exists, so the
+    # server still answers while PostgreSQL is down.
+    try:
+        user = optional_user(request)
+    except Exception as error:
+        if not database_unreachable(error):
+            raise
+        return result | {"status": "degraded"}
     if not user:
         return result
     result |= {
@@ -649,10 +700,12 @@ def health(request: Request) -> dict:
     if not can(user, "settings.view"):
         return result
     object_storage = storages.default.health()
+    database_health = database.ping()
     usage = shutil.disk_usage(settings.model_storage)
     return result | {
-        "status": "ok" if object_storage["connected"] else "degraded",
+        "status": "ok" if object_storage["connected"] and database_health["connected"] else "degraded",
         "database_backend": database.backend,
+        "database": database_health,
         "storage": {
             "path": str(settings.model_storage),
             "total_bytes": usage.total,
@@ -1098,6 +1151,13 @@ def list_tokens(user: TokenOwner) -> dict:
 @app.post("/api/account/tokens", status_code=201)
 def create_token(payload: TokenRequest, user: TokenWriter) -> dict:
     require_accounts()
+    if payload.scope == "write" and not any(
+        can(user, capability) for capability in ("repos.create", "repos.edit_own", "repos.edit_any")
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Your role cannot upload, so it can only create read tokens. Ask an administrator for the Member role.",
+        )
     try:
         raw_token, record = auth.create_api_token(
             user["id"], payload.name, payload.scope, payload.expires_in_days
@@ -1814,14 +1874,40 @@ def library_commit(
     return result
 
 
+# Sentences for errors the operating system raises while writing files; its own
+# messages name paths on the server.
+OS_ERROR_TEXT = {
+    errno.ENAMETOOLONG: "A file or folder name in this path is too long.",
+    errno.EEXIST: "Another file or folder already uses part of this path.",
+    errno.ENOTDIR: "Another file or folder already uses part of this path.",
+    errno.EISDIR: "Another file or folder already uses part of this path.",
+    errno.ENOSPC: "The server's disk is full. Free some space and try again.",
+    errno.EDQUOT: "The server's disk quota is used up. Free some space and try again.",
+    errno.EACCES: "The server may not write to the model folder. Check its permissions.",
+    errno.EPERM: "The server may not write to the model folder. Check its permissions.",
+    errno.EROFS: "The model folder is read-only.",
+    errno.EINVAL: "This file name is not allowed on the server's disk.",
+    errno.ENOENT: "A folder in this path disappeared on the server. Try again.",
+}
+
+
+def error_text(error: Exception) -> str:
+    """What to tell the caller about an error. HuggingHack's own errors are already
+    sentences; the operating system's are logged and replaced by a fixed one."""
+    if isinstance(error, OSError) and error.errno is not None:
+        logger.warning("File operation failed: %s", error)
+        return OS_ERROR_TEXT.get(error.errno, "The server could not write the file. Try again.")
+    return str(error)
+
+
 def change_errors(error: Exception) -> HTTPException:
     if isinstance(error, PermissionError):
-        return HTTPException(status_code=403, detail=str(error))
+        return HTTPException(status_code=403, detail=error_text(error))
     if isinstance(error, FileNotFoundError):
-        return HTTPException(status_code=404, detail=str(error))
+        return HTTPException(status_code=404, detail=error_text(error))
     if isinstance(error, (FileExistsError, RuntimeError)):
-        return HTTPException(status_code=409, detail=str(error))
-    return HTTPException(status_code=400, detail=str(error))
+        return HTTPException(status_code=409, detail=error_text(error))
+    return HTTPException(status_code=400, detail=error_text(error))
 
 
 @app.post("/api/repos/rename")
@@ -1845,9 +1931,9 @@ async def rename_repository(
     except PermissionError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
     except (FileExistsError, *INTEGRITY_ERRORS) as error:
-        raise HTTPException(status_code=409, detail=str(error) or "That name is taken.") from error
+        raise HTTPException(status_code=409, detail=error_text(error) or "That name is taken.") from error
     except (ValueError, OSError) as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
+        raise HTTPException(status_code=409, detail=error_text(error)) from error
 
 
 @app.delete("/api/repos")
@@ -2288,11 +2374,16 @@ async def storage_targets(_: StorageViewer) -> dict:
     models = database.list_local_models()
     grants = database.storage_grants()
     usage = shutil.disk_usage(settings.model_storage)
-    healths = await asyncio.gather(
-        *(run_in_threadpool(storage.health) for storage in storages.all())
+    # Checked side by side, so an offline bucket costs one timeout, not one per check.
+    system, *healths = await asyncio.gather(
+        run_in_threadpool(system_overview),
+        *(run_in_threadpool(storage.health) for storage in storages.all()),
     )
     targets = []
     for storage, health_result in zip(storages.all(), healths):
+        if health_result.get("connected"):
+            # The last scan's failure is over once the bucket answers again.
+            storage_errors.pop(storage.id, None)
         items = [
             storage_model_summary(model)
             for model in models
@@ -2331,7 +2422,7 @@ async def storage_targets(_: StorageViewer) -> dict:
         },
         "targets": targets,
         "conflicts": storage_conflicts,
-        "system": await run_in_threadpool(system_overview),
+        "system": system,
     }
 
 
@@ -2879,12 +2970,16 @@ def list_upload_repositories(user: UploadLister) -> dict:
     items = []
     for repository in database.list_owned_repositories(user["id"]):
         role = uploads.access(repository, user["id"])
+        indexed = bool(repository.pop("indexed", True))
         if role in {"admin", "write"}:
             # Listing corrections come along so resuming an upload shows and keeps them.
             items.append(
                 {
                     **repository,
                     "my_role": role,
+                    # Finished, but its files were not found by the last scan: for
+                    # example after restoring the database without the model folder.
+                    "missing": repository["status"] == "ready" and index_state["scanned"] and not indexed,
                     "listing_overrides": database.listing_overrides(repository["repo_id"]),
                 }
             )
@@ -2981,13 +3076,13 @@ async def upload_file_chunk(
             payload,
         )
     except FileNotFoundError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
+        raise HTTPException(status_code=404, detail=error_text(error)) from error
     except FileExistsError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
+        raise HTTPException(status_code=409, detail=error_text(error)) from error
     except RuntimeError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except (ValueError, OSError) as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        raise HTTPException(status_code=400, detail=error_text(error)) from error
 
 
 @app.post("/api/uploads/repositories/finalize")
@@ -3048,6 +3143,42 @@ async def hub_error_handler(_: Request, error: HubError) -> JSONResponse:
         # git only sends credentials after a Basic challenge.
         headers["WWW-Authenticate"] = 'Basic realm="HuggingHack"'
     return JSONResponse({"error": error.message}, status_code=error.status_code, headers=headers)
+
+
+DATABASE_UNREACHABLE = "The database is not reachable. Try again in a moment; if it keeps happening, check that PostgreSQL is running."
+OBJECT_STORAGE_UNREACHABLE = "The storage location holding this data is not reachable. Try again in a moment."
+
+
+async def database_error_handler(request: Request, error: Exception) -> JSONResponse:
+    """A database that is down or out of connections answers every caller with one
+    sentence and 503, rather than a bare 500 after a long wait."""
+    if not database_unreachable(error):
+        raise error
+    logger.warning("Database unreachable during %s %s: %s", request.method, request.url.path, error)
+    return JSONResponse({"detail": DATABASE_UNREACHABLE}, status_code=503)
+
+
+if psycopg is not None:
+    app.add_exception_handler(psycopg.OperationalError, database_error_handler)
+
+
+@app.exception_handler(StorageUnavailableError)
+async def storage_unavailable_handler(_: Request, error: StorageUnavailableError) -> JSONResponse:
+    return JSONResponse({"detail": str(error) or OBJECT_STORAGE_UNREACHABLE}, status_code=503)
+
+
+async def object_storage_error_handler(request: Request, error: Exception) -> JSONResponse:
+    """A bucket that fails outside the routes that expect it: the reason is logged,
+    and the caller gets a sentence without the endpoint or bucket."""
+    logger.warning(
+        "Object storage failed during %s %s: %s", request.method, request.url.path, error.__class__.__name__
+    )
+    return JSONResponse({"detail": OBJECT_STORAGE_UNREACHABLE}, status_code=503)
+
+
+if BOTO_ERRORS:
+    for boto_error in BOTO_ERRORS:
+        app.add_exception_handler(boto_error, object_storage_error_handler)
 
 
 def pull_user(request: Request) -> dict[str, Any] | None:

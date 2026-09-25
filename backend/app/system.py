@@ -94,6 +94,8 @@ class LocalSystemStore:
 class S3SystemStore:
     remote = True
 
+    # Avatars, git mirror files and the README are small and someone is usually
+    # waiting for them, so requests use the storage's quick-to-give-up client.
     def __init__(self, storage: Any, prefix: str):
         self.storage = storage
         self.prefix = prefix.strip("/")
@@ -114,14 +116,14 @@ class S3SystemStore:
 
     def put(self, key: str, data: bytes, content_type: str | None = None) -> None:
         extra = {"ContentType": content_type} if content_type else {}
-        self._call("save the file", lambda: self.storage.client.put_object(
+        self._call("save the file", lambda: self.storage.read_client.put_object(
             Bucket=self.storage.bucket, Key=self._key(key), Body=data, **extra
         ))
 
     def get(self, key: str) -> bytes | None:
         def read() -> bytes | None:
             try:
-                response = self.storage.client.get_object(Bucket=self.storage.bucket, Key=self._key(key))
+                response = self.storage.read_client.get_object(Bucket=self.storage.bucket, Key=self._key(key))
             except Exception as error:  # noqa: BLE001
                 code = getattr(error, "response", {}).get("Error", {}).get("Code") if hasattr(error, "response") else None
                 if isinstance(error, KeyError) or code in {"NoSuchKey", "404", "NotFound"}:
@@ -148,7 +150,7 @@ class S3SystemStore:
 
     def keys(self, prefix: str) -> dict[str, int]:
         base = f"{self._key(prefix)}/"
-        items = self._call("list the folder", lambda: list(self.storage._objects(base)))
+        items = self._call("list the folder", lambda: list(self.storage._objects(base, self.storage.read_client)))
         return {f"{prefix}/{item['Key'][len(base):]}": int(item.get("Size") or 0) for item in items}
 
     def probe(self) -> dict[str, Any]:

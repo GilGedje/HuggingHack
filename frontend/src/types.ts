@@ -16,6 +16,12 @@ export interface ObjectStorageHealth {
   error?: string | null
 }
 
+export interface DatabaseHealth {
+  backend: 'sqlite' | 'postgresql'
+  connected: boolean
+  error: string | null
+}
+
 /** Everyone gets status, app, and version; signed-in accounts get the upload and
  * pull settings; server details need `settings.view`. */
 export interface Health {
@@ -23,6 +29,7 @@ export interface Health {
   app: string
   version: string
   database_backend?: 'sqlite' | 'postgresql'
+  database?: DatabaseHealth
   storage?: StorageHealth
   object_storage?: ObjectStorageHealth
   hf_token_configured?: boolean
@@ -407,6 +414,8 @@ export interface OwnedRepository {
   my_role: 'admin' | 'write'
   /** Listing corrections already saved, so a resumed upload keeps them. */
   listing_overrides?: ListingOverrides
+  /** Finished, but the last scan found none of its files in storage. */
+  missing?: boolean
 }
 
 export interface StorageModel {
