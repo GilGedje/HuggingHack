@@ -43,6 +43,7 @@ import type {
 } from '../types'
 import { formatBytes, formatNumber, initials, relativeTime, taskLabel } from '../utils'
 import { visibilityLabel } from '../visibility'
+import { ModelPageSkeleton, RowSkeletons } from '../components/Skeletons'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -359,11 +360,7 @@ function CommitsSection({ model }: { model: LibraryModelDetails }) {
           </ul>
         </div>
       ))}
-      {loading && (
-        <div className="drawer-loading compact">
-          <LoaderCircle size={20} className="spin" /> Loading commits…
-        </div>
-      )}
+      {loading && <RowSkeletons rows={commits.length ? 2 : 5} cells={1} label="Loading commits" />}
       {!loading && commits.length < total && (
         <button type="button" className="secondary-button commit-more" onClick={() => load(commits.length)}>
           Load older commits
@@ -392,9 +389,7 @@ function CommitSection({ model, commitId }: { model: LibraryModelDetails; commit
   if (error) return <div className="inline-error">{error}</div>
   if (!commit) {
     return (
-      <div className="drawer-loading">
-        <LoaderCircle size={22} className="spin" /> Loading commit…
-      </div>
+      <RowSkeletons rows={6} cells={1} label="Loading the commit" />
     )
   }
   return (
@@ -547,9 +542,7 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
   }
   if (!model) {
     return (
-      <div className="drawer-loading">
-        <LoaderCircle size={24} className="spin" /> Reading the local library…
-      </div>
+      <ModelPageSkeleton />
     )
   }
 

@@ -6,6 +6,7 @@ import { UploadWizard } from '../components/UploadWizard'
 import type { OwnedRepository, UploadNamespace, User, Visibility } from '../types'
 import { formatBytes, relativeTime } from '../utils'
 import { VISIBILITIES, visibilityAllowed, visibilityAudience, visibilityLabel } from '../visibility'
+import { RowSkeletons } from '../components/Skeletons'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -117,6 +118,7 @@ export function UploadsPage({ user, onToast }: { user: User; onToast: ToastHandl
   const [namespaces, setNamespaces] = useState<UploadNamespace[]>([])
   const [resume, setResume] = useState<OwnedRepository | null>(null)
   const [wizardKey, setWizardKey] = useState(0)
+  const [loaded, setLoaded] = useState(false)
   const wizard = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async () => {
@@ -126,6 +128,8 @@ export function UploadsPage({ user, onToast }: { user: User; onToast: ToastHandl
       setNamespaces(spaces.items)
     } catch (reason) {
       onToast(reason instanceof Error ? reason.message : 'Unable to load repositories', 'error')
+    } finally {
+      setLoaded(true)
     }
   }, [onToast])
 
@@ -201,20 +205,24 @@ export function UploadsPage({ user, onToast }: { user: User; onToast: ToastHandl
             <span className="eyebrow">Yours, and your organizations' where you can write</span>
             <h2>Published models</h2>
           </div>
-          <span>{published.length}</span>
+          <span>{loaded ? published.length : ''}</span>
         </div>
-        <div className="repository-grid">
-          {published.map((repository) => (
-            <RepositoryRow
-              key={repository.id}
-              repository={repository}
-              onResume={() => startResume(repository)}
-              onChanged={load}
-              onToast={onToast}
-            />
-          ))}
-          {published.length === 0 && <div className="empty-compact">Models you upload appear here.</div>}
-        </div>
+        {!loaded ? (
+          <RowSkeletons rows={3} cells={3} label="Loading your repositories" />
+        ) : (
+          <div className="repository-grid">
+            {published.map((repository) => (
+              <RepositoryRow
+                key={repository.id}
+                repository={repository}
+                onResume={() => startResume(repository)}
+                onChanged={load}
+                onToast={onToast}
+              />
+            ))}
+            {published.length === 0 && <div className="empty-compact">Models you upload appear here.</div>}
+          </div>
+        )}
       </section>
     </div>
   )

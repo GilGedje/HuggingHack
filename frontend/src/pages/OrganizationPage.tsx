@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { Box, Building2, LoaderCircle, LogOut, Pencil, Plus, Trash2, UploadCloud, Users } from 'lucide-react'
+import { Box, Building2, LogOut, Pencil, Plus, Trash2, UploadCloud, Users } from 'lucide-react'
 import { Link, NavLink, useNavigate, useParams } from 'react-router-dom'
 import { useAccess } from '../access'
 import { api } from '../api'
@@ -7,6 +7,7 @@ import { useFadeOnChange, useTabIndicator } from '../motion'
 import { LibraryModelRow } from '../components/RepositoryRows'
 import type { LibraryModel, Organization, OrganizationDetails, OrganizationRole } from '../types'
 import { initials } from '../utils'
+import { ModelCardSkeletons, RowSkeletons } from '../components/Skeletons'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -41,7 +42,7 @@ export function OrganizationsIndex() {
         </div>
       </div>
       {!items ? (
-        <div className="drawer-loading"><LoaderCircle size={22} className="spin" /></div>
+        <RowSkeletons rows={4} cells={2} label="Loading organizations" />
       ) : (
         <div className="org-grid">
           {items.map((organization) => (
@@ -250,7 +251,7 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
   }
 
   if (error) return <div className="standard-page"><div className="inline-error">{error}</div></div>
-  if (!organization) return <div className="drawer-loading"><LoaderCircle size={22} className="spin" /></div>
+  if (!organization) return <div className="standard-page"><RowSkeletons rows={5} cells={2} label="Loading the organization" /></div>
   const tabs = [
     { id: 'models', label: 'Models', count: models?.length },
     { id: 'members', label: 'Members', count: organization.members.length },
@@ -295,7 +296,7 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
       <div className="section-body" ref={body}>
         {tab === 'models' && (
           models === null ? (
-            <div className="drawer-loading"><LoaderCircle size={22} className="spin" /></div>
+            <ModelCardSkeletons count={4} label="Loading the organization's models" />
           ) : models.length ? (
             <div className="model-card-grid">
               {models.map((model) => (

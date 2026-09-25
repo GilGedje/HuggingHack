@@ -28,6 +28,7 @@ import type {
 } from '../types'
 import { relativeTime, taskLabel } from '../utils'
 import { useNavigate } from 'react-router-dom'
+import { RowSkeletons } from './Skeletons'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -293,7 +294,7 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
               />
             </div>
             {loading ? (
-              <div className="drawer-loading"><LoaderCircle className="spin" size={22} /> Loading your library…</div>
+              <RowSkeletons rows={4} cells={0} label="Loading your saved models" />
             ) : (
               <div className="saved-grid">
                 {items.map((item) => (

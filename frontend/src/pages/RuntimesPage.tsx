@@ -3,6 +3,7 @@ import { AlertCircle, Check, Cloud, LoaderCircle, RefreshCw, Server } from 'luci
 import { api } from '../api'
 import type { RuntimeJob, RuntimeTarget } from '../types'
 import { formatBytes, relativeTime } from '../utils'
+import { RowSkeletons } from '../components/Skeletons'
 
 const runtimeActiveStatuses = ['queued', 'preparing', 'transferring', 'loading']
 
@@ -67,6 +68,7 @@ export function RuntimesPage() {
             <span className="status-pill ok"><Check size={13} /> Configured</span>
           </article>
         ))}
+        {loading && targets.length === 0 && <RowSkeletons rows={2} cells={1} label="Loading runtimes" />}
         {!loading && targets.length === 0 && (
           <div className="empty-state spacious runtime-empty">
             <Server size={34} />
@@ -127,6 +129,7 @@ export function RuntimesPage() {
               </div>
             </article>
           ))}
+          {loading && jobs.length === 0 && <RowSkeletons rows={3} cells={2} label="Loading runtime jobs" />}
           {!loading && jobs.length === 0 && (
             <div className="empty-compact">Send a model from its model page to create the first runtime job.</div>
           )}

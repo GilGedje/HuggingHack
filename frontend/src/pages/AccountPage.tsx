@@ -19,6 +19,7 @@ import { CopyButton } from '../components/UseModel'
 import type { AccountOverview, AccountSession, ApiToken, StorageOption } from '../types'
 import { resolveServerUrl } from '../useModel'
 import { describeDevice, initials, relativeTime } from '../utils'
+import { RowSkeletons } from '../components/Skeletons'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -493,7 +494,7 @@ export function AccountPage({ onToast }: { onToast: ToastHandler }) {
       <div className="section-body" ref={body}>
         {error && <div className="inline-error">{error}</div>}
         {!overview && !error && (
-          <div className="drawer-loading"><LoaderCircle size={22} className="spin" /> Loading your account…</div>
+          <RowSkeletons rows={4} cells={1} label="Loading your account" />
         )}
         {overview && tab === 'profile' && <ProfileTab overview={overview} onToast={onToast} onSaved={load} />}
         {overview && tab === 'security' && <SecurityTab overview={overview} onToast={onToast} />}

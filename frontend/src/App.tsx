@@ -28,6 +28,7 @@ import { AuthScreen, SavedPage } from './components/AccountPages'
 import { UploadsPage } from './pages/UploadsPage'
 import { EMPTY_FILTERS, ModelFilters, activeFilterCount, applyFilters, type ModelFilterState } from './components/ModelFilters'
 import { LibraryModelRow } from './components/RepositoryRows'
+import { ModelCardSkeletons } from './components/Skeletons'
 import { AccessProvider, useAccess } from './access'
 import { AccountPage } from './pages/AccountPage'
 import { AdminPage } from './pages/AdminPage'
@@ -297,7 +298,9 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
 
           <div className="results-line">
             <span>
-              {loading
+              {scanning
+                ? 'Scanning storage for new or changed models…'
+                : loading
                 ? 'Reading the local library…'
                 : models.length === libraryTotal
                   ? `${models.length} models`
@@ -316,19 +319,9 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
               <button onClick={fetchModels}>Retry</button>
             </div>
           )}
-          {loading ? (
-            <div className="model-card-grid skeleton-card-grid" aria-label="Loading models">
-              {Array.from({ length: 8 }).map((_, index) => (
-                <div key={index} className="model-card skeleton-card">
-                  <div className="skeleton skeleton-visual" />
-                  <div className="model-card-body">
-                    <div className="skeleton line-short" />
-                    <div className="skeleton line-strong" />
-                    <div className="skeleton line-medium" />
-                  </div>
-                </div>
-              ))}
-            </div>
+          {/* A scan re-reads every model, so the grid shows what is coming instead. */}
+          {loading || scanning ? (
+            <ModelCardSkeletons label={scanning ? 'Scanning the library' : 'Loading models'} />
           ) : (
             <div className="model-card-grid">
               {models.map((model) => (

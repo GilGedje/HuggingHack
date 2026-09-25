@@ -22,6 +22,7 @@ import { formatLabels } from '../components/RepositoryRows'
 import type { StorageGrant, StorageOverview, StorageTarget } from '../types'
 import { formatBytes, formatNumber, relativeTime } from '../utils'
 import { visibilityLabel } from '../visibility'
+import { RowSkeletons, StorageSkeleton } from '../components/Skeletons'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -204,12 +205,15 @@ function UploadAccess({
 function TargetSection({
   target,
   query,
+  scanning,
   canManage,
   onChanged,
   onToast,
 }: {
   target: StorageTarget
   query: string
+  /** A scan is re-reading every location, so the table shows what is coming. */
+  scanning: boolean
   canManage: boolean
   onChanged: () => void
   onToast: ToastHandler
@@ -263,45 +267,49 @@ function TargetSection({
         <Capacity used={target.capacity.used_bytes} total={target.capacity.total_bytes} />
       )}
       <UploadAccess target={target} canManage={canManage} onSaved={onChanged} onToast={onToast} />
-      <div className="storage-model-table" role="table" aria-label={`Models in ${target.name}`}>
-        <div className="storage-model-row header" role="row">
-          <span role="columnheader">Model</span>
-          <span role="columnheader">Size</span>
-          <span role="columnheader">Files</span>
-          <span role="columnheader">Parameters</span>
-          <span role="columnheader">Status</span>
-          <span role="columnheader">Updated</span>
+      {scanning ? (
+        <RowSkeletons rows={Math.min(Math.max(target.models.length, 2), 5)} cells={4} label={`Scanning ${target.name}`} />
+      ) : (
+        <div className="storage-model-table" role="table" aria-label={`Models in ${target.name}`}>
+          <div className="storage-model-row header" role="row">
+            <span role="columnheader">Model</span>
+            <span role="columnheader">Size</span>
+            <span role="columnheader">Files</span>
+            <span role="columnheader">Parameters</span>
+            <span role="columnheader">Status</span>
+            <span role="columnheader">Updated</span>
+          </div>
+          {models.map((model) => (
+            <div className="storage-model-row" role="row" key={model.repo_id}>
+              <span role="cell" className="storage-model-name">
+                <Link to={`/models/${model.repo_id}`}>{model.repo_id}</Link>
+                <small>
+                  {model.formats.map((format) => formatLabels[format] || format).join(' · ') || 'No weights'}
+                  {model.visibility !== 'public' && (
+                    <>
+                      {' · '}
+                      {model.visibility === 'private' ? <LockKeyhole size={10} /> : <Users size={10} />}
+                      {visibilityLabel(model.visibility)}
+                    </>
+                  )}
+                </small>
+              </span>
+              <span role="cell">{formatBytes(model.size_bytes)}</span>
+              <span role="cell">{formatNumber(model.file_count)}</span>
+              <span role="cell">{model.parameter_count ? formatNumber(model.parameter_count) : '—'}</span>
+              <span role="cell">
+                {target.kind === 'filesystem' ? 'On disk' : model.cached ? 'Cached' : 'S3 only'}
+              </span>
+              <span role="cell">{relativeTime(model.modified_at)}</span>
+            </div>
+          ))}
+          {models.length === 0 && (
+            <div className="empty-compact">
+              {target.models.length ? 'No models match your search.' : 'No models in this location yet.'}
+            </div>
+          )}
         </div>
-        {models.map((model) => (
-          <div className="storage-model-row" role="row" key={model.repo_id}>
-            <span role="cell" className="storage-model-name">
-              <Link to={`/models/${model.repo_id}`}>{model.repo_id}</Link>
-              <small>
-                {model.formats.map((format) => formatLabels[format] || format).join(' · ') || 'No weights'}
-                {model.visibility !== 'public' && (
-                  <>
-                    {' · '}
-                    {model.visibility === 'private' ? <LockKeyhole size={10} /> : <Users size={10} />}
-                    {visibilityLabel(model.visibility)}
-                  </>
-                )}
-              </small>
-            </span>
-            <span role="cell">{formatBytes(model.size_bytes)}</span>
-            <span role="cell">{formatNumber(model.file_count)}</span>
-            <span role="cell">{model.parameter_count ? formatNumber(model.parameter_count) : '—'}</span>
-            <span role="cell">
-              {target.kind === 'filesystem' ? 'On disk' : model.cached ? 'Cached' : 'S3 only'}
-            </span>
-            <span role="cell">{relativeTime(model.modified_at)}</span>
-          </div>
-        ))}
-        {models.length === 0 && (
-          <div className="empty-compact">
-            {target.models.length ? 'No models match your search.' : 'No models in this location yet.'}
-          </div>
-        )}
-      </div>
+      )}
     </section>
   )
 }
@@ -363,11 +371,7 @@ export function StoragePage({ onToast }: { onToast: ToastHandler }) {
       </div>
 
       {error && <div className="inline-error">{error}</div>}
-      {!overview && !error && (
-        <div className="drawer-loading">
-          <LoaderCircle size={24} className="spin" /> Checking storage…
-        </div>
-      )}
+      {!overview && !error && <StorageSkeleton />}
 
       {overview && (
         <>
@@ -430,6 +434,7 @@ export function StoragePage({ onToast }: { onToast: ToastHandler }) {
               key={target.id}
               target={target}
               query={query}
+              scanning={scanning}
               canManage={can('storage.manage')}
               onChanged={load}
               onToast={onToast}

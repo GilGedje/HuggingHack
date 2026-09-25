@@ -31,6 +31,7 @@ import { relativeTime } from '../utils'
 import { ORG_ROLE_LABELS } from './OrganizationPage'
 import { RuntimesPage } from './RuntimesPage'
 import { StoragePage } from './StoragePage'
+import { RowSkeletons } from '../components/Skeletons'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -343,9 +344,7 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
           <div className="admin-user-row header" role="row">
             <span>Account</span><span>Role</span><span>Status</span><span>Last sign-in</span><span>Access</span><span />
           </div>
-          {!result && loading && (
-            <div className="admin-user-empty"><LoaderCircle size={20} className="spin" /></div>
-          )}
+          {!result && loading && <RowSkeletons rows={6} cells={3} label="Loading" />}
           {result && users.length === 0 && (
             <div className="admin-user-empty">
               <strong>No accounts match these filters.</strong>
@@ -461,7 +460,7 @@ function RolesTab() {
   useEffect(() => {
     api.permissions().then(setMatrix).catch(() => undefined)
   }, [])
-  if (!matrix) return <div className="drawer-loading"><LoaderCircle size={22} className="spin" /></div>
+  if (!matrix) return <RowSkeletons rows={6} cells={3} label="Loading roles" />
   return (
     <section className="settings-section">
       <div className="section-heading-line">
@@ -523,7 +522,7 @@ function ServerTab() {
     api.serverSettings().then(setServer).catch((reason) => setError(reason.message))
   }, [])
   if (error) return <div className="inline-error">{error}</div>
-  if (!server) return <div className="drawer-loading"><LoaderCircle size={22} className="spin" /></div>
+  if (!server) return <RowSkeletons rows={6} cells={1} label="Loading the server configuration" />
   const yes = (value: boolean) => (value ? 'Yes' : 'No')
   return (
     <>
@@ -841,9 +840,7 @@ function OrganizationsTab({ onToast }: { onToast: ToastHandler }) {
           <div className="admin-user-row org-row header" role="row">
             <span>Organization</span><span>Repositories</span><span>Members</span><span>Your role</span><span />
           </div>
-          {!result && loading && (
-            <div className="admin-user-empty"><LoaderCircle size={20} className="spin" /></div>
-          )}
+          {!result && loading && <RowSkeletons rows={6} cells={3} label="Loading" />}
           {result && items.length === 0 && (
             <div className="admin-user-empty">
               {result.counts.all === 0 && !query.q ? (
