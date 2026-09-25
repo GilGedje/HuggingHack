@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   AlertCircle,
   Box,
@@ -384,13 +384,14 @@ function Application({
 }) {
   const [toast, setToast] = useState<{ id: number; message: string; tone: ToastTone } | null>(null)
   const [leavingToast, setLeavingToast] = useState(0)
+  const toastIds = useRef(0)
   const location = useLocation()
   // One fade per page, not per tab or filter: tabbed pages fade their own body.
   const segments = location.pathname.split('/')
   const view = useFadeOnChange<HTMLDivElement>(segments.slice(0, segments[1] === 'models' ? 4 : 2).join('/'), { initial: true })
 
   const showToast = useCallback((message: string, tone: ToastTone = 'success') => {
-    setToast((current) => ({ id: (current?.id ?? 0) + 1, message, tone }))
+    setToast({ id: ++toastIds.current, message, tone })
   }, [])
 
   const capabilities = authStatus.capabilities || []
