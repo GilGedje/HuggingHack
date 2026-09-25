@@ -1,781 +1,238 @@
 <p align="center">
-  <img src="frontend/public/hugginghack-mark.svg" width="92" alt="HuggingHack terminal-face mark">
+  <img src="frontend/public/hugginghack-mark.svg" width="88" alt="HuggingHack terminal-face mark">
 </p>
 
 <h1 align="center">HuggingHack</h1>
 
 <p align="center">
-  <strong>Bring the Hugging Face Hub home.</strong><br>
-  Browse live models, choose exactly which files to keep, and build a clean local library on your PC or NAS.
+  <strong>Your own Hugging Face Hub, on a network with no internet.</strong><br>
+  Bring models in once, browse them like the Hub, and pull them with vLLM, git, or the <code>hf</code> CLI from any machine on the LAN.
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/React-18-20232A?logo=react&logoColor=61DAFB" alt="React 18">
-  <img src="https://img.shields.io/badge/TypeScript-5.7-3178C6?logo=typescript&logoColor=white" alt="TypeScript 5.7">
+  <a href="https://github.com/GilGedje/HuggingHack/actions/workflows/ci.yml"><img src="https://github.com/GilGedje/HuggingHack/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <img src="https://img.shields.io/badge/FastAPI-0.116-009688?logo=fastapi&logoColor=white" alt="FastAPI 0.116">
-  <img src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white" alt="Docker Compose">
-  <img src="https://img.shields.io/badge/self--hosted-NAS%20ready-F59E0B" alt="Self-hosted and NAS ready">
-  <a href="https://github.com/tyedalwaves/HuggingHack/actions/workflows/ci.yml"><img src="https://github.com/tyedalwaves/HuggingHack/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <img src="https://img.shields.io/badge/React-18-20232A?logo=react&logoColor=61DAFB" alt="React 18">
+  <img src="https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL 17">
+  <img src="https://img.shields.io/badge/S3-compatible-569A31?logo=amazons3&logoColor=white" alt="S3-compatible storage">
+  <img src="https://img.shields.io/badge/air--gapped-ready-F59E0B" alt="Air-gapped ready">
+  <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="MIT license">
 </p>
 
 <p align="center">
-  <a href="#features">Features</a> ·
-  <a href="#screenshots">Screenshots</a> ·
-  <a href="#quick-start-on-this-pc">Quick start</a> ·
-  <a href="#move-it-to-the-nas">NAS setup</a> ·
-  <a href="#security">Security</a>
+  <a href="#a-tour">Tour</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#pull-a-model">Pull a model</a> ·
+  <a href="#deploy-it-properly">Deploy</a> ·
+  <a href="docs/GUIDE.md">Guide</a> ·
+  <a href="#security">Security</a> ·
+  <a href="#development">Development</a>
 </p>
 
-![HuggingHack model catalog showing live model cards, filters, search, and download actions](docs/images/models-catalog.png)
-
-<p align="center"><sub>Live Hub discovery with practical metadata, storage-aware downloads, and no cloud dashboard in the middle.</sub></p>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/explore-dark.webp">
+  <img src="docs/images/explore.webp" alt="HuggingHack Explore page: a grid of model cards with task, precision, size, and hardware, and filters for parameters, tasks, precision, and hardware">
+</picture>
 
 > [!NOTE]
-> HuggingHack is an unofficial, local-first project. It is not affiliated with or endorsed by Hugging Face.
+> HuggingHack is an unofficial, independent project. It is not affiliated with or endorsed by
+> Hugging Face.
 
-> [!TIP]
-> Running without internet access? Follow the [air-gapped setup guide](docs/AIRGAPPED.md)
-> to install HuggingHack offline, load models, and pull them with vLLM, `git clone`, or the `hf` CLI.
-> To keep everything in an S3-compatible bucket and PostgreSQL, see
-> [Serve from S3 and PostgreSQL](docs/SERVE_FROM_S3.md).
+## Why HuggingHack
 
-<table>
-  <tr>
-    <td width="33%" valign="top"><strong>🔎 Discover</strong><br>Search the live model catalog and narrow it by task, format, local app, parameter count, or popularity.</td>
-    <td width="33%" valign="top"><strong>🎯 Download precisely</strong><br>Keep a full repository, SafeTensors, one GGUF, metadata only, or your own include and exclude patterns.</td>
-    <td width="33%" valign="top"><strong>🏠 Own the library</strong><br>Store models in a plain folder on your disk or NAS and index files you copied there yourself.</td>
-  </tr>
-</table>
-
-## Features
-
-- Familiar Hub-style model catalog with visual, metadata-driven model cards; filter by parameter size (a range slider), Hugging Face task, precision (BF16, FP8, NVFP4), and hardware tags
-- Richly rendered model cards, repository file lists, and commit history from your own library
-- On-demand GGUF metadata and tensor inspection with shard position, names, shapes, data types, and parameter totals
-- Optional server-side Hugging Face downloads (API only), off by default so an air-gapped server never tries to reach the internet; see [File filtering](#file-filtering)
-- Automatic local-library indexing with model size, file count, config metadata, and unsafe serialization warnings
-- Built-in local accounts with a first-run owner, HTTP-only sessions, and administrator-created member accounts
-- Per-account saved models, private notes, and project or rig collections
-- Private or locally shared user repositories with resumable, chunked model-folder uploads
-- Optional S3-compatible durable storage with a local working cache, remote browsing, restore, and cache eviction
-- Network runtime jobs: transfer models to Ollama or switch a remote vLLM rig through an authenticated manager
-- Offline Hub protocol: point vLLM, Transformers, or the `hf` CLI at `HF_ENDPOINT`, or `git clone` with Git LFS, straight from the library
-- Ownership-verified repository deletion with exact-name confirmation
-- Optional read-only `HF_TOKEN` support for private and gated models
-- Light/dark themes and responsive desktop/mobile layouts
-- One Docker Compose service with persistent model and application-data mounts
-
-## Screenshots
-
-The catalog above is the main workspace. Open any model to inspect its repository, estimate
-storage, and choose the exact download mode without leaving the app. Local accounts add
-private shortlists, notes, collections, and repositories without turning HuggingHack into a
-hosted service.
+GPU clusters on closed networks still need models, and the tools that run them (vLLM,
+Transformers, `hf`, `git`) all expect a Hugging Face Hub. HuggingHack is that Hub, running on
+your own storage: carry models across the air gap once, and every machine on the network pulls
+them the same way it would from huggingface.co.
 
 <table>
   <tr>
-    <td width="50%" valign="top">
-      <img src="docs/images/account-setup.png" alt="HuggingHack first-run owner account setup">
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/images/saved-library.png" alt="HuggingHack saved model library with collections and private notes">
-    </td>
-  </tr>
-  <tr>
-    <td align="center"><sub>One-time local owner setup with no hosted identity service</sub></td>
-    <td align="center"><sub>Per-account model shortlists, collections, and private notes</sub></td>
+    <td width="33%" valign="top"><strong>Serve</strong><br>Speaks the Hub protocol, so <code>HF_ENDPOINT</code>, <code>vllm serve</code>, <code>hf download</code>, and <code>git clone</code> with LFS work unchanged. Files stream from disk or straight from S3.</td>
+    <td width="33%" valign="top"><strong>Organize</strong><br>Model cards, file browser, commit history with diffs, deployment configs with benchmark results, collections, organizations, and roles.</td>
+    <td width="33%" valign="top"><strong>Own it</strong><br>Models in a plain folder or S3-compatible buckets, metadata in PostgreSQL or SQLite. No calls home, no CDN, no cloud dashboard in the middle.</td>
   </tr>
 </table>
 
-![HuggingHack account repositories with private and shared model uploads](docs/images/account-uploads.png)
+## A tour
 
-<p align="center"><sub>Resumable model-folder uploads into private or locally shared repositories on the mounted drive</sub></p>
+### Every model gets a Hub-style page
+
+The rendered model card, tags read from the files, the model tree (base model, quantizations,
+fine-tunes), tested hardware, and one click to the commands that pull it.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/model-dark.webp">
+  <img src="docs/images/model.webp" alt="A model page for Qwen/Qwen3-0.6B with its model card, details, model tree, and hardware">
+</picture>
+
+### Files, versions, and commit history
+
+Every upload, change, and rescan is a commit with its author and a line diff for text files.
+Changes are staged and applied all at once, so nobody pulls a half-uploaded model.
 
 <table>
   <tr>
-    <td width="68%" valign="top">
-      <img src="docs/images/model-details-dark.png" alt="HuggingHack dark-theme model details and download options">
-    </td>
-    <td width="32%" valign="top">
-      <img src="docs/images/mobile-catalog.png" alt="HuggingHack responsive mobile model catalog">
-    </td>
-  </tr>
-  <tr>
-    <td align="center"><sub>Repository details and file-aware download controls in dark mode</sub></td>
-    <td align="center"><sub>The same live catalog on mobile</sub></td>
+    <td width="50%" valign="top"><img src="docs/images/files.webp" alt="Files and versions tab listing a repository's files with sizes and per-file downloads"></td>
+    <td width="50%" valign="top"><img src="docs/images/commit.webp" alt="A commit showing the files it added with a line diff"></td>
   </tr>
 </table>
 
-## Quick start on this PC
+### Deployment configs next to what they achieved
 
-1. Install and start Docker Desktop.
-2. Double-click **Start HuggingHack.bat**.
-3. Open [http://localhost:7860](http://localhost:7860).
+Keep the scripts you serve a model with as numbered revisions, record throughput and latency
+for each, and compare them side by side. The best value in each row is highlighted.
 
-The first launch builds the container. Later launches reuse the image unless the project changes.
-On the first browser visit, HuggingHack asks you to create the owner account. Use a unique
-password of at least 12 characters. The owner can add accounts and choose their roles from **Admin → Users**.
+<table>
+  <tr>
+    <td width="50%" valign="top"><img src="docs/images/configs.webp" alt="Config tab comparing two revisions' benchmark results"></td>
+    <td width="50%" valign="top"><img src="docs/images/config-revision.webp" alt="One config revision with its test setup and measured results"></td>
+  </tr>
+</table>
 
-Command-line equivalent:
+### Pull it from anywhere on the network
 
-```powershell
-Copy-Item .env.example .env
+**Use this model** gives copy-paste commands for vLLM and `git clone`, pointed at your server.
+
+<img src="docs/images/use-model.webp" alt="Use this model dialog with the pull endpoint and vLLM commands">
+
+### Upload, save, and share
+
+A four-step upload checks the folder, previews how the model will be listed, and resumes where
+it stopped if the connection drops. Save models into collections with private notes, and give
+teams their own organization namespace.
+
+<table>
+  <tr>
+    <td width="50%" valign="top"><img src="docs/images/upload.webp" alt="Upload a model: name, access, files, and review steps"></td>
+    <td width="50%" valign="top"><img src="docs/images/saved.webp" alt="Saved models with collections and private notes"></td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><img src="docs/images/org.webp" alt="An organization page with its models, members, and settings"></td>
+    <td width="50%" valign="top"><img src="docs/images/gguf-dark.webp" alt="GGUF tab showing metadata and tensors of a quantized file, in dark mode"></td>
+  </tr>
+</table>
+
+### Administration
+
+Accounts and roles, every storage location with its capacity, moves between locations, runtimes,
+and the server's configuration, all enforced the same way for the web, API tokens, and pulls.
+
+<table>
+  <tr>
+    <td width="50%" valign="top"><img src="docs/images/storage.webp" alt="Admin Storage page with the local disk, its capacity, and its models"></td>
+    <td width="50%" valign="top"><img src="docs/images/users-dark.webp" alt="Admin Users page in dark mode with roles and account actions"></td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top"><img src="docs/images/roles.webp" alt="Roles and permissions matrix for Viewer, Member, and Administrator"></td>
+    <td width="50%" valign="top"><img src="docs/images/server.webp" alt="Server settings page showing accounts, database, storage, and runtimes configuration without secrets"></td>
+  </tr>
+</table>
+
+### On a phone, in light or dark
+
+<img src="docs/images/phones.webp" alt="Three phone screenshots: Explore in light mode, a model page in dark mode, and Saved models in light mode">
+
+## Quick start
+
+You need Docker. On Windows, install Docker Desktop, double-click **Start HuggingHack.bat**, and
+open [http://localhost:7860](http://localhost:7860). Anywhere else:
+
+```bash
+cp .env.example .env
 docker compose up --build -d
 ```
 
-Stop it with **Stop HuggingHack.bat** or:
+On the first visit HuggingHack asks you to create the owner account (a password of at least 12
+characters). Put models in the library by uploading them on **Uploads**, or copy model folders
+into `./models` and choose **Rescan library**. Stop it with `docker compose down` (or
+**Stop HuggingHack.bat**); models and data stay.
 
-```powershell
-docker compose down
-```
+To use it as a single person on a trusted LAN without sign-in, set `ACCOUNTS_ENABLED=false`.
 
-Models and the default SQLite database are persistent and are not removed by
-`docker compose down`.
-
-## Use PostgreSQL
-
-SQLite remains the zero-configuration default. For a multi-user deployment or an external
-database service, set `DATABASE_URL` to a PostgreSQL connection URL:
-
-```dotenv
-DATABASE_URL=postgresql://hugginghack:password@database-host:5432/hugginghack
-```
-
-HuggingHack creates and upgrades its tables at startup. PostgreSQL credentials stay on the
-server and are not returned by the API.
-
-An optional Compose overlay runs PostgreSQL 17 beside HuggingHack. Add a long URL-safe
-password to `.env`, then start both services:
-
-```dotenv
-POSTGRES_PASSWORD=replace-with-a-long-random-password
-```
-
-```powershell
-docker compose -f docker-compose.yml -f docker-compose.postgres.yml up --build -d
-```
-
-The overlay stores PostgreSQL data in the `postgres-data` named volume and waits for the
-database health check before starting HuggingHack. Back it up separately from `./data`.
-
-### Move an existing SQLite installation to PostgreSQL
-
-`python -m app.migrate_sqlite` copies accounts, sessions, tokens, saved models, repositories,
-commit history, and everything else into an empty PostgreSQL database. It works on a copy,
-so the SQLite file is never changed, and it refuses a target that already has accounts.
+## Pull a model
 
 ```bash
-docker compose down
-cp data/hugginghack.sqlite3 data/hugginghack.sqlite3.backup
-# Add POSTGRES_PASSWORD to .env, then start only the database:
-docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d postgres
-# Copy the data before HuggingHack starts on PostgreSQL:
-docker compose -f docker-compose.yml -f docker-compose.postgres.yml run --rm hugginghack \
-  python -m app.migrate_sqlite
-docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
-```
+export HF_ENDPOINT=http://your-server:7860
 
-Run the copy before anyone opens the web interface on PostgreSQL; otherwise the first-run
-setup creates an owner account and the copy refuses to overwrite it.
+vllm serve Qwen/Qwen3-0.6B            # vLLM
+hf download Qwen/Qwen3-0.6B           # the hf CLI
+python -c "from transformers import AutoModel; AutoModel.from_pretrained('Qwen/Qwen3-0.6B')"
 
-## Accounts, saved models, and uploads
-
-Accounts are local to this HuggingHack installation—there is no hosted identity service and
-no account data leaves the server. Each account gets a separate saved-model library, private
-notes, collections, and download history.
-
-Every account has one of three roles:
-
-| Role | Can |
-| --- | --- |
-| **Viewer** | Browse, save, and pull models, and create personal API tokens. |
-| **Member** | Everything a viewer can, plus upload repositories, change their own repositories, rescan storage, and manage the S3 cache. |
-| **Administrator** | Everything, including other people's repositories, storage, runtimes, server settings, and accounts. |
-
-The server enforces these roles for the web interface, API tokens, and pulls alike; the full
-matrix is under **Admin → Roles & permissions**.
-
-**Account** (the gear icon or your name) holds your profile (with a password change for
-local accounts), active sessions (sign out other browsers), preferences that follow you across browsers (theme, default sort,
-default upload location), and **API tokens**. A token acts as you from scripts and tools:
-use it as `HF_TOKEN` for vLLM, Transformers, and the `hf` CLI, as the git password, or as
-`Authorization: Bearer hht_…` for the REST API. Read tokens can only browse and pull; write
-tokens can also upload. Tokens can never manage accounts or other tokens.
-
-**Admin** (administrators only) lists every account with its role, status, last sign-in,
-sessions, tokens, and repositories. Change roles, disable or enable accounts (which signs
-them out immediately), sign people out everywhere, or delete accounts that own no
-repositories. Click a name to open the account: its organizations and repositories, its
-sessions, and its API tokens, each shown by the first characters of the token (the full
-token is never stored) with a button to revoke it. Local accounts also get a form to set a
-new password, which signs them out everywhere; administrators change their own password
-from their profile instead. The last active administrator can never be demoted, disabled, or
-deleted. The **Server** tab shows the configuration from `.env` without revealing secrets.
-
-Use the heart on a Hub model to save it without downloading. The **Saved** workspace can
-organize those models into multiple collections, such as a project shortlist or a target rig.
-
-The **Uploads** workspace creates repositories under the signed-in owner name:
-
-```text
-models/
-  your-username/
-    your-repository/
-      .hugginghack.json
-      config.json
-      model.safetensors
-      ...
-```
-
-**Uploads** walks through four steps: name the model, choose who can see it and where it is
-stored, drop or pick the model folder, then review and upload. The folder check flags a
-missing `config.json`, tokenizer, safetensors weights, or model card, shows the detected
-precision, and skips `.git`, `.cache`, `__pycache__`, and system clutter, so a folder cloned
-from Hugging Face uploads as is. The review step shows how the library will list the model
-(task, precision, parameter count, library, license, and tags), read from `config.json`, the
-model card, and the weight headers by the same code the indexer runs after the upload, so it
-is what the listing will be. Correct any field that does not fit; corrections are saved as
-soon as the repository exists. Only those small files and the headers are read for this,
-never the weights. The repository is created only when the upload starts.
-HuggingHack sends each file in bounded chunks; interrupted uploads keep their progress and
-resume from the server's confirmed offset (choose **Resume** under **Unfinished uploads**).
-Model files stay in the model mount rather than in the metadata database.
-
-| Visibility | Who can see it |
-| --- | --- |
-| **Private** (default) | You; for an organization repository, its admins and writers |
-| **Organization** | Every member of the owning organization (organization repositories only) |
-| **Public** | Every account, plus anonymous pulls through the Hub protocol and `git clone` |
-
-The **Config** tab keeps the files you deploy a model with (launch scripts, compose files,
-vLLM arguments) as numbered revisions, next to what each one achieved. A revision starts from
-the latest files: upload or drop files and folders, edit or write files in place, remove
-some, and describe the change. Its files never change afterwards, and each revision shows a
-diff against the one before. Results stay editable, since you deploy first and measure
-second: the test setup (hardware, GPUs, tensor parallel, vLLM version, concurrency, input and
-output length), throughput, TTFT, TPOT and ITL, KV cache and reported max concurrency,
-speculative-decoding acceptance rate and length, your own metrics, and notes. **Compare
-results** lines up every measured revision and highlights the best value in each row.
-**Download .zip** fetches one revision's files for the GPU host. Configs are stored in the
-metadata database, never in the model's files, so pulling a model never pulls them. Anyone
-who can see the model can read them, so keep tokens out; anyone who may upload changes to it
-can add revisions and results.
-
-Every model page has a **Settings** tab for the repository's admins, and for server
-administrators on every model, including downloaded ones:
-
-- **Visibility** and **description** of owned repositories.
-- **Listing**: correct the task, precision, parameter count, library, license, or tags the
-  library shows and filters by. Each correction sits next to what the files say and can be
-  reset; rescans keep corrections and keep refreshing the detected values underneath.
-- **Rename or transfer**: change the name or move the model to yourself or an organization you
-  write to (administrators: any organization). Files, commit history, saves, and hardware tags
-  move with it; old links, `vllm serve` names, and git remotes stop working, with no redirect.
-  Giving a downloaded model an owner registers it like an upload and keeps it **Public**.
-  Models stored in S3 cannot be renamed yet.
-- **Delete**, confirmed by typing the repository name.
-
-To preserve the original trusted-LAN behavior, set `ACCOUNTS_ENABLED=false`. This creates a
-single local compatibility identity and skips sign-in. Do not use that mode on an untrusted
-network.
-
-## Choose the model folder
-
-Edit `.env` and set `MODEL_STORAGE_PATH` to the host folder that should contain models:
-
-```dotenv
-MODEL_STORAGE_PATH=./models
-```
-
-The container sees this folder as `/models`. Managed repositories are stored in a plain hierarchy:
-
-```text
-models/
-  organization/
-    repository/
-      .hugginghack.json
-      config.json
-      model.safetensors
-      ...
-```
-
-That layout is portable and works with vLLM, llama.cpp, Ollama import workflows, Transformers, Diffusers, and other tools that accept a local repository path.
-
-## Use S3-compatible model storage
-
-Set `MODEL_STORAGE_BACKEND=s3` to keep complete managed repositories in AWS S3 or an
-S3-compatible service such as MinIO or Ceph. `/models` remains a local working cache because
-vLLM, llama.cpp, and similar runtimes require filesystem paths.
-
-```dotenv
-MODEL_STORAGE_BACKEND=s3
-MODEL_STORAGE_PATH=./models
-S3_BUCKET=my-model-bucket
-S3_PREFIX=models
-S3_REGION=us-east-1
-AWS_ACCESS_KEY_ID=replace-me
-AWS_SECRET_ACCESS_KEY=replace-me
-```
-
-For MinIO or another custom endpoint:
-
-```dotenv
-S3_ENDPOINT_URL=http://minio:9000
-S3_ADDRESSING_STYLE=path
-S3_USE_SSL=false
-```
-
-HuggingHack also supports boto3's normal credential chain, including attached IAM roles, so
-static keys are optional on AWS. Credentials stay server-side and are never returned by the API.
-Downloads and finalized browser uploads sync automatically. The manifest is published last, so
-partially transferred repositories are not indexed as complete. From a model's page you can
-remove a local cache copy while keeping its durable S3 copy, then restore it when an inference
-runtime needs the files.
-
-The bucket identity needs `s3:ListBucket` on the bucket and `s3:GetObject`,
-`s3:PutObject`, and `s3:DeleteObject` on the configured prefix.
-Keep the metadata database backed up too: private upload manifests fail closed unless their
-matching ownership metadata is present.
-
-## Send models to Ollama or vLLM
-
-HuggingHack can dispatch a cached model to another inference device on the same network.
-Destinations are configured server-side so endpoints and credentials never have to be entered
-in the browser. The owner can then open a model and choose **Send to runtime**, while
-automation can use the same API.
-
-Add one or both target types to `.env` on a single line:
-
-```dotenv
-RUNTIME_TARGETS_JSON=[{"id":"ollama-rig","name":"Ollama GPU","kind":"ollama","base_url":"http://192.168.0.36:11434","keep_alive":"15m"},{"id":"vllm-rig","name":"vLLM GPU","kind":"vllm","base_url":"http://192.168.0.35:8090","remote_model_root":"/mnt/nas/models","token_env":"VLLM_AGENT_TOKEN"}]
-RUNTIME_WORKERS=2
-VLLM_AGENT_TOKEN=replace-with-the-same-long-random-secret-used-on-the-agent
-```
-
-The two adapters deliberately handle storage differently:
-
-- **Ollama** uses its native blob and create APIs. HuggingHack hashes each required file, skips
-  blobs the remote server already has, transfers missing data over HTTP, creates the Ollama
-  model, and preloads it for the configured `keep_alive`. A repository needs one selected GGUF
-  or a root-level SafeTensors model supported by Ollama.
-- **vLLM** reads the existing NAS files instead of copying them. Mount the HuggingHack model
-  folder on the vLLM device, then set `remote_model_root` to that device's mount path. vLLM
-  fixes its base model at process startup, so the authenticated agent stops the process it
-  manages and starts `vllm serve` with the selected model. Active inference requests will be
-  interrupted during a switch.
-
-S3-only models must be restored to the local cache before either adapter can use them.
-
-### Run the vLLM agent
-
-On the vLLM device, mount the same model share and run the small manager included in this
-repository. The token is mandatory and must match the environment variable forwarded to the
-HuggingHack container:
-
-```bash
-export VLLM_AGENT_TOKEN='replace-with-a-long-random-secret'
-export VLLM_AGENT_MODEL_ROOT=/mnt/nas/models
-export VLLM_AGENT_VLLM_PORT=8000
-export VLLM_AGENT_EXTRA_ARGS_JSON='["--gpu-memory-utilization","0.9"]'
-python -m uvicorn app.vllm_agent:app \
-  --app-dir backend \
-  --host 0.0.0.0 \
-  --port 8090
-```
-
-The agent never accepts a shell command or arbitrary model path. It only starts `vllm serve`
-for a directory inside `VLLM_AGENT_MODEL_ROOT`, with additional vLLM arguments fixed by the
-agent administrator through `VLLM_AGENT_EXTRA_ARGS_JSON`. Do not run a separate vLLM server on
-the configured vLLM port; the agent owns that process.
-
-### Runtime API
-
-Set `RUNTIME_API_TOKEN` to enable bearer-token automation scoped to runtime targets, loads, and
-job history:
-
-```dotenv
-RUNTIME_API_TOKEN=replace-with-another-long-random-secret
-```
-
-Queue a load:
-
-```bash
-curl -X POST http://NAS-IP:7860/api/runtimes/ollama-rig/load \
-  -H "Authorization: Bearer $RUNTIME_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"repo_id":"bartowski/Qwen2.5-7B-Instruct-GGUF","runtime_model_name":"qwen-local","source_file":"Qwen2.5-7B-Instruct-Q4_K_M.gguf"}'
-```
-
-The response is a persistent asynchronous job. Read it at
-`GET /api/runtime-jobs/{job_id}`, list history at `GET /api/runtime-jobs`, and discover
-configured destinations at `GET /api/runtimes`. The same endpoints also accept the owner's
-normal browser session and CSRF token. Interactive API documentation is available at
-`http://NAS-IP:7860/api/docs`.
-
-## Move it to the NAS
-
-Copy the entire `HuggingHack` directory to your NAS, then change only `MODEL_STORAGE_PATH` in `.env`.
-
-The host model folder and the project's `data` folder must exist before the container starts. Synology Container Manager does not always create missing bind-mount sources. For a project stored at `/volume1/docker/HuggingHack`, create them in File Station or over SSH:
-
-```bash
-mkdir -p /volume1/docker/HuggingHack/models
-mkdir -p /volume1/docker/HuggingHack/data
-```
-
-Then set `MODEL_STORAGE_PATH=/volume1/docker/HuggingHack/models`. If you choose another model location, create that exact path first.
-
-Common examples:
-
-```dotenv
-# Synology
-MODEL_STORAGE_PATH=/volume1/AI/models
-
-# TrueNAS
-MODEL_STORAGE_PATH=/mnt/tank/ai/models
-
-# QNAP
-MODEL_STORAGE_PATH=/share/Container/models
-```
-
-If your NAS enforces Unix ownership, set its user and group IDs:
-
-```dotenv
-PUID=1026
-PGID=100
-```
-
-Find them over SSH with `id your-nas-user`. Then launch from the project directory:
-
-```bash
-docker compose up --build -d
-```
-
-Open `http://NAS-IP:7860` from another computer on the LAN.
-
-## Gated and private models
-
-1. Sign in at Hugging Face and accept the repository's license or access terms in your browser.
-2. Create a read-only user access token.
-3. Put it in `.env`:
-
-```dotenv
-HF_TOKEN=hf_your_read_token
-```
-
-4. Restart the service:
-
-```bash
-docker compose up -d
-```
-
-The token is read only by the backend container. It is never returned by the API or sent to the browser.
-
-A model downloaded this way has no owner, so every account could open it. Only administrators
-may therefore download repositories that are private or gated on Hugging Face; members get a
-clear refusal and can ask an administrator.
-
-## File filtering
-
-Server-side downloads from Hugging Face are off by default (`HF_DOWNLOADS_ENABLED=false`),
-because an air-gapped server cannot reach Hugging Face; models arrive by upload instead. On a
-server with internet access, set `HF_DOWNLOADS_ENABLED=true` and start downloads with
-`POST /api/downloads` (members and admins, or a write-scope API token; private and gated
-Hugging Face repositories are for admins only). The `mode` field takes:
-
-- **Full repository** downloads every file in the selected revision.
-- **SafeTensors** selects safe weights plus configuration and tokenizer files.
-- **One GGUF** lets you choose a specific quantization from the repository file list.
-- **Metadata only** fetches configuration, tokenizer, and documentation files without weights.
-- **Custom** accepts comma-separated include and exclude patterns.
-
-Custom pattern examples:
-
-- Include only SafeTensors and config files: `*.safetensors, *.json, tokenizer*`
-- Download one GGUF quantization: `*Q4_K_M.gguf, *.json, tokenizer*`
-- Exclude legacy PyTorch weights: `*.bin, *.pt, *.pth`
-
-Patterns use Hugging Face's official `snapshot_download` filtering.
-
-## GGUF metadata and tensors
-
-Repositories containing GGUF files get a **GGUF** tab on the model page. Select a file or
-shard to inspect its metadata, tensor names, shapes, data types, quantization breakdown, and
-parameter count without downloading the model weights.
-
-HuggingHack reads only bounded byte ranges from the selected file, caches the result for the
-browser session, and leaves every other shard untouched until you select it. Private and gated
-repositories use the backend's `HF_TOKEN`; the token is never exposed to the browser.
-
-## Cancel and resume
-
-Active downloads have a **Cancel download** action. Cancellation stops the isolated download worker, keeps already transferred files and Hugging Face local-directory metadata, and marks the job as cancelled in history. Starting the same repository again can reuse those partial files instead of discarding the completed work.
-
-## Organizations
-
-Organizations are shared namespaces for teams and companies, so a model can live at
-`Nvidia/GLM-5.3-NVFP4` without an `Nvidia` user account. Administrators create them under
-**Admin → Organizations**; each organization then has its own members:
-
-| Organization role | Can |
-| --- | --- |
-| **Read** | See and pull the organization's repositories with **Organization** visibility |
-| **Write** | Also see **Private** ones, create repositories in the organization, and upload changes |
-| **Admin** | Also manage members and settings, change visibility, and delete repositories |
-
-Organization roles add to the server role, and a server **Viewer** can only be given
-organization **Read**. A Viewer who kept a **Write** or **Admin** role from earlier can read
-but not upload, change settings, rename, or delete. Changing a repository's settings (rename,
-transfer, visibility, delete) also needs a server role that can create repositories.
-Private and organization repositories stay inside
-the organization, including through API tokens and `git clone`. Organization names and usernames share
-one namespace (case-insensitive), so a user cannot take an organization's name or the reverse.
-Repositories stay with the organization when the account that created them leaves or is deleted.
-Browse every organization at `#/orgs`; pick the owner when creating a repository on **Uploads**.
-
-## Single sign-on (OpenID Connect)
-
-HuggingHack signs people in through any OpenID Connect provider (Authentik, Keycloak,
-Microsoft Entra ID, Okta, Dex, and others) using the Authorization Code flow with PKCE.
-Passwords keep working alongside it, so a local administrator can always get in.
-
-```dotenv
-PUBLIC_URL=https://hugginghack.example.internal
-OIDC_ISSUER=https://authentik.example.internal/application/o/hugginghack/
-OIDC_CLIENT_ID=from-your-provider
-OIDC_CLIENT_SECRET=from-your-provider
-OIDC_PROVIDER_NAME=Authentik
-OIDC_DEFAULT_ROLE=viewer
-```
-
-- Register `PUBLIC_URL` + `/api/auth/oidc/callback` as the redirect URI with the provider.
-- The first sign-in creates an account with `OIDC_DEFAULT_ROLE`; administrators change roles
-  under **Admin → Users**. Accounts are matched by the provider's subject id, never by
-  username or email, so single sign-on cannot take over a local account.
-- `OIDC_ALLOWED_GROUPS` limits who may sign in. To block one person, disable their account;
-  deleting it only lasts until their next sign-in.
-- The provider owns the name, email, and password of these accounts: they update at each
-  sign-in, and HuggingHack offers no password change or name and email edits for them.
-  Roles and disabling stay in HuggingHack.
-- The owner account is always created with a password on first run.
-- The step-by-step Authentik setup is in the [air-gapped setup guide](docs/AIRGAPPED.md#5a-single-sign-on-with-authentik).
-
-## Model pages and commit history
-
-Every model has a full page at `#/models/owner/name` with its rendered model card,
-a **Files and versions** browser with per-file downloads, a **Commits** history, and
-GGUF inspection. Each change is recorded as a commit with its author, message, and the
-files that were added, modified, or deleted; text files such as `README.md` and
-`config.json` show line diffs.
-
-Commits are created when you upload or change a repository, when a Hub download finishes,
-and when a scan finds that files changed on disk or in a bucket. The repository owner, or
-any administrator, can choose **Upload changes** to add, replace, or delete files with a
-commit message. Changed files are staged and applied all at once, so nobody pulling the
-model sees a half-uploaded change. Weights of older commits are not kept; only the newest
-version of each file can be downloaded.
-
-Uploads continue in a panel at the bottom of the screen while you browse. Reloading the page
-stops them, but the server keeps what was sent: choose the same folder again to resume.
-
-## Filtering the library
-
-The **Models** page filters by:
-
-- **Parameters:** a range slider. A model counts at the size in its name when the name
-  gives one and roughly agrees with its weights (`Qwen3-8B-FP8` is 8B, even though it
-  holds 8.19B parameters), and at its counted parameters otherwise. Both ends of the range
-  are inclusive.
-- **Tasks:** Hugging Face task names: Text Generation, Image-Text-to-Text, Any-to-Any,
-  Feature Extraction, Sentence Similarity, and Text Ranking, followed by any other task
-  your library has. The task comes from `pipeline_tag` in the model card.
-- **Precision:** BF16, FP8, or NVFP4, read at scan time from `quantization_config` in
-  `config.json`, from ModelOpt's `hf_quant_config.json`, and otherwise from the dtype. Packed
-  4-bit weights are counted as two parameters per byte, so NVFP4 models show their real size.
-- **Hardware:** L40, A100, RTX PRO 6000, and B300. Anyone who can upload changes to a
-  repository can tag it from the **Hardware** card on its model page.
-
-Precision and sizes come from the index, which the server rebuilds at startup; **Scan storage**
-refreshes it on demand.
-
-## Storage page and multiple buckets
-
-Administrators get a **Storage** page listing every location that holds models, with its
-connection status, capacity, and each model's size. Besides the local model folder and the
-optional `MODEL_STORAGE_BACKEND=s3` bucket, add as many S3-compatible buckets as you need:
-
-```dotenv
-STORAGE_TARGETS_JSON=[{"id":"minio-main","name":"MinIO models","bucket":"models","endpoint_url":"http://minio:9000","addressing_style":"path","use_ssl":false,"access_key_env":"MINIO_MAIN_KEY","secret_key_env":"MINIO_MAIN_SECRET"}]
-MINIO_MAIN_KEY=replace-me
-MINIO_MAIN_SECRET=replace-me
-DEFAULT_STORAGE_TARGET=minio-main
-```
-
-Target ids are permanent because models reference them. Credentials are read from the
-named environment variables and never returned by the API. Uploaders pick a target when
-creating a repository; new uploads and downloads otherwise use `DEFAULT_STORAGE_TARGET`.
-
-Every location is open to every uploader until an administrator reserves it: on the Storage
-page, **Who can upload → Reserve** lists the users and organizations allowed to create
-repositories there. A user grant covers that user's personal repositories and an organization
-grant covers the organization's, so a bucket can be dedicated to one person or team. A
-reserved location is preselected for its owners' uploads and hidden from everyone else.
-Hugging Face downloads still go to `DEFAULT_STORAGE_TARGET` unless another location is chosen;
-they may choose a reserved one when the user or one of their writable organizations is listed.
-Administrators can always use every location.
-If the same repository exists in two locations, the earlier target wins and the Storage page
-reports the conflict.
-
-### Site data in S3
-
-The site's own files, profile pictures and the git history behind `git clone` and `git pull`,
-live in one system folder. `SYSTEM_STORAGE_TARGET=local` (the default) keeps it in `DATA_DIR`;
-set it to an S3 target id to keep it in that bucket as `<prefix>/_system/`
-(`SYSTEM_STORAGE_PREFIX` overrides the path). With PostgreSQL for the database and every
-model in a bucket, the server keeps no lasting data of its own.
-
-```text
-_system/
-  README.txt
-  avatars/users/<user id>
-  avatars/organizations/<organization id>
-  git-mirrors/<owner>/<name>/
-```
-
-An unknown target id stops the server at start. Pictures already on local disk are copied into
-the folder on the next start and removed locally only once the copy reads back. The Storage
-page shows where the folder is and checks it answers; while a bucket is unreachable, pictures
-fall back to initials and uploads of new ones are refused with a message. The step-by-step
-setup is in [Serve from S3 and PostgreSQL](docs/SERVE_FROM_S3.md).
-
-### Moving a model to another location
-
-Each model on the Storage page has a **Move** button (administrators). Choose the new location
-and type the model's name to confirm; the move runs in the background and its row shows each
-step:
-
-1. **Copy**: every file is copied while its SHA-256 is computed. Local destinations are
-   written to a hidden staging folder, S3 destinations without a manifest, so no scan can
-   pick up a half-copied model.
-2. **Verify**: every copied file is read back and must match its hash and size, or the move
-   stops, removes the copy, and leaves the model where it was.
-3. **Switch**: the model points at the new location in one step.
-4. **Clean up**: the old copy is removed once every download that started from it has
-   finished; new downloads already read the new copy. An old bucket copy waits only for
-   downloads that began before the switch. A local copy being removed is read by every
-   download until it goes, so on a busy model that waits for a quiet moment. Waiting never
-   holds up other moves.
-
-Pulls keep working throughout. A client that fixed the revision before the switch (as
-`snapshot_download` and `vllm serve` do) keeps getting the same files under that revision,
-commit history records no change, and git mirrors keep their commit. While a model moves it
-cannot be changed, renamed, deleted, re-downloaded, or loaded into a runtime, and one move
-runs at a time. A move can be cancelled until it switches. After a restart, moves that had
-not switched are undone and those that had are finished.
-
-Moving from local disk to a bucket removes the local copy unless **Keep a copy on this
-server's disk** is ticked; runtimes that load from the shared model path need that copy (or a
-cache restore from the model page). A local destination needs free space for the whole model.
-
-## Pull models with vLLM, git, or the hf CLI
-
-HuggingHack speaks the Hugging Face Hub protocol, so any machine on the network can
-pull a model from the library without internet access. Open a model and choose
-**Use model**, then **Deploy with vLLM** or **Clone repository**, for copy-paste
-commands. Links use the same form as the Hub: `#/models/owner/name?local-app=vllm`
-and `#/models/owner/name?clone=true`.
-
-```bash
-# vLLM, Transformers, and the hf CLI all honor HF_ENDPOINT
-export HF_ENDPOINT=http://NAS-IP:7860
-vllm serve owner/model-name
-hf download owner/model-name
-
-# git clone with Git LFS for the weights
 git lfs install
-git clone http://NAS-IP:7860/owner/model-name
+git clone http://your-server:7860/Qwen/Qwen3-0.6B
 ```
 
-- Files stream from the model folder, or directly from S3 for S3-only models, with
-  byte-range support for resumed and parallel downloads.
-- `git clone` is served from a read-only mirror in `data/git-mirrors`. Weights become
-  Git LFS pointers whose SHA-256 is computed once per file and cached, so the first
-  clone of a large model waits while it is hashed. Weights are never copied into the mirror.
-- A model that changes gets a new commit on top of the previous one, so `git pull`
-  picks up the update.
-- Pulls are read-only. Without a token they can read every model visible to all accounts;
-  a personal API token also reaches its owner's private uploads. Set `HUB_API_ENABLED=false`
-  to require a token for every pull.
-- Set `PUBLIC_URL=http://NAS-IP:7860` when the address in your browser (for example
-  `localhost`) is not the one other machines use.
+Models every account can see need no token. For private models, create a token under
+**Account → API tokens** and use it as `HF_TOKEN` or as the git password. Set `PUBLIC_URL` so the
+commands the site shows use the address other machines reach.
 
-## Manually added models
+## Deploy it properly
 
-Copy a model folder anywhere within the first few directory levels of the mounted model folder, then choose **Models → Rescan library** (or **Storage → Scan storage**). HuggingHack recognizes common configs and weight extensions such as:
+| You want to | Read |
+| --- | --- |
+| Install on a network with no internet access | [Air-gapped setup guide](docs/AIRGAPPED.md) |
+| Keep models in S3 and metadata in PostgreSQL, with no lasting data on the server | [Serve from S3 and PostgreSQL](docs/SERVE_FROM_S3.md) |
+| Switch from SQLite to PostgreSQL, or move an existing install | [Guide → PostgreSQL](docs/GUIDE.md#postgresql) |
+| Run it on a Synology, TrueNAS, or QNAP | [Guide → Run it on a NAS](docs/GUIDE.md#run-it-on-a-nas) |
+| Sign in with Authentik, Keycloak, Entra ID, or another OIDC provider | [Guide → Single sign-on](docs/GUIDE.md#single-sign-on-openid-connect) |
+| Load models into Ollama or a vLLM rig from the web page | [Guide → Send models to Ollama or vLLM](docs/GUIDE.md#send-models-to-ollama-or-vllm) |
+| Understand roles, organizations, visibility, uploads, and configs | [Guide](docs/GUIDE.md) |
 
-- `config.json`, `model_index.json`, `tokenizer.json`
-- `.safetensors`, `.gguf`, `.onnx`, `.bin`, `.pt`, `.pth`, and `.ckpt`
-
-Manually copied models are indexed but never modified.
+Every setting, with its default, is in [`.env.example`](.env.example).
 
 ## Security
 
-- HuggingHack downloads files but does not execute repository code, import model modules, or deserialize weights.
-- Model cards are rendered as sanitized Markdown with safe HTML, readable code, tables, lists, and math; embedded scripts, forms, and frames are discarded.
-- Pickle-compatible formats can execute code when loaded by other applications. Prefer SafeTensors or GGUF and only load models from publishers you trust.
-- Passwords are salted and hashed with `scrypt`; sessions use hashed random tokens in HTTP-only, SameSite cookies and state-changing requests require a per-session CSRF token.
-- Built-in accounts protect application data, but public exposure still requires HTTPS. Put HuggingHack behind a TLS reverse proxy such as Caddy, Traefik, or Nginx Proxy Manager. With the default `SECURE_COOKIES=auto`, session cookies are marked Secure whenever the request arrives over HTTPS (directly or with `X-Forwarded-Proto: https` from the proxy); set `SECURE_COOKIES=true` to require it always.
-- The API accepts cross-origin calls with cookies only from origins listed in `CORS_ORIGINS` (empty by default).
-- `/api/health` tells anonymous callers only whether the server is up (`status`, `app`, `version`); storage paths, buckets, and other server details need an account with **View server configuration**.
-- Upload paths are confined to repositories owned by the signed-in account. Repository deletion verifies ownership and requires the exact repository name.
-- Runtime dispatch is administrator-only in the UI. Optional bearer access is limited to runtime endpoints; use long random tokens and firewall Ollama and the vLLM agent to trusted LAN clients.
-- The vLLM agent rejects paths outside its configured model root and launches a fixed argument vector without a shell.
-- Use a read-only Hugging Face token.
-- The Hub-protocol pull endpoints are read-only and allow anonymous reads of models every account can see. Keep HuggingHack on a trusted network, or set `HUB_API_ENABLED=false` to require personal API tokens.
-- API tokens are stored only as SHA-256 hashes and shown once. Revoke them from **Account → API tokens**; disabling an account stops its tokens immediately.
+- **Model files are data.** HuggingHack never imports, unpickles, or runs model code.
+- **Accounts:** scrypt passwords, hashed sessions and API tokens, per-session CSRF tokens, and
+  sign-in throttling. Changing a password revokes the account's API tokens.
+- **Roles on every path:** Viewer, Member, and Administrator are enforced alike for the web, API
+  tokens, `git clone`, and Hub pulls. Private models stay private through all of them.
+- **A locked-down page:** strict Content-Security-Policy, sanitized model cards, no outside
+  images, and cross-site writes refused, even with accounts turned off.
+- **Quiet by default:** anonymous health checks reveal nothing about storage, API docs are off,
+  and `ALLOWED_HOSTS` blocks DNS rebinding.
+
+Put it behind an HTTPS reverse proxy before exposing it beyond a trusted network. Details are in
+[Guide → Security](docs/GUIDE.md#security).
 
 ## Development
 
-Backend:
+```bash
+# Backend (Python 3.12)
+python3.12 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
+MODEL_STORAGE=$PWD/models DATA_DIR=$PWD/data \
+  .venv/bin/uvicorn app.main:app --app-dir backend --reload --port 7860
 
-```powershell
-py -3.13 -m venv .venv
-.venv\Scripts\pip install -r backend\requirements.txt
-$env:MODEL_STORAGE="$PWD\models"
-$env:DATA_DIR="$PWD\data"
-.venv\Scripts\uvicorn app.main:app --app-dir backend --reload --port 7860
+# Frontend (Node 22): the dev server proxies /api to port 7860
+cd frontend && npm ci && npm run dev
 ```
 
-Python 3.12 or 3.13 is recommended for local development. The Docker image uses Python 3.12, so Python is not required on the NAS.
+Tests run on SQLite and on PostgreSQL, and every change must pass on both, because PostgreSQL is
+the production database:
 
-Frontend:
+```bash
+docker run -d --name hh-pg-test -p 55432:5432 -e POSTGRES_DB=hugginghack_test \
+  -e POSTGRES_USER=hugginghack -e POSTGRES_PASSWORD=test-only-password postgres:17-alpine
+PYTHONPATH=backend \
+  TEST_POSTGRES_URL=postgresql://hugginghack:test-only-password@127.0.0.1:55432/hugginghack_test \
+  .venv/bin/python -m pytest backend/tests -q
 
-```powershell
-Set-Location frontend
-npm install
-npm run dev
+cd frontend && npm test && npm run build
 ```
 
-The Vite development server proxies `/api` to port 7860.
-Frontend development and production builds require Node.js 22 or newer. The lockfile is maintained with npm 10.9.8.
+Working on the code, by hand or with Claude Code? Start with [`CLAUDE.md`](CLAUDE.md), then
+[`backend/CLAUDE.md`](backend/CLAUDE.md) and [`frontend/CLAUDE.md`](frontend/CLAUDE.md): they
+describe the architecture, the rules that keep it secure and air-gapped, and how to verify a
+change without internet access.
 
-Tests and build:
-
-```powershell
-$env:PYTHONPATH="$PWD\backend"
-pytest backend\tests
-Set-Location frontend
-npm test
-npm run build
+```text
+backend/app/     FastAPI server: API, Hub protocol, git, storage, accounts
+backend/tests/   pytest suite (SQLite, plus PostgreSQL when TEST_POSTGRES_URL is set)
+frontend/src/    React + TypeScript single-page app
+docs/            Guide, air-gapped setup, S3 and PostgreSQL
 ```
 
-## Data ownership and backups
+## License
 
-- Models: the host path configured by `MODEL_STORAGE_PATH`
-- S3 mode: durable model objects in `S3_BUCKET` and working copies in `MODEL_STORAGE_PATH`
-- Accounts, sessions, saved collections, repository ownership, download history, and local
-  index: `./data/hugginghack.sqlite3` by default, or the database named by `DATABASE_URL`
-
-Back up the models folder and metadata database together. Keep backing up `data` for SQLite
-deployments. The model index can be rebuilt from model files, but the database preserves accounts, saved-model organization, ownership, and download history.
-Store backups securely because it contains password hashes and active session hashes.
+[MIT](LICENSE) © 2026 Gil Gedje. Hugging Face is a trademark of Hugging Face, Inc.; HuggingHack
+is not affiliated with it.
