@@ -258,9 +258,14 @@ p { text-wrap: pretty; }
   .model-tree-name, .model-tree-group-link):active:not(:disabled) { opacity: 0.55; }
 /* On touch screens small text buttons get a finger-sized target without moving anything. */
 @media (pointer: coarse) {
-  .app-shell :is(button, a):is(.quiet-link, .text-link, .model-tree-name, .model-tree-group-link) {
+  .app-shell :is(button, a):is(.quiet-link, .text-link, .model-tree-name, .model-tree-group-link),
+  .app-shell .admin-user-name a {
     padding-block: 6px; margin-block: -6px;
   }
+  /* Stacked links and short counts grow instead, so neighbours never overlap. */
+  .app-shell .account-repo-link { padding-block: 8px; }
+  .app-shell .account-facts dd > a:not(.account-repo-link) { display: inline-block; min-width: 44px; padding-block: 8px; margin-block: -8px; }
+  .app-shell .role-filter button { min-height: 40px; }
 }
 .catalog-tools, .local-tools { display: flex; align-items: center; gap: 12px; }
 .catalog-search {
@@ -723,6 +728,9 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
   color: var(--text-muted); font-family: 'IBM Plex Mono', monospace; font-size: 11px;
 }
 .app-loading img { width: 70px; height: 70px; }
+/* Holds the signed-in app without a box of its own; hidden while a session is renewed. */
+.app-frame { display: contents; }
+.app-frame[hidden] { display: none; }
 .auth-layout {
   min-height: 100vh; padding: clamp(24px, 5vw, 72px); display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr); gap: clamp(36px, 7vw, 110px);
@@ -834,11 +842,16 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
   .collection-sidebar > button, .collection-row, .collection-delete, .saved-grid { transition: none; }
 }
 .collection-sidebar form {
-  margin-top: 8px; padding-top: 8px; display: flex; border-top: 1px solid var(--border);
+  margin-top: 8px; padding-top: 8px; display: flex; gap: 6px; border-top: 1px solid var(--border);
 }
 .collection-sidebar form input {
-  width: 100%; min-width: 0; height: 35px; padding: 0 8px; border: 0; outline: 0;
-  background: transparent; color: var(--text); font-size: 10px;
+  width: 100%; min-width: 0; height: 35px; padding: 0 8px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--text); font-size: 13px;
+}
+.collection-sidebar form input::placeholder { color: var(--text-muted); }
+/* Phones zoom into fields smaller than 16px. */
+@media (pointer: coarse) {
+  .collection-sidebar form input { font-size: 16px; }
 }
 .collection-sidebar form button {
   width: 34px; height: 34px; display: grid; flex: 0 0 auto; place-items: center;
@@ -2579,9 +2592,14 @@ button.file-browser-name:hover { text-decoration: underline; text-underline-offs
   background: var(--canvas); color: inherit;
 }
 .org-card:hover { border-color: var(--border-strong); background: var(--canvas-subtle); }
-.org-card strong { display: block; font-size: 15px; }
+.org-card > div { min-width: 0; }
+.org-card strong { display: block; font-size: 15px; overflow-wrap: anywhere; }
 .org-card small { color: var(--text-muted); font-size: 11px; }
-.org-card p { margin-top: 6px; color: var(--text-secondary); font-size: 12px; }
+/* Two lines of About at most, so one long description doesn't stretch its row. */
+.org-card p {
+  margin-top: 6px; display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  color: var(--text-secondary); font-size: 12px;
+}
 .org-card-meta { display: block; margin-top: 8px; color: var(--text-muted); font-size: 11px; }
 .org-avatar {
   width: 42px; height: 42px; display: grid; place-items: center; flex: none; border-radius: 9px;
@@ -3093,7 +3111,8 @@ html { scroll-padding-bottom: var(--upload-dock-space, 0px); }
 .new-token-value pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* Long addresses and device names wrap; the row's button keeps its line. */
-:is(.session-list, .token-list) small { overflow-wrap: anywhere; }
+:is(.session-list, .token-list) :is(small, strong) { overflow-wrap: anywhere; }
+.org-member-actions { flex: none; }
 :is(.session-list, .token-list) li > button { flex: none; white-space: nowrap; }
 
 /* Forms say what is wrong where it is: the field, its hint, and a note above

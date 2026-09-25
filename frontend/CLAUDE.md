@@ -34,7 +34,7 @@ Paths below are relative to `frontend/` unless marked *(repo root)*.
 - `api.ts`: the `request<T>()` helper and the `api` object, one method per endpoint. Details:
   - `request()` sets JSON `Content-Type` for string bodies and adds `X-CSRF-Token` on non-GET/HEAD requests. The token comes from `authStatus`, `login` and `setup` via `applyAuth`.
   - On 401 it dispatches `hugginghack:unauthorized`.
-  - It throws `Error(errorDetail(...))`. `errorDetail` turns a 422 `[{loc,msg}]` list into one sentence.
+  - It throws `Error(errorDetail(...))`. `errorDetail` turns a 422 `[{loc,msg}]` list into one sentence. A response with no `detail` (a proxy's HTML page, a crash) gets `statusMessage(status)`, and a network failure becomes `UNREACHABLE_MESSAGE`, never the browser's "Failed to fetch".
   - `uploadResumable` does chunked PUTs with `Upload-Offset`/`Upload-Length`.
 - `types.ts`: every API payload type. Keep it in step with the backend's responses.
 - `access.tsx`: `AccessProvider` and `useAccess()`, which give `user` and `can(capability)`. Capabilities come from the server. `ADMIN_CAPABILITIES` is also here.
@@ -52,7 +52,7 @@ Paths below are relative to `frontend/` unless marked *(repo root)*.
 - `uploadStore.ts`: cross-tab leases for unfinished uploads in `localStorage`: `LEASE_HEARTBEAT_MS`, `LEASE_TTL_MS`, `claimOrphans`, `parseTabRecord`.
 - `modelCard.ts`: model-card markdown prep (front matter, math), URL resolvers, `modelCardSanitizeSchema`.
 - `markdownAlerts.ts`: rehype plugin for `> [!NOTE]` callouts. `markdownText.ts`: `markdownSummary`, and `applyFormat` for the editor toolbar.
-- `roles.ts`: `ROLE_LABELS`, `roleConfirmation`, `disableConfirmation`. `visibility.ts`: `VISIBILITIES`, `visibilityLabel`, `visibilityAudience`, `visibilityAllowed`, `visibilityConfirmation`.
+- `roles.ts`: `ROLE_LABELS`, `roleConfirmation`, `disableConfirmation`, and for organizations `ORG_ROLE_LABELS`, `orgRoleConfirmation`, `effectiveOrgRole` (Viewers only read) and `actingOrgAdmins` (the server's last-admin count). `visibility.ts`: `VISIBILITIES`, `visibilityLabel`, `visibilityAudience`, `visibilityAllowed`, `visibilityConfirmation`.
 - `ssoError.ts`: `ssoErrorMessage` maps `sso_error` codes to fixed sentences.
 - `useModel.ts`: "Use this model" snippets (vLLM pip/docker, git clone, hf CLI), `resolveServerUrl`.
 - `gguf.ts`: GGUF header inspection. It lazy-imports `@huggingface/gguf` and fetches byte ranges only through `/api/library/gguf-range`.
@@ -62,7 +62,7 @@ Paths below are relative to `frontend/` unless marked *(repo root)*.
 **`src/components/`**
 - `Shell.tsx`: top bar, primary nav (sliding underline), phone menu, theme toggle, account chip.
 - `Dialog.tsx`: `DialogFrame`, the backdrop and panel for every dialog. `ConfirmDialog.tsx`: `ConfirmProvider` and `useConfirm()`.
-- `Skeletons.tsx`: `ModelCardSkeletons`, `RowSkeletons`, `ModelPageSkeleton`, `StorageSkeleton`.
+- `Skeletons.tsx`: `ModelCardSkeletons`, `RowSkeletons`, `ModelPageSkeleton`, `StorageSkeleton`. `LoadError.tsx`: the `.page-error` with Retry for a failed load.
 - `Markdown.tsx`: `MarkdownText` (user-written markdown) and `MarkdownEditor` (write/preview tabs with a toolbar). `MarkdownParts.tsx`: `MarkdownImage` and `DropWhenImagesFail` (broken images vanish), `MarkdownParagraph` (alert icons).
 - `ModelDetails.tsx`: `ModelCardDocument` (README renderer) and `ModelActions` (cache and runtime dispatch).
 - `AccountPages.tsx`: `AuthScreen` (setup, sign-in, SSO) and `SavedPage` (saved models and collections).
@@ -135,7 +135,7 @@ Paths below are relative to `frontend/` unless marked *(repo root)*.
   - or store the result with its key, as `ModelPage` does with `loaded.repoId === repoId`
 - **Loading and errors.**
   - Show a skeleton from `Skeletons.tsx` that matches the layout. It fades in after 120 ms (`.skeleton-reveal`).
-  - A failed load shows `.page-error` with the message and a **Retry** button (`LoadError` in `AccountPage.tsx`, or the Explore error). Never swallow the error or show an empty list in its place.
+  - A failed load shows `.page-error` with the message and a **Retry** button (`LoadError` from `components/LoadError.tsx`). Never swallow the error or show an empty list in its place.
   - Form and dialog errors go in `.inline-error`, or `.form-message` in account forms, next to what failed.
 - **Toasts.**
   - `onToast(message, 'success' | 'error')` is passed down as a **prop** from `Application`; there is no toast context.
@@ -242,7 +242,7 @@ Model-card assets (`/api/library/asset`) and avatars get the stricter `default-s
 - The backend picks its static folder at startup. If `backend/static/` exists it wins over `frontend/dist/`, and a backend started before `dist/` existed serves no UI until you restart it.
 - `useTabIndicator` and `useSlidingHighlight` only measure **direct children** with `.active` (`:scope > .active`). A wrapper element breaks them.
 - Page containers must never get a lasting `transform`, `filter` or `will-change: transform`: any of them traps the fixed-position dialogs inside the container.
-- `hugginghack:unauthorized` triggers a re-check of the session and the "Your session expired" notice. Don't dispatch it for anything but a 401.
+- `hugginghack:unauthorized` triggers a re-check of the session and the "Your session expired" notice. Don't dispatch it for anything but a 401. When a session expires mid-visit, `App` keeps the signed-in app mounted but hidden (`.app-frame`, keyed by user id) behind the sign-in form, so a running upload keeps its `File` objects; signing back in as the same account shows it again, anyone else gets a fresh app.
 - Search inputs debounce by 250 ms (`ModelsPage`, `useListQuery`). Keep that when adding list searches.
 - The theme is saved in three places: `localStorage` (`hugginghack-theme`), the account preference (`api.updatePreferences`), and the live `THEME_EVENT`. Use `announceThemePreference` and let `useAppTheme` apply it.
 - `index.html` has `meta[name=theme-color]`, which `applyTheme` updates. `public/` holds the two logo SVGs, served from `/`.

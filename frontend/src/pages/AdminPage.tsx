@@ -28,14 +28,14 @@ import { DialogFrame } from '../components/Dialog'
 import { ListPager, useListQuery } from '../components/ListPager'
 import { useClosingTransition, useFadeOnChange, useTabIndicator } from '../motion'
 import { relativeTime } from '../utils'
-import { ORG_ROLE_LABELS } from './OrganizationPage'
 import { RuntimesPage } from './RuntimesPage'
 import { StoragePage } from './StoragePage'
 import { RowSkeletons } from '../components/Skeletons'
 import { useConfirm } from '../components/ConfirmDialog'
 import { MarkdownEditor } from '../components/Markdown'
 import { markdownSummary } from '../markdownText'
-import { ROLE_LABELS, disableConfirmation, roleConfirmation } from '../roles'
+import { ORG_ROLE_LABELS, ROLE_LABELS, disableConfirmation, roleConfirmation } from '../roles'
+import { LoadError } from '../components/LoadError'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -79,10 +79,14 @@ function AddUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
   // Only organizations this admin may add members to.
   const choices = organizations.filter((item) => can('orgs.manage') || item.my_role === 'admin')
   const unused = choices.filter((item) => !memberships.some((chosen) => chosen.organization === item.name))
-  const limitedByRole = form.role === 'viewer' && memberships.some((item) => item.role !== 'read')
+  // Viewers can only read in an organization; the server refuses more.
+  const viewer = form.role === 'viewer'
 
   useEffect(() => {
-    api.organizations().then((payload) => setOrganizations(payload.items)).catch(() => undefined)
+    api
+      .organizations()
+      .then((payload) => setOrganizations(payload.items))
+      .catch(() => setError('Organizations could not be loaded, so none can be picked here. Add them later from each organization’s Members tab.'))
   }, [])
 
   function changeMembership(index: number, changes: Partial<Membership>) {
@@ -132,7 +136,14 @@ function AddUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
           </label>
           <label>
             <span>Role</span>
-            <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as Role })}>
+            <select
+              value={form.role}
+              onChange={(event) => {
+                const role = event.target.value as Role
+                setForm({ ...form, role })
+                if (role === 'viewer') setMemberships((current) => current.map((item) => ({ ...item, role: 'read' })))
+              }}
+            >
               {Object.entries(ROLE_LABELS).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
             </select>
           </label>
@@ -165,7 +176,7 @@ function AddUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
                   aria-label={`Role in ${item.organization}`}
                 >
                   {(Object.keys(ORG_ROLE_LABELS) as OrganizationRole[]).map((role) => (
-                    <option key={role} value={role}>{ORG_ROLE_LABELS[role]}</option>
+                    <option key={role} value={role} disabled={viewer && role !== 'read'}>{ORG_ROLE_LABELS[role]}</option>
                   ))}
                 </select>
                 <button
@@ -187,8 +198,8 @@ function AddUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
                 <Building2 size={15} /> Add to an organization
               </button>
             )}
-            {limitedByRole && (
-              <p className="add-user-org-note">Viewers can only read, whatever their organization role.</p>
+            {viewer && memberships.length > 0 && (
+              <p className="add-user-org-note">Viewers can only be Read members. Choose Member or Administrator to give them Write or Admin.</p>
             )}
           </fieldset>
         )}
@@ -220,12 +231,14 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
   const [accountsEnabled, setAccountsEnabled] = useState(true)
   const [busy, setBusy] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
+  const [loadError, setLoadError] = useState('')
   const latest = useRef(0)
   const users = result?.items || []
 
   const load = useCallback(() => {
     const request = ++latest.current
     setLoading(true)
+    setLoadError('')
     api
       .adminUsers(query)
       .then((payload) => {
@@ -236,7 +249,11 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
         if (payload.page !== query.page) update({ page: payload.page }, true)
       })
       .catch((reason) => {
-        if (request === latest.current) onToast(errorMessage(reason, 'Could not load accounts.'), 'error')
+        // The error takes the table's place; an older list would pass for these filters' result.
+        if (request === latest.current) {
+          setResult(null)
+          setLoadError(errorMessage(reason, 'The server did not answer.'))
+        }
       })
       .finally(() => {
         if (request === latest.current) setLoading(false)
@@ -369,6 +386,7 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
             </button>
           ))}
         </div>
+        {loadError ? <LoadError what="accounts" message={loadError} onRetry={load} /> : (
         <div className={loading && result ? 'admin-user-table refreshing' : 'admin-user-table'} role="table" aria-label="Accounts" aria-busy={loading}>
           <div className="admin-user-row header" role="row">
             <span>Account</span><span>Role</span><span>Status</span><span>Last sign-in</span><span>Access</span><span />
@@ -457,6 +475,7 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
             )
           })}
         </div>
+        )}
         {result && (
           <ListPager
             page={result.page}
@@ -488,9 +507,15 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
 
 function RolesTab() {
   const [matrix, setMatrix] = useState<PermissionMatrix | null>(null)
-  useEffect(() => {
-    api.permissions().then(setMatrix).catch(() => undefined)
+  const [error, setError] = useState('')
+  const load = useCallback(() => {
+    setError('')
+    api.permissions().then(setMatrix).catch((reason) => setError(errorMessage(reason, 'The server did not answer.')))
   }, [])
+  useEffect(() => {
+    load()
+  }, [load])
+  if (error) return <LoadError what="roles and permissions" message={error} onRetry={load} />
   if (!matrix) return <RowSkeletons rows={6} cells={3} label="Loading roles" />
   return (
     <section className="settings-section">
@@ -550,10 +575,14 @@ function Fact({ label, value, good }: { label: string; value: string; good?: boo
 function ServerTab() {
   const [server, setServer] = useState<ServerSettings | null>(null)
   const [error, setError] = useState('')
-  useEffect(() => {
-    api.serverSettings().then(setServer).catch((reason) => setError(reason.message))
+  const load = useCallback(() => {
+    setError('')
+    api.serverSettings().then(setServer).catch((reason) => setError(errorMessage(reason, 'The server did not answer.')))
   }, [])
-  if (error) return <div className="inline-error">{error}</div>
+  useEffect(() => {
+    load()
+  }, [load])
+  if (error) return <LoadError what="the server configuration" message={error} onRetry={load} />
   if (!server) return <RowSkeletons rows={6} cells={1} label="Loading the server configuration" />
   const yes = (value: boolean) => (value ? 'Yes' : 'No')
   return (
@@ -784,12 +813,14 @@ function OrganizationsTab({ onToast }: { onToast: ToastHandler }) {
   const [result, setResult] = useState<AdminOrganizationPage | null>(null)
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
+  const [loadError, setLoadError] = useState('')
   const latest = useRef(0)
   const items = result?.items || []
 
   const load = useCallback(() => {
     const request = ++latest.current
     setLoading(true)
+    setLoadError('')
     api
       .adminOrganizations(query)
       .then((payload) => {
@@ -798,7 +829,10 @@ function OrganizationsTab({ onToast }: { onToast: ToastHandler }) {
         if (payload.page !== query.page) update({ page: payload.page }, true)
       })
       .catch((reason) => {
-        if (request === latest.current) onToast(errorMessage(reason, 'Could not load organizations.'), 'error')
+        if (request === latest.current) {
+          setResult(null)
+          setLoadError(errorMessage(reason, 'The server did not answer.'))
+        }
       })
       .finally(() => {
         if (request === latest.current) setLoading(false)
@@ -888,6 +922,7 @@ function OrganizationsTab({ onToast }: { onToast: ToastHandler }) {
             </button>
           ))}
         </div>
+        {loadError ? <LoadError what="organizations" message={loadError} onRetry={load} /> : (
         <div className={loading && result ? 'admin-user-table refreshing' : 'admin-user-table'} role="table" aria-label="Organizations" aria-busy={loading}>
           <div className="admin-user-row org-row header" role="row">
             <span>Organization</span><span>Repositories</span><span>Members</span><span>Your role</span><span />
@@ -928,6 +963,7 @@ function OrganizationsTab({ onToast }: { onToast: ToastHandler }) {
             </div>
           ))}
         </div>
+        )}
         {result && (
           <ListPager
             page={result.page}

@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { api } from './api'
+import { useConfirm } from './components/ConfirmDialog'
 import { DOCK_EXIT_MS, useFadeOnChange } from './motion'
 import { isRecorded } from './uploadPlan'
 import { LEASE_HEARTBEAT_MS, claimOrphans, parseTabRecord, type TabRecord } from './uploadStore'
@@ -233,6 +234,7 @@ export function UploadProvider({
   const controllers = useRef(new Map<string, AbortController>())
   const running = useRef(false)
   const chunkBytes = useRef(8 * 1024 * 1024)
+  const confirm = useConfirm()
 
   useEffect(() => {
     jobsRef.current = jobs
@@ -340,9 +342,10 @@ export function UploadProvider({
           if (job.kind === 'change' && sessionId) await api.abortChange(sessionId).catch(() => undefined)
           update(job.id, { status: 'cancelled', currentFile: undefined, sessionId: undefined })
         } else {
-          const message = reason instanceof Error ? reason.message : 'Upload failed'
+          const message = reason instanceof Error ? reason.message : 'The upload stopped.'
           update(job.id, { status: 'error', error: message, currentFile: undefined })
-          onToast(`${job.repoId}: ${message} Progress is saved; retry to resume.`, 'error')
+          const sentence = /[.!?]$/.test(message) ? message : `${message}.`
+          onToast(`${job.repoId}: ${sentence} Progress is saved; retry to resume.`, 'error')
         }
       } finally {
         controllers.current.delete(job.id)
@@ -388,17 +391,35 @@ export function UploadProvider({
     setMinimized(false)
   }, [])
 
-  async function cancel(job: UploadJob) {
+  /** Resolves true once the job is cancelled. A change's staged files are
+   * thrown away with its session, so that asks first; a new repository keeps
+   * what arrived and can resume. */
+  async function cancel(job: UploadJob): Promise<boolean> {
+    if (job.kind === 'change' && (job.sessionId || uploadedBytes(job) > 0)) {
+      const sure = await confirm({
+        eyebrow: 'Cancel upload',
+        title: `Discard the change to ${job.repoId}?`,
+        message: `The files already sent for “${job.message}” are thrown away and the repository stays as it was. To make this change later, upload the files again.`,
+        confirmLabel: 'Discard change',
+        danger: true,
+      })
+      if (!sure) return false
+      // It may have finished while the question was open.
+      const latest = jobsRef.current.find((entry) => entry.id === job.id)
+      if (!latest || latest.status === 'done') return false
+      job = latest
+    }
     const controller = controllers.current.get(job.id)
     if (controller) {
       // A running job closes its own change session, including one still opening.
       controller.abort()
-      return
+      return true
     }
     if (job.kind === 'change' && job.sessionId) {
       await api.abortChange(job.sessionId).catch(() => undefined)
     }
     update(job.id, { status: 'cancelled', sessionId: undefined })
+    return true
   }
 
   function reattach(job: UploadJob, files: File[]) {
@@ -626,7 +647,7 @@ export function UploadProvider({
                           </label>
                         )}
                         {['interrupted', 'error'].includes(job.status) && (
-                          <button type="button" onClick={() => cancel(job).then(() => setJobs((all) => all.filter((entry) => entry.id !== job.id)))}>
+                          <button type="button" onClick={() => cancel(job).then((cancelled) => cancelled && setJobs((all) => all.filter((entry) => entry.id !== job.id)))}>
                             Discard
                           </button>
                         )}

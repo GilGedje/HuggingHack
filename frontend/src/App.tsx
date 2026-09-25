@@ -546,14 +546,34 @@ export default function App() {
         setStatus(next)
         if (next.user) setNotice('')
       })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : 'Unable to reach HuggingHack'))
+      .catch((reason) => setError(reason instanceof Error ? reason.message : 'Could not reach HuggingHack.'))
   }, [])
+
+  // A session that ends mid-visit keeps the app mounted, hidden behind the
+  // sign-in form, so a running upload keeps its files: signing back in to the
+  // same account lets it resume. Another account starts afresh (the app is keyed
+  // by user id).
+  const [kept, setKept] = useState<AuthStatus | null>(null)
+  const current = useRef<AuthStatus | null>(null)
+  if (status?.user) current.current = status
+  const keeping = useRef(false)
+  keeping.current = Boolean(kept && !status?.user)
+  // Signed in again: what was kept is on screen now, or was another account's.
+  useEffect(() => {
+    if (status?.user) setKept(null)
+  }, [status])
 
   useEffect(() => {
     refreshAuth()
     // A request refused mid-visit means the session ended under us.
     const expired = () => {
-      if (signedIn.current && !signingOut.current) setNotice('Your session expired. Sign in again.')
+      if (signedIn.current && !signingOut.current) {
+        setNotice('Your session expired. Sign in again.')
+        setKept(current.current)
+      } else if (keeping.current) {
+        // The hidden app's own requests are refused too; the sign-in form is already up.
+        return
+      }
       refreshAuth()
     }
     window.addEventListener('hugginghack:unauthorized', expired)
@@ -599,23 +619,29 @@ export default function App() {
     )
   }
 
-  if (status.setup_required || !status.user) {
-    return (
-      <AuthScreen
-        setup={status.setup_required}
-        oidc={status.oidc}
-        notice={notice}
-        onAuthenticated={(next) => {
-          setNotice('')
-          setStatus(next)
-        }}
-      />
-    )
-  }
-
+  const shown = status.user && !status.setup_required ? status : null
+  const app = shown || kept
+  // The app keeps its place in the tree while the sign-in form is up, so it is not remounted.
   return (
-    <HashRouter>
-      <Application authStatus={status} theme={theme} onAuthChange={setStatus} onLogout={logout} />
-    </HashRouter>
+    <>
+      {app?.user && (
+        <div key={app.user.id} className="app-frame" hidden={!shown}>
+          <HashRouter>
+            <Application authStatus={app} theme={theme} onAuthChange={setStatus} onLogout={logout} />
+          </HashRouter>
+        </div>
+      )}
+      {!shown && (
+        <AuthScreen
+          setup={status.setup_required}
+          oidc={status.oidc}
+          notice={notice}
+          onAuthenticated={(next) => {
+            setNotice('')
+            setStatus(next)
+          }}
+        />
+      )}
+    </>
   )
 }

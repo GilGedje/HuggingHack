@@ -36,6 +36,8 @@ import { RowSkeletons } from './Skeletons'
 import { useConfirm } from './ConfirmDialog'
 import { prefersReducedMotion, useFadeOnChange, useSlidingHighlight } from '../motion'
 import { ssoErrorMessage } from '../ssoError'
+import { focusAfterRemoval } from '../focus'
+import { LoadError } from './LoadError'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -88,7 +90,7 @@ export function AuthScreen({
         : await api.login({ username, password })
       onAuthenticated(status)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Unable to continue')
+      setError(reason instanceof Error ? reason.message : setup ? 'Could not create the account.' : 'Could not sign in.')
     } finally {
       setSubmitting(false)
     }
@@ -204,6 +206,7 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
   // arrived, so the grid fades from one collection's models straight to the next.
   const [shown, setShown] = useState<string | null>(null)
   const [removing, setRemoving] = useState<string | null>(null)
+  const [error, setError] = useState('')
   const latest = useRef(0)
   const grid = useFadeOnChange<HTMLDivElement>(shown ?? '')
   const sidebar = useSlidingHighlight<HTMLElement>(`${collectionId}:${collections.map((item) => item.id).join(',')}`)
@@ -226,14 +229,13 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
       setItems(saved.items)
       setCollections(groups.items)
       setShown(collectionId)
+      setError('')
     } catch (reason) {
-      if (request === latest.current) {
-        onToast(reason instanceof Error ? reason.message : 'Unable to load saved models', 'error')
-      }
+      if (request === latest.current) setError(reason instanceof Error ? reason.message : 'The server did not answer.')
     } finally {
       if (request === latest.current) setLoading(false)
     }
-  }, [collectionId, onToast, query])
+  }, [collectionId, query])
 
   // Typing waits a moment before searching; picking a collection loads at once.
   const lastQuery = useRef(query)
@@ -253,11 +255,13 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
       await load()
       onToast('Collection created.')
     } catch (reason) {
-      onToast(reason instanceof Error ? reason.message : 'Unable to create collection', 'error')
+      onToast(reason instanceof Error ? reason.message : 'Could not create the collection.', 'error')
     }
   }
 
-  async function deleteCollection(collection: Collection, row: HTMLElement | null) {
+  async function deleteCollection(collection: Collection, trigger: HTMLElement) {
+    const row = trigger.parentElement
+    const refocus = focusAfterRemoval(trigger, row)
     const count = collection.model_count
     const sure = await confirm({
       title: `Delete “${collection.name}”?`,
@@ -287,20 +291,23 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
       if (collectionId === collection.id) setCollectionId('')
       else await load()
       onToast(`Collection “${collection.name}” deleted.`)
+      refocus()
     } catch (reason) {
-      onToast(reason instanceof Error ? reason.message : 'Unable to delete collection', 'error')
+      onToast(reason instanceof Error ? reason.message : 'Could not delete the collection.', 'error')
     } finally {
       setRemoving(null)
     }
   }
 
-  async function remove(item: SavedModel) {
+  async function remove(item: SavedModel, trigger: HTMLElement) {
+    const refocus = focusAfterRemoval(trigger, trigger.closest('article'))
     try {
       await api.unsaveModel(item.repo_id)
       await load()
       onToast(`${item.repo_id} was removed from your saved library.`)
+      refocus()
     } catch (reason) {
-      onToast(reason instanceof Error ? reason.message : 'Unable to remove model', 'error')
+      onToast(reason instanceof Error ? reason.message : 'Could not remove the model.', 'error')
     }
   }
 
@@ -316,7 +323,7 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
       await load()
       onToast('Saved model updated.')
     } catch (reason) {
-      onToast(reason instanceof Error ? reason.message : 'Unable to update model', 'error')
+      onToast(reason instanceof Error ? reason.message : 'Could not save your changes.', 'error')
     }
   }
 
@@ -354,7 +361,7 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
                   aria-label={`Delete collection ${collection.name}`}
                   title="Delete collection"
                   disabled={removing !== null}
-                  onClick={(event) => deleteCollection(collection, event.currentTarget.parentElement)}
+                  onClick={(event) => deleteCollection(collection, event.currentTarget)}
                 >
                   <Trash2 size={13} />
                 </button>
@@ -378,9 +385,12 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Search saved models and notes"
+                aria-label="Search saved models and notes"
               />
             </div>
-            {loading && shown === null ? (
+            {error ? (
+              <LoadError what="your saved models" message={error} onRetry={load} />
+            ) : loading && shown === null ? (
               <RowSkeletons rows={4} cells={0} label="Loading your saved models" />
             ) : (
               <div ref={grid} className={loading ? 'saved-grid refreshing' : 'saved-grid'} aria-busy={loading || undefined}>
@@ -401,6 +411,9 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
                     {editing === item.id ? (
                       <div className="saved-editor">
                         <textarea
+                          // Organize opens this in place of the button, so focus follows it here.
+                          autoFocus
+                          aria-label={`Private note for ${item.repo_id}`}
                           value={draftNote}
                           onChange={(event) => setDraftNote(event.target.value)}
                           placeholder="Why is this model worth keeping?"
@@ -448,7 +461,7 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
                             >
                               Organize
                             </button>
-                            <button className="danger-text" onClick={() => remove(item)}>Remove</button>
+                            <button className="danger-text" onClick={(event) => remove(item, event.currentTarget)}>Remove</button>
                           </div>
                         </div>
                       </>

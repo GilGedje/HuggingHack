@@ -22,6 +22,8 @@ import { useConfirm } from './ConfirmDialog'
 import { Avatar } from './Avatar'
 import { ROLE_LABELS, disableConfirmation, roleConfirmation } from '../roles'
 import { focusAfterRemoval } from '../focus'
+import { LoadError } from './LoadError'
+import { RowSkeletons } from './Skeletons'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -41,7 +43,8 @@ export function AdminUserDetail({ userId, onToast }: { userId: string; onToast: 
   const [busy, setBusy] = useState(false)
 
   const load = useCallback(() => {
-    api.adminUser(userId).then(setDetail).catch((reason) => setError(errorMessage(reason, 'Could not load this account.')))
+    setError('')
+    api.adminUser(userId).then(setDetail).catch((reason) => setError(errorMessage(reason, 'The server did not answer.')))
   }, [userId])
 
   useEffect(() => {
@@ -73,12 +76,17 @@ export function AdminUserDetail({ userId, onToast }: { userId: string; onToast: 
     return (
       <>
         {back}
-        <div className="inline-error">{error}</div>
+        <LoadError what="this account" message={error} onRetry={load} />
       </>
     )
   }
   if (!detail) {
-    return <div className="drawer-loading"><LoaderCircle size={22} className="spin" /> Loading the account…</div>
+    return (
+      <>
+        {back}
+        <RowSkeletons rows={5} cells={2} label="Loading the account" />
+      </>
+    )
   }
 
   const { user } = detail

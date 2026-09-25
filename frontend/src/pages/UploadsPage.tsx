@@ -8,6 +8,8 @@ import { formatBytes, relativeTime } from '../utils'
 import { VISIBILITIES, visibilityAllowed, visibilityAudience, visibilityConfirmation, visibilityLabel } from '../visibility'
 import { RowSkeletons } from '../components/Skeletons'
 import { useConfirm } from '../components/ConfirmDialog'
+import { LoadError } from '../components/LoadError'
+import { focusAfterRemoval } from '../focus'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -39,13 +41,14 @@ function RepositoryRow({
       await onChanged()
       onToast(`${repository.repo_id} is now ${visibilityLabel(visibility).toLowerCase()}.`)
     } catch (reason) {
-      onToast(reason instanceof Error ? reason.message : 'Unable to update repository', 'error')
+      onToast(reason instanceof Error ? reason.message : 'Could not change the visibility.', 'error')
     } finally {
       setPendingVisibility(null)
     }
   }
 
-  async function remove() {
+  async function remove(trigger: HTMLElement) {
+    const refocus = focusAfterRemoval(trigger, trigger.closest('article'))
     const sure = await confirm({
       eyebrow: 'Delete repository',
       title: `Delete ${repository.repo_id}?`,
@@ -57,10 +60,11 @@ function RepositoryRow({
     if (!sure) return
     try {
       await api.deleteUploadRepository(repository.repo_id, repository.repo_id)
-      onChanged()
+      await onChanged()
       onToast(`${repository.repo_id} and its files were deleted.`)
+      refocus()
     } catch (reason) {
-      onToast(reason instanceof Error ? reason.message : 'Unable to delete repository', 'error')
+      onToast(reason instanceof Error ? reason.message : 'Could not delete the repository.', 'error')
     }
   }
 
@@ -115,7 +119,7 @@ function RepositoryRow({
                 ))}
               </select>
             )}
-            <button className="danger-text" onClick={remove}>
+            <button className="danger-text" onClick={(event) => remove(event.currentTarget)}>
               <Trash2 size={14} /> Delete
             </button>
           </>
@@ -132,19 +136,20 @@ export function UploadsPage({ user, onToast }: { user: User; onToast: ToastHandl
   const [resume, setResume] = useState<OwnedRepository | null>(null)
   const [wizardKey, setWizardKey] = useState(0)
   const [loaded, setLoaded] = useState(false)
+  const [error, setError] = useState('')
   const wizard = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async () => {
+    setError('')
     try {
       const [repos, spaces] = await Promise.all([api.uploadRepositories(), api.uploadNamespaces()])
       setRepositories(repos.items)
       setNamespaces(spaces.items)
-    } catch (reason) {
-      onToast(reason instanceof Error ? reason.message : 'Unable to load repositories', 'error')
-    } finally {
       setLoaded(true)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'The server did not answer.')
     }
-  }, [onToast])
+  }, [])
 
   useEffect(() => {
     load()
@@ -218,9 +223,11 @@ export function UploadsPage({ user, onToast }: { user: User; onToast: ToastHandl
             <span className="eyebrow">Yours and your organizations’</span>
             <h2>Published models</h2>
           </div>
-          <span>{loaded ? `${published.length} ${published.length === 1 ? 'model' : 'models'}` : ''}</span>
+          <span>{loaded && !error ? `${published.length} ${published.length === 1 ? 'model' : 'models'}` : ''}</span>
         </div>
-        {!loaded ? (
+        {error ? (
+          <LoadError what="your repositories" message={error} onRetry={load} />
+        ) : !loaded ? (
           <RowSkeletons rows={3} cells={3} label="Loading your repositories" />
         ) : (
           <div className="repository-grid">
