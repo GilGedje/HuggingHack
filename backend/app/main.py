@@ -1794,6 +1794,10 @@ async def library_model(repo_id: str, user: Browser) -> dict:
         if organization
         else None
     )
+    if not can(user, "storage.view"):
+        # Where the files live is for administrators, who see it under Admin -> Storage.
+        for key in ("local_path", "remote_uri", "storage_target", "storage_target_name"):
+            details.pop(key, None)
     return details
 
 

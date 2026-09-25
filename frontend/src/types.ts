@@ -270,14 +270,14 @@ export interface LibraryModelDetails extends LibraryModel {
   hardware_options: Array<[string, string]>
   listing: ModelListing
   visibility: Visibility
-  /** Display name of the storage location that holds the model. */
-  storage_target_name: string
+  /** Display name of the storage location that holds the model; only for people who may view storage. */
+  storage_target_name?: string
   description: string
   organization?: { name: string; display_name: string } | null
   total_bytes: number
   truncated: boolean
   unsafe_file_count: number
-  local_path: string
+  local_path?: string
   remote_uri?: string | null
   source_url?: string | null
   model_card?: string | null

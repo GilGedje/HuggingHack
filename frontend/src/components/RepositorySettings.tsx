@@ -332,16 +332,18 @@ export function RepositorySettings({
             )}
           </form>
 
-          <section className="settings-block">
-            <div className="settings-block-heading">
-              <h2>Storage</h2>
-              <p>Where the files live. Moving between locations is not available yet.</p>
-            </div>
-            <p className="settings-storage">
-              {remote ? <Cloud size={15} /> : <HardDrive size={15} />} {model.storage_target_name}
-              <code>{model.remote_uri || model.local_path}</code>
-            </p>
-          </section>
+          {can('storage.view') && model.storage_target_name && (
+            <section className="settings-block">
+              <div className="settings-block-heading">
+                <h2>Storage</h2>
+                <p>Where the files live. Move them to another location from Admin → Storage.</p>
+              </div>
+              <p className="settings-storage">
+                {remote ? <Cloud size={15} /> : <HardDrive size={15} />} {model.storage_target_name}
+                <code>{model.remote_uri || model.local_path}</code>
+              </p>
+            </section>
+          )}
 
           <form className="settings-block danger" onSubmit={remove}>
             <div className="settings-block-heading">

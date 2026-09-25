@@ -1204,7 +1204,7 @@ def test_library_api_serves_local_data_and_hides_private_uploads(
             "assets/evil.svg",
             "tiny-Q4_K_M.gguf",
         ]
-        assert details["local_path"].endswith("/acme/tiny-GGUF")
+        assert "local_path" not in details  # members are not told where files live
 
         header = client.get(
             "/api/library/gguf-range",

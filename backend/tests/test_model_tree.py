@@ -99,3 +99,16 @@ def test_older_databases_gain_the_base_model_columns(tmp_path):
     database.initialize()
     with database.connect() as connection:
         assert {"base_model", "base_model_relation"} <= database._column_names(connection, "local_models")
+
+
+def test_only_storage_viewers_learn_where_a_model_lives(org):  # noqa: F811
+    writer, _ = login("writer")
+    assert writer.post("/api/uploads/repositories", json={"slug": "where", "visibility": "public"}).status_code == 201
+    upload(writer, "writer/where", {"config.json": b"{}"})
+    details = writer.get("/api/library/models/writer/where").json()
+    for key in ("local_path", "remote_uri", "storage_target", "storage_target_name"):
+        assert key not in details, key
+    assert details["storage_backend"] == "filesystem"  # still decides which cache actions apply
+    admin, _ = login("admin")
+    seen = admin.get("/api/library/models/writer/where").json()
+    assert seen["storage_target_name"] == "Local disk" and seen["local_path"].endswith("/writer/where")

@@ -619,11 +619,14 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
                 {visibilityLabel(model.visibility)}
               </span>
             )}
-            <span className="local-badge">
-              {model.storage_backend === 's3' ? <Cloud size={11} /> : <HardDrive size={11} />}{' '}
-              {model.storage_target_name}
-              {remoteOnly ? ' · S3 only' : ''}
-            </span>
+            {/* Where the files live is for administrators; Admin → Storage has the rest. */}
+            {can('storage.view') && model.storage_target_name && (
+              <span className="local-badge">
+                {model.storage_backend === 's3' ? <Cloud size={11} /> : <HardDrive size={11} />}{' '}
+                {model.storage_target_name}
+                {remoteOnly ? ' · S3 only' : ''}
+              </span>
+            )}
           </div>
           <nav className="model-tabs" aria-label="Model sections">
             <div ref={indicator}>
@@ -729,16 +732,12 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
                 <dd>{model.parameter_count ? formatNumber(model.parameter_count) : '—'}</dd>
                 <dt>Precision</dt>
                 <dd>{precisionLabel(model.precision) || '—'}</dd>
-                <dt>{remoteOnly ? 'Size in S3' : 'Size'}</dt>
+                <dt>Size</dt>
                 <dd>{formatBytes(model.size_bytes)}</dd>
                 <dt>Files</dt>
                 <dd>
                   <Link to={`${base}/tree`}>{formatNumber(model.file_count)}</Link>
                 </dd>
-                <dt>Storage</dt>
-                <dd>{model.storage_target_name}</dd>
-                <dt>Location</dt>
-                <dd><code>{remoteOnly ? model.remote_uri || model.local_path : model.local_path}</code></dd>
                 {model.latest_commit && (
                   <>
                     <dt>Last commit</dt>
