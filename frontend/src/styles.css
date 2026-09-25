@@ -737,11 +737,11 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
 .auth-card > label, .wizard-label {
   display: grid; gap: 7px; color: var(--text-secondary); font-size: 11px; font-weight: 600;
 }
-.auth-card input, :is(.wizard-fields, .repo-settings, .move-model-body) :is(input:not([type='radio'], [type='file'], [type='checkbox']), textarea) {
+.auth-card input, :is(.wizard-fields, .repo-settings, .move-model-body, .confirm-body) :is(input:not([type='radio'], [type='file'], [type='checkbox']), textarea) {
   width: 100%; min-height: 43px; padding: 9px 11px; border: 1px solid var(--border-strong);
   border-radius: 7px; outline: 0; background: var(--canvas); color: var(--text);
 }
-.auth-card input:focus, :is(.wizard-fields, .repo-settings, .move-model-body) :is(input:not([type='radio'], [type='file'], [type='checkbox']), textarea):focus {
+.auth-card input:focus, :is(.wizard-fields, .repo-settings, .move-model-body, .confirm-body) :is(input:not([type='radio'], [type='file'], [type='checkbox']), textarea):focus {
   border-color: var(--brand-warm); box-shadow: 0 0 0 3px color-mix(in oklch, var(--brand-primary) 18%, transparent);
 }
 .auth-card label small { color: var(--text-muted); font-size: 9px; font-weight: 400; }
@@ -2702,3 +2702,18 @@ a, button, input, select, textarea, summary,
 @media (min-width: 781px) and (max-width: 1080px) {
   .catalog-layout { --filters-width: 210px; --filters-pad: 18px; }
 }
+
+/* The site's own confirmation dialog (ConfirmDialog), in place of the browser's. */
+.confirm-dialog { width: min(460px, 100%); }
+.confirm-heading { min-width: 0; display: flex; align-items: flex-start; gap: 12px; }
+.confirm-heading h2 { overflow-wrap: anywhere; }
+.confirm-mark {
+  width: 34px; height: 34px; flex: none; display: grid; place-items: center; border-radius: 50%;
+  background: var(--danger-bg); color: var(--danger);
+  animation: icon-turn 320ms var(--ease-out) 60ms backwards;
+}
+.confirm-body { display: grid; gap: 14px; }
+.confirm-message { color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
+.confirm-message p + p { margin-top: 8px; }
+.confirm-body .add-user-footer { margin-top: 4px; }
+.confirm-body .danger-button { min-height: 40px; padding: 0 15px; font-size: 13px; }

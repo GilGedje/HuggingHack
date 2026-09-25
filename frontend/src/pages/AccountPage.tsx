@@ -20,6 +20,7 @@ import type { AccountOverview, AccountSession, ApiToken, StorageOption } from '.
 import { resolveServerUrl } from '../useModel'
 import { describeDevice, initials, relativeTime } from '../utils'
 import { RowSkeletons } from '../components/Skeletons'
+import { useConfirm } from '../components/ConfirmDialog'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -242,6 +243,7 @@ const EXPIRY_OPTIONS: Array<[string, number | null]> = [
 
 function TokensTab({ overview, onToast }: { overview: AccountOverview; onToast: ToastHandler }) {
   const { can } = useAccess()
+  const confirm = useConfirm()
   const [tokens, setTokens] = useState<ApiToken[]>([])
   const [name, setName] = useState('')
   const [scope, setScope] = useState<'read' | 'write'>('read')
@@ -277,7 +279,13 @@ function TokensTab({ overview, onToast }: { overview: AccountOverview; onToast: 
   }
 
   async function revoke(token: ApiToken) {
-    if (!window.confirm(`Revoke “${token.name}”? Anything using it stops working immediately.`)) return
+    const sure = await confirm({
+      title: `Revoke “${token.name}”?`,
+      message: 'Anything that uses it stops working immediately. This cannot be undone.',
+      confirmLabel: 'Revoke token',
+      danger: true,
+    })
+    if (!sure) return
     try {
       await api.deleteToken(token.id)
       onToast(`“${token.name}” was revoked.`)

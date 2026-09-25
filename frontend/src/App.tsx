@@ -44,6 +44,7 @@ import type {
   User,
 } from './types'
 import { formatBytes } from './utils'
+import { ConfirmProvider } from './components/ConfirmDialog'
 
 type ToastTone = 'success' | 'error'
 
@@ -412,6 +413,7 @@ function Application({
 
   return (
     <AccessProvider user={user} capabilities={capabilities} refresh={refreshAccess}>
+    <ConfirmProvider>
     <UploadProvider onToast={showToast}>
     <Shell user={user} onLogout={logout}>
       <div ref={view}>
@@ -454,6 +456,7 @@ function Application({
       )}
     </Shell>
     </UploadProvider>
+    </ConfirmProvider>
     </AccessProvider>
   )
 }

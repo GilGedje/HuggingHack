@@ -32,6 +32,7 @@ import { ORG_ROLE_LABELS } from './OrganizationPage'
 import { RuntimesPage } from './RuntimesPage'
 import { StoragePage } from './StoragePage'
 import { RowSkeletons } from '../components/Skeletons'
+import { useConfirm } from '../components/ConfirmDialog'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -205,6 +206,7 @@ function AddUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
 
 function UsersTab({ onToast }: { onToast: ToastHandler }) {
   const { user: me } = useAccess()
+  const confirm = useConfirm()
   const location = useLocation()
   const { query: listQuery, update, search, setSearch, changePageSize } = useListQuery(
     USER_QUERY_DEFAULTS,
@@ -262,12 +264,24 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
     }
   }
 
-  function remove(user: AdminUser) {
+  async function remove(user: AdminUser) {
     const external = (user.auth_provider || 'local') !== 'local'
-    const warning = external
-      ? '\n\nThis account signs in through single sign-on and will be created again the next time they sign in. Disable it instead to block access.'
-      : ''
-    if (window.prompt(`Type ${user.username} to delete this account permanently.${warning}`) !== user.username) return
+    const sure = await confirm({
+      eyebrow: 'Delete account',
+      title: `Delete ${user.username}?`,
+      message: external ? (
+        <>
+          <p>The account, its sessions, and its API tokens are removed. This cannot be undone.</p>
+          <p>It signs in through single sign-on, so it comes back the next time they sign in. To block access, disable it instead.</p>
+        </>
+      ) : (
+        'The account, its sessions, and its API tokens are removed. This cannot be undone.'
+      ),
+      confirmLabel: 'Delete account',
+      danger: true,
+      requireText: user.username,
+    })
+    if (!sure) return
     act(user, () => api.adminDeleteUser(user.id), `${user.username} was deleted.`)
   }
 
@@ -408,10 +422,14 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
                     type="button"
                     title="Sign out everywhere and revoke API tokens"
                     aria-label={`Revoke sessions and tokens for ${user.username}`}
-                    onClick={() => {
-                      if (window.confirm(`Sign ${user.username} out everywhere and revoke their API tokens?`)) {
-                        act(user, () => api.adminRevoke(user.id, { sessions: true, tokens: true }), `${user.username} was signed out everywhere.`)
-                      }
+                    onClick={async () => {
+                      const sure = await confirm({
+                        title: `Sign ${user.username} out everywhere?`,
+                        message: 'Every browser signed in to this account has to sign in again, and all of its API tokens stop working.',
+                        confirmLabel: 'Sign out and revoke',
+                        danger: true,
+                      })
+                      if (sure) act(user, () => api.adminRevoke(user.id, { sessions: true, tokens: true }), `${user.username} was signed out everywhere.`)
                     }}
                   >
                     <LogOut size={15} />
@@ -731,6 +749,7 @@ function NewOrganizationDialog({ onClose, onCreated }: { onClose: () => void; on
 }
 
 function OrganizationsTab({ onToast }: { onToast: ToastHandler }) {
+  const confirm = useConfirm()
   const { query: listQuery, update, search, setSearch, changePageSize } = useListQuery(
     ORG_QUERY_DEFAULTS,
     'hugginghack.admin.organizations.per-page',
@@ -771,7 +790,15 @@ function OrganizationsTab({ onToast }: { onToast: ToastHandler }) {
   }
 
   async function remove(organization: Organization) {
-    if (window.prompt(`Type ${organization.name} to delete this organization. It must have no repositories.`) !== organization.name) return
+    const sure = await confirm({
+      eyebrow: 'Delete organization',
+      title: `Delete ${organization.display_name}?`,
+      message: 'Its members lose access to it. An organization that still owns repositories cannot be deleted. This cannot be undone.',
+      confirmLabel: 'Delete organization',
+      danger: true,
+      requireText: organization.name,
+    })
+    if (!sure) return
     try {
       await api.deleteOrganization(organization.name)
       onToast(`${organization.name} was deleted.`)

@@ -36,6 +36,7 @@ import type {
   RuntimeTarget,
 } from '../types'
 import { formatBytes } from '../utils'
+import { useConfirm } from './ConfirmDialog'
 
 function childText(children: ReactNode): string {
   return Children.toArray(children)
@@ -186,6 +187,7 @@ export function ModelActions({
   onCacheChanged,
   onToast,
 }: ModelActionsProps) {
+  const confirm = useConfirm()
   const [error, setError] = useState('')
   const [changingCache, setChangingCache] = useState(false)
   const [runtimeTargets, setRuntimeTargets] = useState<RuntimeTarget[]>([])
@@ -248,9 +250,12 @@ export function ModelActions({
     if (storageBackend !== 's3') return
     if (
       cached
-      && !window.confirm(
-        `Remove the local cache for ${repoId}? The complete S3 copy will remain.`,
-      )
+      && !(await confirm({
+        title: `Remove the local copy of ${repoId}?`,
+        message: 'The complete S3 copy stays. Restore it here before loading the model in a local runtime.',
+        confirmLabel: 'Remove local copy',
+        danger: true,
+      }))
     ) return
     setChangingCache(true)
     setError('')

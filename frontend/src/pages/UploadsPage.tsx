@@ -7,6 +7,7 @@ import type { OwnedRepository, UploadNamespace, User, Visibility } from '../type
 import { formatBytes, relativeTime } from '../utils'
 import { VISIBILITIES, visibilityAllowed, visibilityAudience, visibilityLabel } from '../visibility'
 import { RowSkeletons } from '../components/Skeletons'
+import { useConfirm } from '../components/ConfirmDialog'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -26,6 +27,7 @@ function RepositoryRow({
   const Icon = VISIBILITY_ICONS[repository.visibility] || LockKeyhole
   const ready = repository.status === 'ready'
   const organization = repository.organization_name || null
+  const confirm = useConfirm()
 
   async function changeVisibility(visibility: Visibility) {
     try {
@@ -38,12 +40,17 @@ function RepositoryRow({
   }
 
   async function remove() {
-    const confirmation = window.prompt(
-      `This permanently deletes the repository files from model storage.\n\nType ${repository.repo_id} to continue:`,
-    )
-    if (confirmation !== repository.repo_id) return
+    const sure = await confirm({
+      eyebrow: 'Delete repository',
+      title: `Delete ${repository.repo_id}?`,
+      message: 'Its files are removed from model storage, along with its commit history and deployment configs. This cannot be undone.',
+      confirmLabel: 'Delete repository',
+      danger: true,
+      requireText: repository.repo_id,
+    })
+    if (!sure) return
     try {
-      await api.deleteUploadRepository(repository.repo_id, confirmation)
+      await api.deleteUploadRepository(repository.repo_id, repository.repo_id)
       onChanged()
       onToast(`${repository.repo_id} and its files were deleted.`)
     } catch (reason) {

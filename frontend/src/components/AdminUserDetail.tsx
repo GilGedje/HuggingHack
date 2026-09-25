@@ -18,6 +18,7 @@ import { api } from '../api'
 import type { AdminUserDetail as Detail, ApiToken, Role } from '../types'
 import { describeDevice, initials, relativeTime } from '../utils'
 import { PasswordForm } from './PasswordForm'
+import { useConfirm } from './ConfirmDialog'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -30,6 +31,7 @@ function errorMessage(reason: unknown, fallback: string): string {
 /** One account on the admin page: who they are, how they sign in, and what can act for them. */
 export function AdminUserDetail({ userId, onToast }: { userId: string; onToast: ToastHandler }) {
   const { user: me } = useAccess()
+  const confirm = useConfirm()
   const location = useLocation()
   // The list's search, filters, and page come back with the Back link.
   const from = (location.state as { from?: string } | null)?.from || ''
@@ -89,8 +91,14 @@ export function AdminUserDetail({ userId, onToast }: { userId: string; onToast: 
     }
   }
 
-  function revokeToken(token: ApiToken) {
-    if (!window.confirm(`Revoke “${token.name}” (${token.prefix}…)? Anything using it stops working at once.`)) return
+  async function revokeToken(token: ApiToken) {
+    const sure = await confirm({
+      title: `Revoke “${token.name}”?`,
+      message: `${token.prefix}… stops working at once for anything that uses it. This cannot be undone.`,
+      confirmLabel: 'Revoke token',
+      danger: true,
+    })
+    if (!sure) return
     act(() => api.adminRevokeToken(user.id, token.id), `“${token.name}” was revoked.`)
   }
 
@@ -251,10 +259,14 @@ export function AdminUserDetail({ userId, onToast }: { userId: string; onToast: 
                     type="button"
                     className="secondary-button compact danger-text"
                     disabled={busy}
-                    onClick={() => {
-                      if (window.confirm(`Revoke all ${detail.tokens.length} of ${user.username}'s API tokens?`)) {
-                        act(() => api.adminRevoke(user.id, { sessions: false, tokens: true }), `${user.username}'s tokens were revoked.`)
-                      }
+                    onClick={async () => {
+                      const sure = await confirm({
+                        title: `Revoke all of ${user.username}'s API tokens?`,
+                        message: `All ${detail.tokens.length} stop working at once. This cannot be undone.`,
+                        confirmLabel: 'Revoke all tokens',
+                        danger: true,
+                      })
+                      if (sure) act(() => api.adminRevoke(user.id, { sessions: false, tokens: true }), `${user.username}'s tokens were revoked.`)
                     }}
                   >
                     <Trash2 size={14} /> Revoke all tokens
@@ -293,10 +305,13 @@ export function AdminUserDetail({ userId, onToast }: { userId: string; onToast: 
                   type="button"
                   className="secondary-button compact"
                   disabled={busy}
-                  onClick={() => {
-                    if (window.confirm(`Sign ${user.username} out everywhere?`)) {
-                      act(() => api.adminRevoke(user.id, { sessions: true, tokens: false }), `${user.username} was signed out everywhere.`)
-                    }
+                  onClick={async () => {
+                    const sure = await confirm({
+                      title: `Sign ${user.username} out everywhere?`,
+                      message: 'Every browser signed in to this account has to sign in again. API tokens keep working.',
+                      confirmLabel: 'Sign out everywhere',
+                    })
+                    if (sure) act(() => api.adminRevoke(user.id, { sessions: true, tokens: false }), `${user.username} was signed out everywhere.`)
                   }}
                 >
                   <LogOut size={14} /> Sign out everywhere

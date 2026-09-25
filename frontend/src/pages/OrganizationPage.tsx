@@ -8,6 +8,7 @@ import { LibraryModelRow } from '../components/RepositoryRows'
 import type { LibraryModel, Organization, OrganizationDetails, OrganizationRole } from '../types'
 import { initials } from '../utils'
 import { ModelCardSkeletons, RowSkeletons } from '../components/Skeletons'
+import { useConfirm } from '../components/ConfirmDialog'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -68,6 +69,7 @@ export function OrganizationsIndex() {
 
 function MembersTab({ organization, onChanged, onToast }: { organization: OrganizationDetails; onChanged: (value: OrganizationDetails | null) => void; onToast: ToastHandler }) {
   const { user } = useAccess()
+  const confirm = useConfirm()
   const navigate = useNavigate()
   const [username, setUsername] = useState('')
   const [role, setRole] = useState<OrganizationRole>('write')
@@ -94,7 +96,13 @@ function MembersTab({ organization, onChanged, onToast }: { organization: Organi
   }
 
   async function leave() {
-    if (!window.confirm(`Leave ${organization.display_name}? You lose access to its private repositories.`)) return
+    const sure = await confirm({
+      title: `Leave ${organization.display_name}?`,
+      message: 'You lose access to its private repositories. An admin of the organization can add you again.',
+      confirmLabel: 'Leave organization',
+      danger: true,
+    })
+    if (!sure) return
     try {
       await api.removeOrganizationMember(organization.name, user.username)
       onToast(`You left ${organization.display_name}.`)
