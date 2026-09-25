@@ -51,25 +51,35 @@ class ReadTracker:
         finally:
             self.release(lease)
 
-    def active(self, repo_id: str) -> int:
-        repo_id = repo_id.lower()
+    def _count(self, repo_id: str, started_before: float | None) -> int:
         cutoff = time.monotonic() - STALE_LEASE_SECONDS
-        with self._condition:
-            return sum(1 for name, started in self._leases.values() if name == repo_id and started > cutoff)
+        return sum(
+            1
+            for name, started in self._leases.values()
+            if name == repo_id and started > cutoff and (started_before is None or started < started_before)
+        )
 
-    @contextmanager
-    def removing(self, repo_id: str) -> Iterator[None]:
-        """Hold new reads of `repo_id` back while its old copy is removed. Call it
-        once `active(repo_id)` is zero."""
+    def active(self, repo_id: str, started_before: float | None = None) -> int:
+        """Reads of `repo_id` under way; with `started_before` (a time.monotonic()
+        value), only those that began before then."""
+        with self._condition:
+            return self._count(repo_id.lower(), started_before)
+
+    def try_begin_removal(self, repo_id: str, started_before: float | None = None) -> bool:
+        """Start removing an old copy if no read that could use it is under way,
+        as one step, so no read can slip in between the check and the removal.
+        New reads then wait until `end_removal`."""
         repo_id = repo_id.lower()
         with self._condition:
+            if repo_id in self._removing or self._count(repo_id, started_before):
+                return False
             self._removing.add(repo_id)
-        try:
-            yield
-        finally:
-            with self._condition:
-                self._removing.discard(repo_id)
-                self._condition.notify_all()
+            return True
+
+    def end_removal(self, repo_id: str) -> None:
+        with self._condition:
+            self._removing.discard(repo_id.lower())
+            self._condition.notify_all()
 
 
 class LeasedResponse(Response):

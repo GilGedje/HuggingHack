@@ -218,16 +218,38 @@ def test_a_scan_during_a_move_indexes_neither_half_copy(mover):
     assert not any("hugginghack-moves" in repo for repo in models)
 
 
-def test_reads_wait_while_an_old_copy_is_removed():
+def test_keeping_the_local_copy_needs_no_wait(mover):
+    client, manager, tracker = mover["client"], mover["manager"], mover["tracker"]
+    lease = tracker.acquire("acme/big")  # a download that never ends
+    move = start(client, "acme/big", "bucket-a", keep_local=True).json()
+    assert wait_for(manager, move["id"], {"done", "failed"})["status"] == "done"
+    model = main.database.get_local_model("acme/big")
+    assert (model["storage_target"], model["cached"]) == ("bucket-a", True)
+    assert (mover["root"] / "model.safetensors").read_bytes() == WEIGHTS
+    assert json.loads((mover["root"] / ".hugginghack.json").read_text())["storage_target"] == "bucket-a"
+    tracker.release(lease)
+
+
+def test_removal_starts_only_when_nothing_reads_and_holds_new_reads_back():
     tracker = ReadTracker()
+    lease = tracker.acquire("acme/big")
+    # A read under way blocks removal; checking and starting are one step.
+    assert tracker.try_begin_removal("ACME/big") is False
+    switched = time.monotonic()
+    # For a bucket, reads that began after the switch go to the new copy and do not count.
+    later = tracker.acquire("acme/big")
+    assert tracker.active("acme/big", started_before=switched) == 1
+    tracker.release(lease)
+    assert tracker.try_begin_removal("acme/big", started_before=switched) is True
     order = []
-    with tracker.removing("acme/big"):
-        reader = threading.Thread(target=lambda: order.append(("read", tracker.acquire("ACME/Big"))))
-        reader.start()
-        time.sleep(0.1)
-        order.append(("removed", None))
+    reader = threading.Thread(target=lambda: order.append(("read", tracker.acquire("acme/big"))))
+    reader.start()
+    time.sleep(0.1)
+    order.append(("removed", None))
+    tracker.end_removal("acme/big")
     reader.join(timeout=2)
     assert [step for step, _ in order] == ["removed", "read"]
+    tracker.release(later)
     assert tracker.active("acme/big") == 1
 
 

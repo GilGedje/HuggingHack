@@ -98,6 +98,10 @@ class MoveManager:
         self._thread: threading.Thread | None = None
         # File hashes of a switched move, kept for relabeling after the cleanup.
         self._sums: dict[str, dict[str, str]] = {}
+        # When each move switched (time.monotonic()). After a restart no read of an
+        # old copy can still be running, so the manager's start time stands in.
+        self._switched: dict[str, float] = {}
+        self._started = time.monotonic()
 
     # ---- public -----------------------------------------------------------------
 
@@ -208,39 +212,28 @@ class MoveManager:
     def _loop(self) -> None:
         while True:
             pending = self.database.unfinished_moves()
-            # Finish switched moves first; then start the oldest waiting one.
-            move = next((item for item in pending if item["status"] in POST_SWITCH), None) or next(
-                (item for item in pending if item["status"] == "queued"), None
-            )
-            if move is None:
-                self._wake.wait(timeout=30)
-                self._wake.clear()
+            # Switched moves wait for their old copy's downloads without holding up
+            # the next move; each pass tries to finish them.
+            for move in pending:
+                if move["status"] in POST_SWITCH:
+                    self._guarded(self._finish, move)
+            queued = next((item for item in pending if item["status"] == "queued"), None)
+            if queued is not None:
+                self._guarded(self._run, queued)
                 continue
-            try:
-                if move["status"] == "queued":
-                    self._run(move)
-                else:
-                    self._finish(move)
-            except Exception:  # noqa: BLE001 - one bad move must not stop the worker
-                logger.exception("Storage move %s failed unexpectedly", move["id"])
-                self.database.update_move(
-                    move["id"], status="failed", error="The move stopped unexpectedly; see the server log.",
-                    updated_at=_now(), finished_at=_now(),
-                )
+            waiting = any(item["status"] in POST_SWITCH for item in pending)
+            self._wake.wait(timeout=DRAIN_POLL_SECONDS if waiting else 30)
+            self._wake.clear()
 
-    def run_pending(self) -> None:
-        """Run every waiting move now, in this thread (tests and maintenance)."""
-        while True:
-            pending = self.database.unfinished_moves()
-            move = next((item for item in pending if item["status"] in POST_SWITCH), None) or next(
-                (item for item in pending if item["status"] == "queued"), None
+    def _guarded(self, step: Callable[[dict[str, Any]], Any], move: dict[str, Any]) -> None:
+        try:
+            step(move)
+        except Exception:  # noqa: BLE001 - one bad move must not stop the worker
+            logger.exception("Storage move %s failed unexpectedly", move["id"])
+            self.database.update_move(
+                move["id"], status="failed", error="The move stopped unexpectedly; see the server log.",
+                updated_at=_now(), finished_at=_now(),
             )
-            if move is None:
-                return
-            if move["status"] == "queued":
-                self._run(move)
-            else:
-                self._finish(move)
 
     # ---- one move ---------------------------------------------------------------
 
@@ -409,32 +402,41 @@ class MoveManager:
             switched_at=_now(), updated_at=_now(),
         )
         self._sums[move["id"]] = sums
+        self._switched[move["id"]] = time.monotonic()
 
-    def _finish(self, move: dict[str, Any]) -> None:
+    def _finish(self, move: dict[str, Any]) -> bool:
+        """Remove the old copy once nothing can be reading it. Returns False while
+        it still has to wait; the worker tries again on its next pass."""
         repo_id = move["repo_id"]
         source = self.storages.get(move["source_target"])
         staging, previous, root = self._paths(move)
-        while (active := self.tracker.active(repo_id)) > 0:
-            self.database.update_move(
-                move["id"], active_reads=active, updated_at=_now(),
-                message=f"Waiting for {active} download{'s' if active != 1 else ''} of the old copy to finish",
-            )
-            time.sleep(DRAIN_POLL_SECONDS)
-        self.database.update_move(move["id"], status="cleaning", active_reads=0, message="Removing the old copy", updated_at=_now())
-        old_sha = self._sha(repo_id)
+        removes_files = source.remote or not move["keep_local"]
+        # After the switch no read goes to the source bucket, so only reads that
+        # began before it matter; a local cache is read until it is gone.
+        started_before = self._switched.get(move["id"], self._started) if source.remote else None
+        if removes_files and not self.tracker.try_begin_removal(repo_id, started_before):
+            active = self.tracker.active(repo_id, started_before)
+            if active != move.get("active_reads") or move["status"] != "draining":
+                self.database.update_move(
+                    move["id"], status="draining", active_reads=active, updated_at=_now(),
+                    message=f"Waiting for {active} download{'s' if active != 1 else ''} of the old copy to finish",
+                )
+            return False
         try:
-            with self.tracker.removing(repo_id):
-                if source.remote:
-                    source.delete_repository(repo_id)
-                elif not move["keep_local"] and root.is_dir():
-                    shutil.rmtree(root)
-                    model = self.database.get_local_model(repo_id) or {}
-                    self.database.set_local_model_location(
-                        repo_id, model.get("storage_backend") or "s3", move["destination_target"],
-                        model.get("remote_uri"), False,
-                    )
-                shutil.rmtree(previous, ignore_errors=True)
-                shutil.rmtree(staging, ignore_errors=True)
+            self.database.update_move(move["id"], status="cleaning", active_reads=0, message="Removing the old copy", updated_at=_now())
+            # New reads are held back now, so the files cannot change under this.
+            old_sha = self._sha(repo_id)
+            if source.remote:
+                source.delete_repository(repo_id)
+            elif not move["keep_local"] and root.is_dir():
+                shutil.rmtree(root)
+                model = self.database.get_local_model(repo_id) or {}
+                self.database.set_local_model_location(
+                    repo_id, model.get("storage_backend") or "s3", move["destination_target"],
+                    model.get("remote_uri"), False,
+                )
+            shutil.rmtree(previous, ignore_errors=True)
+            shutil.rmtree(staging, ignore_errors=True)
             self._relabel(repo_id, self._sums.pop(move["id"], {}), old_sha)
         except Exception as error:  # noqa: BLE001
             logger.exception("Could not remove the old copy of %s", repo_id)
@@ -442,8 +444,13 @@ class MoveManager:
                 move["id"], status="failed", message="Moved, but the old copy was not removed",
                 error=str(error)[:500], updated_at=_now(), finished_at=_now(),
             )
-            return
+            return True
+        finally:
+            if removes_files:
+                self.tracker.end_removal(repo_id)
+        self._switched.pop(move["id"], None)
         self.database.update_move(move["id"], status="done", message="Moved", updated_at=_now(), finished_at=_now())
+        return True
 
     def _discard_copy(self, move: dict[str, Any]) -> None:
         """Remove whatever a move that did not switch left at its destination."""

@@ -1883,11 +1883,9 @@ button.quiet-link:disabled { cursor: progress; opacity: 0.7; }
 .storage-model-item.moving { background: color-mix(in oklch, var(--brand-primary) 6%, var(--canvas)); }
 .storage-model-actions { display: flex; justify-content: flex-end; }
 .storage-model-actions .secondary-button { min-height: 28px; padding: 0 9px; gap: 5px; font-size: 11px; }
-/* With a pointer, Move shows on the row being looked at; touch screens always show it. */
-@media (hover: hover) {
-  .storage-model-actions .secondary-button { opacity: 0; transition: opacity 160ms var(--ease-out), background-color 160ms var(--ease-out), transform 120ms var(--ease-out); }
-  .storage-model-item:is(:hover, :focus-within) .storage-model-actions .secondary-button { opacity: 1; }
-}
+/* Always there, but quiet until the row is looked at. */
+.storage-model-actions .secondary-button { border-color: var(--border); color: var(--text-secondary); }
+.storage-model-item:is(:hover, :focus-within) .storage-model-actions .secondary-button { border-color: var(--border-strong); color: var(--text); }
 .move-progress { display: grid; grid-template-rows: 1fr; animation: move-fold 380ms var(--ease-out) backwards; }
 .move-progress > div { min-height: 0; overflow: hidden; padding: 0 12px 12px; }
 @keyframes move-fold { from { grid-template-rows: 0fr; opacity: 0; } }

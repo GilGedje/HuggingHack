@@ -629,7 +629,10 @@ step:
    stops, removes the copy, and leaves the model where it was.
 3. **Switch**: the model points at the new location in one step.
 4. **Clean up**: the old copy is removed once every download that started from it has
-   finished; new downloads already read the new copy.
+   finished; new downloads already read the new copy. An old bucket copy waits only for
+   downloads that began before the switch. A local copy being removed is read by every
+   download until it goes, so on a busy model that waits for a quiet moment. Waiting never
+   holds up other moves.
 
 Pulls keep working throughout. A client that fixed the revision before the switch (as
 `snapshot_download` and `vllm serve` do) keeps getting the same files under that revision,
