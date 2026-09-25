@@ -21,6 +21,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError, RevisionNotFoundError
 from pydantic import BaseModel, Field, field_validator
 
 from .auth import (
@@ -128,7 +129,7 @@ def refresh_model_index() -> dict[str, Any]:
             discovered = storage.discover_repositories()
         except Exception as error:
             # Keep the existing index for a target that is temporarily unreachable.
-            errors[storage.id] = (str(error).strip() or error.__class__.__name__)[:500]
+            errors[storage.id] = storage.redact(str(error).strip() or error.__class__.__name__)[:500]
             continue
         found: set[str] = set()
         for model in discovered:
@@ -212,9 +213,11 @@ app = FastAPI(
     docs_url="/api/docs",
     redoc_url=None,
 )
+# Only origins named in CORS_ORIGINS may call the API with the user's cookies; by
+# default none, since the web UI is served from this origin (and Vite proxies /api).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=settings.cors_origin_list,
     allow_credentials=True,
     allow_methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=[
@@ -483,13 +486,24 @@ SessionUser = personal()
 SessionWriter = personal(write=True)
 
 
-def set_session_cookie(response: Response, raw_token: str) -> None:
+def secure_cookies(request: Request) -> bool:
+    """SECURE_COOKIES when set; otherwise whether this request arrived over HTTPS.
+
+    X-Forwarded-Proto is honored here even from untrusted clients: a forged value
+    can only make the sender's own cookie Secure, never weaken anyone else's."""
+    if settings.secure_cookies is not None:
+        return settings.secure_cookies
+    forwarded = request.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
+    return request.url.scheme == "https" or forwarded == "https"
+
+
+def set_session_cookie(request: Request, response: Response, raw_token: str) -> None:
     response.set_cookie(
         auth.cookie_name,
         raw_token,
         max_age=settings.session_ttl_hours * 3600,
         httponly=True,
-        secure=settings.secure_cookies,
+        secure=secure_cookies(request),
         samesite="lax",
         path="/",
     )
@@ -514,15 +528,42 @@ def client_details(request: Request) -> tuple[str | None, str | None]:
     )
 
 
+def optional_user(request: Request) -> dict[str, Any] | None:
+    """The signed-in caller, or None; never an error, for endpoints open to everyone."""
+    if auth.setup_required():
+        return None
+    try:
+        principal = resolve_principal(request)
+    except HTTPException:
+        return None
+    return principal["user"] if principal else None
+
+
 @app.get("/api/health")
-def health() -> dict:
+def health(request: Request) -> dict:
+    """Anyone (and container health checks) learns whether the server is up; signed-in
+    users also get what the web UI needs; server details are for settings.view."""
     settings.ensure_directories()
-    usage = shutil.disk_usage(settings.model_storage)
     object_storage = storages.default.health()
-    return {
+    result = {
         "status": "ok" if object_storage["connected"] else "degraded",
         "app": settings.app_name,
         "version": settings.app_version,
+    }
+    user = optional_user(request)
+    if not user:
+        return result
+    result |= {
+        "accounts_enabled": settings.accounts_enabled,
+        "upload_chunk_bytes": settings.upload_chunk_mb * 1024**2,
+        "max_upload_size_bytes": settings.max_upload_size_gb * 1024**3,
+        "hub_api_enabled": settings.hub_api_enabled,
+        "public_url": settings.public_url,
+    }
+    if not can(user, "settings.view"):
+        return result
+    usage = shutil.disk_usage(settings.model_storage)
+    return result | {
         "database_backend": database.backend,
         "storage": {
             "path": str(settings.model_storage),
@@ -534,13 +575,8 @@ def health() -> dict:
         "object_storage": object_storage,
         "hf_token_configured": bool(settings.hf_token),
         "hf_endpoint": settings.hf_endpoint,
-        "accounts_enabled": settings.accounts_enabled,
-        "upload_chunk_bytes": settings.upload_chunk_mb * 1024**2,
-        "max_upload_size_bytes": settings.max_upload_size_gb * 1024**3,
         "runtime_target_count": len(runtimes.targets),
         "runtime_api_token_configured": bool(settings.runtime_api_token),
-        "hub_api_enabled": settings.hub_api_enabled,
-        "public_url": settings.public_url,
     }
 
 
@@ -570,7 +606,7 @@ def setup_account(payload: SetupRequest, request: Request, response: Response) -
     except (ValueError, *INTEGRITY_ERRORS) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     raw_token, csrf_token = auth.create_session(user["id"], *client_details(request))
-    set_session_cookie(response, raw_token)
+    set_session_cookie(request, response, raw_token)
     return auth_payload({"user": user, "csrf_token": csrf_token})
 
 
@@ -590,7 +626,7 @@ def login(payload: CredentialsRequest, request: Request, response: Response) -> 
     if not user:
         raise HTTPException(status_code=401, detail="Username or password is incorrect.")
     raw_token, csrf_token = auth.create_session(user["id"], *client_details(request))
-    set_session_cookie(response, raw_token)
+    set_session_cookie(request, response, raw_token)
     public_user = database.get_user(user["id"], include_secret=False)
     return auth_payload({"user": public_user, "csrf_token": csrf_token})
 
@@ -598,6 +634,12 @@ def login(payload: CredentialsRequest, request: Request, response: Response) -> 
 OIDC_PROVIDER = "oidc"
 OIDC_BROWSER_COOKIE = "hugginghack_oidc"
 OIDC_STATE_SECONDS = 600
+# Standard OAuth and OpenID Connect error codes, the only provider text shown to users.
+OIDC_ERROR_CODES = frozenset({
+    "access_denied", "account_selection_required", "consent_required", "interaction_required",
+    "invalid_request", "invalid_scope", "login_required", "server_error",
+    "temporarily_unavailable", "unauthorized_client", "unsupported_response_type",
+})
 
 
 def safe_next_path(value: str | None) -> str:
@@ -668,7 +710,7 @@ def oidc_login(request: Request, next: str = "/models") -> Response:
         browser,
         max_age=OIDC_STATE_SECONDS,
         httponly=True,
-        secure=settings.secure_cookies,
+        secure=secure_cookies(request),
         samesite="lax",
         path="/api/auth/oidc",
     )
@@ -685,10 +727,10 @@ def oidc_callback(
 ) -> Response:
     if not settings.oidc_enabled:
         raise HTTPException(status_code=404, detail="Single sign-on is not configured.")
-    if error:
-        return sso_error(error_description or f"The identity provider refused the sign-in ({error}).")
     if auth.setup_required():
         return sso_error("Create the owner account with a password first.")
+    # The state comes first: anyone can craft a callback link, so nothing else in it
+    # is trusted, or shown, until it proves to be this browser's own sign-in.
     pending = database.take_oidc_state(hash_secret(state)) if state else None
     if not pending:
         return sso_error("This sign-in link expired or was already used. Try again.")
@@ -699,6 +741,11 @@ def oidc_callback(
     browser = request.cookies.get(OIDC_BROWSER_COOKIE) or ""
     if not browser or not hmac.compare_digest(hash_secret(browser), pending["browser_hash"]):
         return sso_error("Sign-in must finish in the same browser that started it. Try again.")
+    if error:
+        # The provider's own wording goes to the log, never into the page.
+        logger.warning("Single sign-on refused: %s %s", error[:100], error_description[:500])
+        reason = f" ({error})" if error in OIDC_ERROR_CODES else ""
+        return sso_error(f"The identity provider refused the sign-in{reason}.")
     if (utc_now() - started).total_seconds() > OIDC_STATE_SECONDS:
         return sso_error("The sign-in took too long. Try again.")
     if not code:
@@ -733,7 +780,7 @@ def oidc_callback(
         return sso_error(str(failure) or "Your account could not be created.")
     raw_token, _ = auth.create_session(user["id"], *client_details(request))
     response = RedirectResponse(f"/#{pending['next_path']}", status_code=303)
-    set_session_cookie(response, raw_token)
+    set_session_cookie(request, response, raw_token)
     response.delete_cookie(OIDC_BROWSER_COOKIE, path="/api/auth/oidc")
     return response
 
@@ -762,6 +809,7 @@ def create_user(payload: CreateUserRequest, user: UserAdmin) -> dict:
                 status_code=400, detail=f"{organization['name']} is listed more than once."
             )
         require_org_admin(organization, user)
+        check_org_role_fits({"username": payload.username, "role": payload.role}, item.role)
         memberships.append((organization, item.role))
     try:
         created = auth.create_user(
@@ -1162,14 +1210,15 @@ def public_database_target() -> str:
 
 
 @app.get("/api/admin/server")
-def admin_server(_: SettingsViewer) -> dict:
+def admin_server(request: Request, _: SettingsViewer) -> dict:
     """Read-only configuration. Secret values are reported only as configured or not."""
     return {
         "app": settings.app_name,
         "version": settings.app_version,
         "accounts": {
             "enabled": settings.accounts_enabled,
-            "secure_cookies": settings.secure_cookies,
+            # With SECURE_COOKIES=auto, whether this admin's own connection gets them.
+            "secure_cookies": secure_cookies(request),
             "session_ttl_hours": settings.session_ttl_hours,
         },
         "database": {"backend": database.backend, "target": public_database_target()},
@@ -1236,7 +1285,7 @@ def search_library_models(
 ) -> dict:
     models = database.list_visible_local_models(user["id"])
     try:
-        return search_catalog(
+        found = search_catalog(
             models,
             database.saved_repo_ids(user["id"]),
             search=search,
@@ -1255,6 +1304,8 @@ def search_library_models(
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    found["items"] = [model_for(user, item) for item in found["items"]]
+    return found
 
 
 class HardwareRequest(BaseModel):
@@ -1827,11 +1878,14 @@ async def library_model(repo_id: str, user: Browser) -> dict:
         if organization
         else None
     )
-    if not can(user, "storage.view"):
-        # Where the files live is for administrators, who see it under Admin -> Storage.
-        for key in ("local_path", "remote_uri", "storage_target", "storage_target_name"):
-            details.pop(key, None)
-    return details
+    return model_for(user, details)
+
+
+def download_for(user: dict[str, Any], download: dict[str, Any]) -> dict[str, Any]:
+    """A download without its folder on the server, unless the user may view storage."""
+    if can(user, "storage.view"):
+        return download
+    return {key: value for key, value in download.items() if key != "target_path"}
 
 
 def can_access_download(download: dict[str, Any], user: dict[str, Any]) -> bool:
@@ -1847,7 +1901,7 @@ def list_downloads(user: HubReader) -> dict:
         user_id=user["id"], include_unowned=can(user, "users.manage")
     )
     return {
-        "items": items,
+        "items": [download_for(user, item) for item in items],
         "active": sum(
             item["status"] in {"queued", "preparing", "downloading"} for item in items
         ),
@@ -1859,17 +1913,54 @@ def get_download(download_id: str, user: HubReader) -> dict:
     download = database.get_download(download_id)
     if not download or not can_access_download(download, user):
         raise HTTPException(status_code=404, detail="Download not found")
-    return download
+    return download_for(user, download)
+
+
+def check_hub_access(repo_id: str, revision: str) -> None:
+    """Private and gated Hub repositories come in with the server's HF_TOKEN but no
+    owner, so every account could then pull them: only administrators fetch those."""
+    try:
+        access = hub.access(repo_id, revision)
+    except GatedRepoError:
+        access = {"private": False, "gated": True}
+    except (RepositoryNotFoundError, RevisionNotFoundError) as error:
+        raise HTTPException(
+            status_code=404, detail=f"{repo_id} was not found on Hugging Face."
+        ) from error
+    except Exception as error:
+        # Unchecked is refused: better no download than a private one shared.
+        raise HTTPException(
+            status_code=502, detail="Could not check this repository on Hugging Face. Try again."
+        ) from error
+    if access["private"] or access["gated"]:
+        kind = "private" if access["private"] else "gated"
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"{repo_id} is {kind} on Hugging Face. Once downloaded, every account here "
+                "could use it, so only an administrator can download it."
+            ),
+        )
 
 
 @app.post("/api/downloads", status_code=202)
 def start_download(payload: DownloadRequest, user: HubWriter) -> dict:
+    if not can(user, "storage.manage"):
+        # First, so a name that is not on the Hub never reaches the checks below.
+        check_hub_access(payload.repo_id, payload.revision)
     if moving := moves.moving(payload.repo_id):
         raise HTTPException(status_code=409, detail=moving)
-    if database.get_owned_repository(payload.repo_id):
+    owned = database.get_owned_repository(payload.repo_id)
+    if owned:
+        # Whether a private upload exists by that name is only for those who see it.
+        visible = database.get_visible_local_model(user["id"], payload.repo_id)
         raise HTTPException(
             status_code=409,
-            detail="An account-owned repository already uses this storage path.",
+            detail=(
+                "An account-owned repository already uses this storage path."
+                if visible or can(user, "storage.view")
+                else "This repository cannot be downloaded here."
+            ),
         )
     storage_target = payload.storage_target
     if storage_target or not database.get_local_model(payload.repo_id):
@@ -1880,14 +1971,17 @@ def start_download(payload: DownloadRequest, user: HubWriter) -> dict:
         except PermissionError as error:
             raise HTTPException(status_code=403, detail=str(error)) from error
     try:
-        return downloads.queue(
-            payload.repo_id,
-            payload.revision,
-            payload.allow_patterns,
-            payload.ignore_patterns,
-            payload.mode,
-            user_id=user["id"],
-            storage_target=storage_target,
+        return download_for(
+            user,
+            downloads.queue(
+                payload.repo_id,
+                payload.revision,
+                payload.allow_patterns,
+                payload.ignore_patterns,
+                payload.mode,
+                user_id=user["id"],
+                storage_target=storage_target,
+            ),
         )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -1902,7 +1996,40 @@ def cancel_download(download_id: str, user: HubWriter) -> dict:
         download = downloads.cancel(download_id)
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
-    return download
+    return download_for(user, download)
+
+
+# Where a model's files live: for administrators, who see it under Admin -> Storage.
+STORAGE_LOCATION_FIELDS = (
+    "relative_path", "local_path", "remote_uri", "storage_target", "storage_target_name",
+)
+
+
+def model_for(user: dict[str, Any], model: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A model row as this user may see it: without its storage location unless they
+    may view storage. Whether it is on disk or in S3 only (storage_backend, cached)
+    stays, since pages offer to restore or pull by it."""
+    if model is None or can(user, "storage.view"):
+        return model
+    return {key: value for key, value in model.items() if key not in STORAGE_LOCATION_FIELDS}
+
+
+def listing_for(user: dict[str, Any], listing: dict[str, Any]) -> dict[str, Any]:
+    """A file listing without the site's own dotfiles (the .hugginghack.json manifest)
+    and with the model as this user may see it, as the library page shows it."""
+    files = [
+        file
+        for file in listing.get("files") or []
+        if not any(part.startswith(".") for part in PurePosixPath(file["path"]).parts)
+    ]
+    result = {
+        **listing,
+        "files": files,
+        "unsafe_file_count": sum(1 for file in files if file.get("unsafe_serialization")),
+    }
+    if "model" in result:
+        result["model"] = model_for(user, result["model"])
+    return result
 
 
 @app.get("/api/local-models")
@@ -1911,15 +2038,23 @@ def local_models(
 ) -> dict:
     items = database.list_visible_local_models(user["id"], query)
     return {
-        "items": items,
+        "items": [model_for(user, item) for item in items],
         "count": len(items),
         "total_bytes": sum(item["size_bytes"] for item in items),
     }
 
 
 @app.post("/api/local-models/scan")
-async def scan_local_models(_: Scanner) -> dict:
-    return await run_in_threadpool(refresh_model_index)
+async def scan_local_models(user: Scanner) -> dict:
+    """Rescan storage. The answer lists only models this user may see; which targets
+    failed or clash, and how many models each holds, is for storage viewers."""
+    result = await run_in_threadpool(refresh_model_index)
+    if can(user, "storage.view"):
+        return result
+    models = [
+        model_for(user, model) for model in database.list_visible_local_models(user["id"])
+    ]
+    return {"count": len(models), "models": models, "scanned_at": result["scanned_at"]}
 
 
 def visible_model(repo_id: str, user_id: str) -> dict[str, Any]:
@@ -1957,7 +2092,7 @@ async def restore_local_model(repo_id: str, user: CacheManager) -> dict:
     result = indexer.files_for_model(model["repo_id"])
     if not result:
         raise HTTPException(status_code=404, detail="Local model not found")
-    return result
+    return listing_for(user, result)
 
 
 @app.delete("/api/local-models/{repo_id:path}/cache")
@@ -1979,7 +2114,7 @@ async def evict_local_model_cache(repo_id: str, user: CacheManager) -> dict:
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     updated = database.set_local_model_cached(model["repo_id"], False)
-    return {"status": "evicted", "model": updated}
+    return {"status": "evicted", "model": model_for(user, updated)}
 
 
 @app.get("/api/local-models/{repo_id:path}")
@@ -1987,7 +2122,7 @@ def local_model(repo_id: str, user: Browser) -> dict:
     model = visible_model(repo_id, user["id"])
     result = library_listing(model)
     result["model"] = database.get_local_model(model["repo_id"])
-    return result
+    return listing_for(user, result)
 
 
 @app.get("/api/storage/options")
@@ -2365,23 +2500,52 @@ def organization_or_404(name: str) -> dict[str, Any]:
     return organization
 
 
+def effective_org_role(organization: dict[str, Any], user: dict[str, Any]) -> str | None:
+    """The user's organization role as it acts: accounts whose server role cannot
+    create repositories (Viewers) only read, whatever role they were given earlier."""
+    role = database.organization_role(organization["id"], user["id"])
+    if role in {"admin", "write"} and not can(user, "repos.create"):
+        return "read"
+    return role
+
+
+def check_org_role_fits(account: dict[str, Any], role: str) -> None:
+    """Refuse an organization role the account's server role cannot use."""
+    if role != "read" and not can(account, "repos.create"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{account['username']} is a Viewer on this server, so their organization role "
+                "can only be Read. Change their server role first."
+            ),
+        )
+
+
 def require_org_admin(organization: dict[str, Any], user: dict[str, Any]) -> bool:
     """True for server-wide organization managers, who may bypass org safeguards."""
     if can(user, "orgs.manage"):
         return True
-    if database.organization_role(organization["id"], user["id"]) != "admin":
+    if effective_org_role(organization, user) != "admin":
         raise HTTPException(status_code=403, detail="Only this organization's admins can do that.")
     return False
 
 
 def organization_payload(organization: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
     role = database.organization_role(organization["id"], user["id"])
+    manages = can(user, "orgs.manage") or effective_org_role(organization, user) == "admin"
+    members = database.organization_members(organization["id"])
+    if not (manages or can(user, "users.manage")):
+        # Server roles and disabled accounts are for those who manage members.
+        members = [
+            {key: value for key, value in member.items() if key not in {"server_role", "disabled"}}
+            for member in members
+        ]
     return {
         **organization,
         "my_role": role,
-        "can_manage": can(user, "orgs.manage") or role == "admin",
+        "can_manage": manages,
         "can_upload": can(user, "repos.create") and role in {"admin", "write"},
-        "members": database.organization_members(organization["id"]),
+        "members": members,
     }
 
 
@@ -2566,6 +2730,7 @@ def set_organization_member(name: str, username: str, payload: MemberRequest, us
     member = database.get_user_by_username(username)
     if not member:
         raise HTTPException(status_code=404, detail="User not found.")
+    check_org_role_fits(member, payload.role)
     try:
         database.set_organization_member(
             organization["id"], member["id"], payload.role, utc_iso(), force=force

@@ -78,6 +78,15 @@ class HubService:
             "parameter_count": _parameter_count(info),
         }
 
+    def access(self, repo_id: str, revision: str = "main") -> dict[str, Any]:
+        """Whether a Hub repository is private or gated, as the server token sees it."""
+        info = self.api.model_info(validate_repo_id(repo_id), revision=revision)
+        return {
+            "private": bool(getattr(info, "private", False)),
+            # False, or the kind of gate: "auto" or "manual".
+            "gated": bool(getattr(info, "gated", False)),
+        }
+
     def model_details(self, repo_id: str, revision: str = "main") -> dict[str, Any]:
         validated = validate_repo_id(repo_id)
         info = self.api.model_info(

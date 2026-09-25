@@ -403,6 +403,71 @@ def test_postgresql_repository_rename_moves_every_row():
 
 
 @pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
+def test_postgresql_visible_counts_and_saves_after_a_rename():
+    database = Database(POSTGRES_URL or "")
+    database.initialize()
+    suffix = uuid.uuid4().hex
+    owner_id, reader_id, org_id = f"owner-{suffix}", f"reader-{suffix}", f"org-{suffix}"
+    old, new = f"o{suffix}/tiny", f"u{suffix}/tiny"
+    timestamp = "2026-09-25T12:00:00+00:00"
+    try:
+        for user_id, username in ((owner_id, f"u{suffix}"), (reader_id, f"r{suffix}")):
+            database.create_user(
+                {"id": user_id, "username": username, "display_name": username, "password_hash": "test-only",
+                 "role": "member", "created_at": timestamp, "updated_at": timestamp}
+            )
+        database.create_organization(
+            {"id": org_id, "name": f"o{suffix}", "display_name": "Org", "description": "",
+             "created_at": timestamp, "updated_at": timestamp}
+        )
+        database.set_organization_member(org_id, owner_id, "admin", timestamp)
+        database.set_organization_member(org_id, reader_id, "read", timestamp)
+        for repo_id, visibility in ((old, "organization"), (f"o{suffix}/hidden", "private")):
+            database.create_owned_repository(
+                {"id": uuid.uuid4().hex, "owner_id": owner_id, "repo_id": repo_id, "description": "",
+                 "visibility": visibility, "status": "ready", "created_at": timestamp,
+                 "updated_at": timestamp, "organization_id": org_id}
+            )
+        counts = {
+            user: next(item for item in database.list_organizations(user) if item["id"] == org_id)["repository_count"]
+            for user in (owner_id, reader_id, None)
+        }
+        assert counts == {owner_id: 2, reader_id: 1, None: 0}
+
+        database.upsert_local_model(
+            {"repo_id": old, "relative_path": old, "size_bytes": 1, "file_count": 1, "modified_at": timestamp,
+             "downloaded_at": None, "revision": None, "sha": None, "pipeline_tag": None, "library_name": None,
+             "license": None, "tags_json": "[]", "config_json": "{}", "source_url": None, "managed": 0,
+             "storage_backend": "filesystem", "cached": 1, "remote_uri": None}
+        )
+        for user_id in (owner_id, reader_id):
+            database.save_model(
+                {"id": uuid.uuid4().hex, "user_id": user_id, "repo_id": old, "note": "", "metadata_json": "{}",
+                 "created_at": timestamp, "updated_at": timestamp},
+                [],
+            )
+        # Moving it out of the organization makes it private to its owner.
+        database.rename_repository(
+            old, new, {"owner_id": owner_id, "organization_id": None, "visibility": "private", "updated_at": timestamp}
+        )
+        assert database.saved_repo_ids(owner_id) == {new}
+        assert database.saved_repo_ids(reader_id) == {old}
+    finally:
+        with database.connect() as connection:
+            for user_id in (owner_id, reader_id):
+                connection.execute("DELETE FROM saved_models WHERE user_id = ?", (user_id,))
+            for repo_id in (old, new):
+                connection.execute("DELETE FROM local_models WHERE repo_id = ?", (repo_id,))
+            connection.execute(
+                "DELETE FROM owned_repositories WHERE owner_id = ?", (owner_id,)
+            )
+            connection.execute("DELETE FROM organization_members WHERE organization_id = ?", (org_id,))
+            connection.execute("DELETE FROM organizations WHERE id = ?", (org_id,))
+            for user_id in (owner_id, reader_id):
+                connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
 def test_postgresql_config_revisions():
     database = Database(POSTGRES_URL or "")
     database.initialize()

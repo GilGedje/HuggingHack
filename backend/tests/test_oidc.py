@@ -234,6 +234,24 @@ def test_sso_state_is_single_use_and_bound_to_the_browser(sso):
     assert sso_error(unknown)
 
 
+def test_sso_errors_show_no_link_text_until_the_state_checks_out(sso):
+    owner(sso)
+    client = TestClient(main.app)
+    lure = {"error": "access_denied", "error_description": "Call +1-555-0100 to unlock your account"}
+    # A crafted link shows nothing it carries.
+    forged = client.get("/api/auth/oidc/callback", params={**lure, "state": "made-up"}, follow_redirects=False)
+    assert "555" not in sso_error(forged) and "expired" in sso_error(forged)
+    # A real refusal names only a standard error code, never the description.
+    query = start(client)
+    refused = client.get("/api/auth/oidc/callback", params={**lure, "state": query["state"]}, follow_redirects=False)
+    assert sso_error(refused) == "The identity provider refused the sign-in (access_denied)."
+    query = start(client)
+    odd = client.get(
+        "/api/auth/oidc/callback", params={"error": "visit evil.example", "state": query["state"]}, follow_redirects=False
+    )
+    assert sso_error(odd) == "The identity provider refused the sign-in."
+
+
 def test_sso_never_redirects_off_site(sso):
     owner(sso)
     provider = sso["provider"]

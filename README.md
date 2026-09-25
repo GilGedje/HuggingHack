@@ -471,12 +471,17 @@ docker compose up -d
 
 The token is read only by the backend container. It is never returned by the API or sent to the browser.
 
+A model downloaded this way has no owner, so every account could open it. Only administrators
+may therefore download repositories that are private or gated on Hugging Face; members get a
+clear refusal and can ask an administrator.
+
 ## File filtering
 
 Server-side downloads from Hugging Face are off by default (`HF_DOWNLOADS_ENABLED=false`),
 because an air-gapped server cannot reach Hugging Face; models arrive by upload instead. On a
 server with internet access, set `HF_DOWNLOADS_ENABLED=true` and start downloads with
-`POST /api/downloads` (members and admins, or a write-scope API token). The `mode` field takes:
+`POST /api/downloads` (members and admins, or a write-scope API token; private and gated
+Hugging Face repositories are for admins only). The `mode` field takes:
 
 - **Full repository** downloads every file in the selected revision.
 - **SafeTensors** selects safe weights plus configuration and tokenizer files.
@@ -518,8 +523,11 @@ Organizations are shared namespaces for teams and companies, so a model can live
 | **Write** | Also see **Private** ones, create repositories in the organization, and upload changes |
 | **Admin** | Also manage members and settings, change visibility, and delete repositories |
 
-Organization roles add to the server role: a server **Viewer** with organization **Write**
-access can read but still cannot upload. Private and organization repositories stay inside
+Organization roles add to the server role, and a server **Viewer** can only be given
+organization **Read**. A Viewer who kept a **Write** or **Admin** role from earlier can read
+but not upload, change settings, rename, or delete. Changing a repository's settings (rename,
+transfer, visibility, delete) also needs a server role that can create repositories.
+Private and organization repositories stay inside
 the organization, including through API tokens and `git clone`. Organization names and usernames share
 one namespace (case-insensitive), so a user cannot take an organization's name or the reverse.
 Repositories stay with the organization when the account that created them leaves or is deleted.
@@ -716,7 +724,9 @@ Manually copied models are indexed but never modified.
 - Model cards are rendered as sanitized Markdown with safe HTML, readable code, tables, lists, and math; embedded scripts, forms, and frames are discarded.
 - Pickle-compatible formats can execute code when loaded by other applications. Prefer SafeTensors or GGUF and only load models from publishers you trust.
 - Passwords are salted and hashed with `scrypt`; sessions use hashed random tokens in HTTP-only, SameSite cookies and state-changing requests require a per-session CSRF token.
-- Built-in accounts protect application data, but public exposure still requires HTTPS. Put HuggingHack behind a TLS reverse proxy such as Caddy, Traefik, or Nginx Proxy Manager and set `SECURE_COOKIES=true`.
+- Built-in accounts protect application data, but public exposure still requires HTTPS. Put HuggingHack behind a TLS reverse proxy such as Caddy, Traefik, or Nginx Proxy Manager. With the default `SECURE_COOKIES=auto`, session cookies are marked Secure whenever the request arrives over HTTPS (directly or with `X-Forwarded-Proto: https` from the proxy); set `SECURE_COOKIES=true` to require it always.
+- The API accepts cross-origin calls with cookies only from origins listed in `CORS_ORIGINS` (empty by default).
+- `/api/health` tells anonymous callers only whether the server is up (`status`, `app`, `version`); storage paths, buckets, and other server details need an account with **View server configuration**.
 - Upload paths are confined to repositories owned by the signed-in account. Repository deletion verifies ownership and requires the exact repository name.
 - Runtime dispatch is administrator-only in the UI. Optional bearer access is limited to runtime endpoints; use long random tokens and firewall Ollama and the vLLM agent to trusted LAN clients.
 - The vLLM agent rejects paths outside its configured model root and launches a fixed argument vector without a shell.

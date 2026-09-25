@@ -250,7 +250,12 @@ def test_upload_permission_needs_both_server_and_organization_roles(org):
     repo_id = writer.post("/api/uploads/repositories", json={"slug": "gated", "namespace": "Nvidia"}).json()["repo_id"]
     upload(writer, repo_id, {"config.json": b"{}"})
     admin, _ = login("admin")
-    assert admin.put("/api/organizations/Nvidia/members/viewer", json={"role": "write"}).status_code == 200
+    refused = admin.put("/api/organizations/Nvidia/members/viewer", json={"role": "write"})
+    assert refused.status_code == 400 and "can only be Read" in refused.json()["detail"]
+    # A Write role given before that rule existed still writes nothing.
+    main.database.set_organization_member(
+        main.database.get_organization("Nvidia")["id"], org["users"]["viewer"]["id"], "write", "2026-01-01T00:00:00+00:00"
+    )
 
     # A server Viewer with an organization Write role still cannot upload anywhere.
     viewer, status = login("viewer")
@@ -327,8 +332,9 @@ def test_only_members_who_may_write_are_offered_uploads(org):  # noqa: F811
         offered[username] = response.json().get("can_upload") if response.status_code == 200 else None
     # The server admin who created it is its admin; writers upload; readers and others do not.
     assert offered == {"admin": True, "writer": True, "reader": False, "outsider": False, "viewer": False}
-    # A viewer given the write role still cannot upload: the role decides first.
-    admin, _ = login("admin")
-    assert admin.put("/api/organizations/nvidia/members/viewer", json={"role": "write"}).status_code == 200
+    # A viewer holding an older write role still cannot upload: the role decides first.
+    main.database.set_organization_member(
+        main.database.get_organization("nvidia")["id"], org["users"]["viewer"]["id"], "write", "2026-01-01T00:00:00+00:00"
+    )
     viewer, _ = login("viewer")
     assert viewer.get("/api/organizations/nvidia").json()["can_upload"] is False

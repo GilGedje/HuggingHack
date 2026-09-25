@@ -41,6 +41,16 @@ def _boolean(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _optional_boolean(name: str) -> bool | None:
+    """True or False when set to one, None for "auto" or unset."""
+    value = (os.getenv(name) or "").strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
 @dataclass(frozen=True)
 class Settings:
     app_name: str = os.getenv("APP_NAME", "HuggingHack")
@@ -57,7 +67,8 @@ class Settings:
     max_concurrent_downloads: int = _positive_int("MAX_CONCURRENT_DOWNLOADS", 2, 8)
     download_workers_per_job: int = _positive_int("DOWNLOAD_WORKERS_PER_JOB", 4, 16)
     accounts_enabled: bool = _boolean("ACCOUNTS_ENABLED", True)
-    secure_cookies: bool = _boolean("SECURE_COOKIES", False)
+    # None ("auto"): cookies are Secure when the request arrived over HTTPS.
+    secure_cookies: bool | None = _optional_boolean("SECURE_COOKIES")
     session_ttl_hours: int = _positive_int("SESSION_TTL_HOURS", 720, 8760)
     upload_chunk_mb: int = _positive_int("UPLOAD_CHUNK_MB", 8, 64)
     max_upload_size_gb: int = _positive_int("MAX_UPLOAD_SIZE_GB", 1024, 16384)
@@ -103,6 +114,9 @@ class Settings:
     oidc_ca_bundle: str | None = (os.getenv("OIDC_CA_BUNDLE") or "").strip() or None
     oidc_verify_ssl: bool = _boolean("OIDC_VERIFY_SSL", True)
     public_url: str | None = (os.getenv("PUBLIC_URL") or "").strip().rstrip("/") or None
+    # Other origins (such as a separately served web UI) allowed to call the API
+    # with the user's cookies. The Vite dev server proxies /api, so it needs none.
+    cors_origins: str = os.getenv("CORS_ORIGINS", "").strip()
 
     @property
     def database_path(self) -> Path:
@@ -119,6 +133,10 @@ class Settings:
     @property
     def oidc_enabled(self) -> bool:
         return bool(self.accounts_enabled and self.oidc_issuer and self.oidc_client_id)
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [origin.strip().rstrip("/") for origin in self.cors_origins.split(",") if origin.strip()]
 
     @property
     def oidc_groups(self) -> tuple[str, ...]:

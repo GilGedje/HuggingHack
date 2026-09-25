@@ -16,20 +16,22 @@ export interface ObjectStorageHealth {
   error?: string | null
 }
 
+/** Everyone gets status, app, and version; signed-in accounts get the upload and
+ * pull settings; server details need `settings.view`. */
 export interface Health {
   status: string
   app: string
   version: string
-  database_backend: 'sqlite' | 'postgresql'
-  storage: StorageHealth
-  object_storage: ObjectStorageHealth
-  hf_token_configured: boolean
-  hf_endpoint: string
-  accounts_enabled: boolean
-  upload_chunk_bytes: number
-  max_upload_size_bytes: number
-  runtime_target_count: number
-  runtime_api_token_configured: boolean
+  database_backend?: 'sqlite' | 'postgresql'
+  storage?: StorageHealth
+  object_storage?: ObjectStorageHealth
+  hf_token_configured?: boolean
+  hf_endpoint?: string
+  accounts_enabled?: boolean
+  upload_chunk_bytes?: number
+  max_upload_size_bytes?: number
+  runtime_target_count?: number
+  runtime_api_token_configured?: boolean
   hub_api_enabled?: boolean
   public_url?: string | null
 }
@@ -228,7 +230,8 @@ export interface LibraryModel {
   sha?: string | null
   managed: boolean
   storage_backend: 'filesystem' | 's3'
-  storage_target: string
+  /** Only for accounts that may see storage locations. */
+  storage_target?: string
   cached: boolean
   saved: boolean
 }
@@ -633,8 +636,9 @@ export interface OrganizationMember {
   username: string
   display_name: string
   role: OrganizationRole
-  server_role: Role
-  disabled: boolean
+  /** Only for organization admins and account managers. */
+  server_role?: Role
+  disabled?: boolean
   joined_at: string
 }
 

@@ -2107,7 +2107,7 @@ class Database:
     # Tables whose rows belong to a repository and follow it when it is renamed.
     # `downloads` and `runtime_jobs` are history and keep the name they ran under.
     RENAMED_WITH_REPOSITORY = (
-        "saved_models", "repo_commits", "file_digests", "model_hardware", "config_revisions",
+        "repo_commits", "file_digests", "model_hardware", "config_revisions",
         "model_listing", "revision_aliases",
     )
 
@@ -2120,9 +2120,10 @@ class Database:
         repository; with an `id` it registers a downloaded model as owned.
         """
         with self._write_lock, self.connect() as connection:
-            for table in self.RENAMED_WITH_REPOSITORY:
+            for table in (*self.RENAMED_WITH_REPOSITORY, "saved_models"):
                 # Leftovers of an earlier repository with the new name must not merge in.
                 connection.execute(f"DELETE FROM {table} WHERE repo_id = ?", (new,))
+            for table in self.RENAMED_WITH_REPOSITORY:
                 connection.execute(
                     f"UPDATE {table} SET repo_id = ? WHERE repo_id = ?", (new, old)
                 )
@@ -2157,6 +2158,22 @@ class Database:
                 connection.execute(
                     "UPDATE owned_repositories SET repo_id = ? WHERE repo_id = ?", (new, old)
                 )
+            # Saves follow the repository only for those who may still see it under
+            # its new owner; the others keep the old name, as after a deletion, so
+            # a private new name is never shown to them.
+            connection.execute(
+                """
+                UPDATE saved_models SET repo_id = ?
+                WHERE repo_id = ? AND EXISTS (
+                    SELECT 1 FROM local_models
+                    LEFT JOIN owned_repositories
+                        ON owned_repositories.repo_id = local_models.repo_id
+                    WHERE local_models.repo_id = ?
+                      AND """ + VISIBLE_TO_USER.replace("?", "saved_models.user_id") + """
+                )
+                """,
+                (new, old, new),
+            )
 
     # Deployment config revisions: linear per repository, numbered from 1.
 
@@ -2309,6 +2326,7 @@ class Database:
         return dict(row) if row else None
 
     def list_organizations(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        """Every organization, counting only the repositories `user_id` may see."""
         with self.connect() as connection:
             rows = connection.execute(
                 """
@@ -2316,13 +2334,14 @@ class Database:
                     (SELECT COUNT(*) FROM organization_members
                         WHERE organization_id = organizations.id) AS member_count,
                     (SELECT COUNT(*) FROM owned_repositories
-                        WHERE organization_id = organizations.id) AS repository_count,
+                        WHERE owned_repositories.organization_id = organizations.id
+                          AND """ + VISIBLE_TO_USER + """) AS repository_count,
                     (SELECT role FROM organization_members
                         WHERE organization_id = organizations.id AND user_id = ?) AS my_role
                 FROM organizations
                 ORDER BY LOWER(organizations.name)
                 """,
-                (user_id,),
+                (user_id, user_id, user_id),
             ).fetchall()
         return [dict(row) for row in rows]
 

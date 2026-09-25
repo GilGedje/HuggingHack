@@ -130,10 +130,13 @@ class UploadManager:
 
     def can_manage(self, repo_id: str, user: dict[str, Any]) -> bool:
         """Whether the user may change a repository's settings: rename, transfer,
-        visibility, and delete. Repository admins may for their uploads; server
+        visibility, and delete. Repository admins may for their uploads, when their
+        server role lets them create repositories (a Viewer's roles only read); server
         administrators may for every model, including downloaded ones."""
         if can(user, "storage.manage"):
             return True
+        if not can(user, "repos.create"):
+            return False
         repository = self.database.get_owned_repository(repo_id)
         return bool(repository) and self.access(repository, user["id"]) == "admin"
 

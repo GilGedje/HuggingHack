@@ -206,6 +206,9 @@ class FilesystemModelStorage:
             "path": str(self.settings.model_storage),
         }
 
+    def redact(self, text: str) -> str:
+        return text
+
     def health(self) -> dict[str, Any]:
         return {
             "backend": self.backend,
@@ -420,6 +423,12 @@ class S3ModelStorage(FilesystemModelStorage):
             "path": None,
         }
 
+    def redact(self, text: str) -> str:
+        """An error message without this target's credentials."""
+        for secret in self.target.secrets:
+            text = text.replace(secret, "[redacted]")
+        return text
+
     def health(self) -> dict[str, Any]:
         error = None
         connected = False
@@ -431,10 +440,7 @@ class S3ModelStorage(FilesystemModelStorage):
             )
             connected = True
         except Exception as exception:
-            error = str(exception).strip() or exception.__class__.__name__
-            for secret in self.target.secrets:
-                error = error.replace(secret, "[redacted]")
-            error = error[:300]
+            error = self.redact(str(exception).strip() or exception.__class__.__name__)[:300]
         return {
             "backend": self.backend,
             "enabled": True,
