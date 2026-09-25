@@ -89,7 +89,7 @@ export function UploadWizard({
   const [started, setStarted] = useState<string | null>(null)
   const [listing, setListing] = useState<ModelListing | null>(null)
   const [listingError, setListingError] = useState('')
-  const [overrides, setOverrides] = useState<ListingOverrides>({})
+  const [overrides, setOverrides] = useState<ListingOverrides>(resume?.listing_overrides || {})
   const shift = useStepDirection(step)
   const body = useFadeOnChange<HTMLDivElement>(started ? 'started' : String(step), { shift: started ? 0 : shift })
 
@@ -165,6 +165,14 @@ export function UploadWizard({
       ignore = true
     }
   }, [plan.files])
+
+  // Resuming picks up the corrections saved when the repository was created.
+  // Keyed on the repository, so a refreshed list does not undo edits in progress.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => setOverrides(resume?.listing_overrides || {}), [resume?.repo_id])
+
+  // One answer for precision: the server's, once the preview is in.
+  const shownPrecision = listing ? listing.detected.precision ?? null : precision
 
   // How the files will be listed, read from their text files and weight headers.
   useEffect(() => {
@@ -494,7 +502,7 @@ export function UploadWizard({
                 <li className={plan.checks.card ? 'ok' : 'missing'}>
                   {plan.checks.card ? <Check size={13} /> : <AlertTriangle size={13} />} Model card (README.md)
                 </li>
-                {precision && <li className="ok"><Check size={13} /> {precisionLabel(precision) || precision} weights</li>}
+                {shownPrecision && <li className="ok"><Check size={13} /> {precisionLabel(shownPrecision) || shownPrecision} weights</li>}
                 {plan.skipped.length > 0 && (
                   <li className="skipped">
                     Skipping {plan.skipped.length} file{plan.skipped.length === 1 ? '' : 's'} from .git, caches, and system clutter
@@ -540,7 +548,6 @@ export function UploadWizard({
               <dt>Files</dt>
               <dd>
                 {plan.files.length} · {formatBytes(plan.totalBytes)}
-                {precision ? ` · ${precisionLabel(precision) || precision}` : ''}
                 {plan.skipped.length > 0 ? ` · ${plan.skipped.length} skipped` : ''}
                 <button type="button" onClick={() => setStep(2)}>Edit</button>
               </dd>

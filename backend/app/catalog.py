@@ -104,6 +104,7 @@ def catalog_item(
         "tags": model.get("tags") or [],
         "license": model.get("license"),
         "parameter_count": model.get("parameter_count"),
+        "parameters_corrected": "parameter_count" in (model.get("listing_overrides") or {}),
         "precision": (model.get("config") or {}).get("precision"),
         "hardware": [item for item in HARDWARE if item in (hardware or [])],
         "formats": model.get("formats") or [],
@@ -152,6 +153,9 @@ def nominal_parameters(item: dict[str, Any]) -> int | None:
     (a "7B" model has 7.6B, a "32B" one 32.8B), so the name decides when it agrees
     with the count; otherwise the count does."""
     count = item.get("parameter_count")
+    if item.get("parameters_corrected"):
+        # Someone set the size by hand; that is the size, whatever the name says.
+        return count
     match = NAME_SIZE_PATTERN.search(item["id"].rsplit("/", 1)[-1])
     if match:
         named = int(float(match.group(1)) * PARAMETER_UNITS[match.group(2).upper()])

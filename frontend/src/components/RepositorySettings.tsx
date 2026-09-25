@@ -184,67 +184,6 @@ export function RepositorySettings({
 
   return (
     <div className="repo-settings">
-      {model.owned ? (
-        <>
-          <section className="settings-block">
-            <div className="settings-block-heading">
-              <h2>Visibility</h2>
-              <p>Who can find, open, and pull this model.</p>
-            </div>
-            <fieldset className="choice-group" disabled={savingVisibility}>
-              <legend className="sr-only">Visibility</legend>
-              {VISIBILITIES.map((option) => {
-                const Icon = VISIBILITY_ICONS[option]
-                return (
-                  <ChoiceCard
-                    key={option}
-                    name="repo-visibility"
-                    checked={visibility === option}
-                    disabled={!visibilityAllowed(option, organization)}
-                    onChange={() => changeVisibility(option)}
-                    icon={<Icon size={17} />}
-                    title={visibilityLabel(option)}
-                  >
-                    {visibilityAudience(option, organization)}
-                  </ChoiceCard>
-                )
-              })}
-            </fieldset>
-          </section>
-
-          <form className="settings-block" onSubmit={saveDescription}>
-            <div className="settings-block-heading">
-              <h2>Description</h2>
-              <p>A line shown on the Uploads page and organization pages.</p>
-            </div>
-            <textarea
-              aria-label="Description"
-              value={description}
-              onChange={(event) => setDescription(event.target.value)}
-              maxLength={500}
-            />
-            <div className="settings-block-actions">
-              <button
-                className="secondary-button compact"
-                disabled={savingDescription || description === model.description}
-              >
-                {savingDescription && <LoaderCircle size={14} className="spin" />} Save description
-              </button>
-            </div>
-          </form>
-        </>
-      ) : (
-        <section className="settings-block">
-          <div className="settings-block-heading">
-            <h2>Visibility</h2>
-            <p>
-              This model was downloaded or found in storage, so it has no owner and every account can
-              see it. Move it to a user or organization below to control who sees it.
-            </p>
-          </div>
-        </section>
-      )}
-
       <section className="settings-block">
         <div className="settings-block-heading">
           <h2>Listing</h2>
@@ -261,108 +200,173 @@ export function RepositorySettings({
         </div>
       </section>
 
-      <form className="settings-block" onSubmit={rename}>
-        <div className="settings-block-heading">
-          <h2>Rename or transfer</h2>
-          <p>Change the name, or move the model to yourself or an organization you write to.</p>
-        </div>
-        {remote ? (
-          <p className="settings-note">Models stored in S3 cannot be renamed yet.</p>
-        ) : (
-          <>
-            <div className="repo-name-grid">
-              <label htmlFor="rename-owner">Owner</label>
-              <span aria-hidden="true" />
-              <label htmlFor="new-repo-name">Model name</label>
-              {namespaces.length > 0 && (
-                <NamespacePicker id="rename-owner" namespaces={namespaces} value={namespace} onChange={setNamespace} />
-              )}
-              <span className="repo-name-slash" aria-hidden="true">/</span>
+      {model.can_manage && (
+        <>
+          {model.owned ? (
+            <>
+              <section className="settings-block">
+                <div className="settings-block-heading">
+                  <h2>Visibility</h2>
+                  <p>Who can find, open, and pull this model.</p>
+                </div>
+                <fieldset className="choice-group" disabled={savingVisibility}>
+                  <legend className="sr-only">Visibility</legend>
+                  {VISIBILITIES.map((option) => {
+                    const Icon = VISIBILITY_ICONS[option]
+                    return (
+                      <ChoiceCard
+                        key={option}
+                        name="repo-visibility"
+                        checked={visibility === option}
+                        disabled={!visibilityAllowed(option, organization)}
+                        onChange={() => changeVisibility(option)}
+                        icon={<Icon size={17} />}
+                        title={visibilityLabel(option)}
+                      >
+                        {visibilityAudience(option, organization)}
+                      </ChoiceCard>
+                    )
+                  })}
+                </fieldset>
+              </section>
+
+              <form className="settings-block" onSubmit={saveDescription}>
+                <div className="settings-block-heading">
+                  <h2>Description</h2>
+                  <p>A line shown on the Uploads page and organization pages.</p>
+                </div>
+                <textarea
+                  aria-label="Description"
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                  maxLength={500}
+                />
+                <div className="settings-block-actions">
+                  <button
+                    className="secondary-button compact"
+                    disabled={savingDescription || description === model.description}
+                  >
+                    {savingDescription && <LoaderCircle size={14} className="spin" />} Save description
+                  </button>
+                </div>
+              </form>
+            </>
+          ) : (
+            <section className="settings-block">
+              <div className="settings-block-heading">
+                <h2>Visibility</h2>
+                <p>
+                  This model was downloaded or found in storage, so it has no owner and every account can
+                  see it. Move it to a user or organization below to control who sees it.
+                </p>
+              </div>
+            </section>
+          )}
+
+          <form className="settings-block" onSubmit={rename}>
+            <div className="settings-block-heading">
+              <h2>Rename or transfer</h2>
+              <p>Change the name, or move the model to yourself or an organization you write to.</p>
+            </div>
+            {remote ? (
+              <p className="settings-note">Models stored in S3 cannot be renamed yet.</p>
+            ) : (
+              <>
+                <div className="repo-name-grid">
+                  <label htmlFor="rename-owner">Owner</label>
+                  <span aria-hidden="true" />
+                  <label htmlFor="new-repo-name">Model name</label>
+                  {namespaces.length > 0 && (
+                    <NamespacePicker id="rename-owner" namespaces={namespaces} value={namespace} onChange={setNamespace} />
+                  )}
+                  <span className="repo-name-slash" aria-hidden="true">/</span>
+                  <input
+                    id="new-repo-name"
+                    value={newName}
+                    onChange={(event) => setNewName(event.target.value)}
+                    autoComplete="off"
+                    spellCheck={false}
+                    aria-invalid={Boolean(nameProblem) || undefined}
+                  />
+                </div>
+                {nameProblem && <p className="field-hint problem">{nameProblem}</p>}
+                {!unchanged && !nameProblem && newName.trim() && (
+                  <div className="settings-warning">
+                    <AlertTriangle size={15} />
+                    <div>
+                      <strong>
+                        {model.id} becomes {target}
+                      </strong>
+                      <p>
+                        Old links, <code>vllm serve {model.id}</code>, and git remotes stop working; there is no
+                        redirect. Files, commit history, saves, and hardware tags move with it.
+                        {transfer && !model.owned && ' It becomes owned and stays public until you change that.'}
+                      </p>
+                    </div>
+                  </div>
+                )}
+                {!unchanged && !nameProblem && newName.trim() && (
+                  <label className="wizard-label settings-confirm">
+                    <span>
+                      Type <code>{model.id}</code> to confirm
+                    </span>
+                    <input
+                      value={renameConfirm}
+                      onChange={(event) => setRenameConfirm(event.target.value)}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </label>
+                )}
+                {renameError && <div className="inline-error"><AlertTriangle size={16} /> {renameError}</div>}
+                <div className="settings-block-actions">
+                  <button
+                    className="secondary-button compact"
+                    disabled={unchanged || Boolean(nameProblem) || !newName.trim() || renameConfirm !== model.id || renaming}
+                  >
+                    {renaming && <LoaderCircle size={14} className="spin" />}
+                    {transfer ? 'Transfer' : 'Rename'}
+                  </button>
+                </div>
+              </>
+            )}
+          </form>
+
+          <section className="settings-block">
+            <div className="settings-block-heading">
+              <h2>Storage</h2>
+              <p>Where the files live. Moving between locations is not available yet.</p>
+            </div>
+            <p className="settings-storage">
+              {remote ? <Cloud size={15} /> : <HardDrive size={15} />} {model.storage_target_name}
+              <code>{model.remote_uri || model.local_path}</code>
+            </p>
+          </section>
+
+          <form className="settings-block danger" onSubmit={remove}>
+            <div className="settings-block-heading">
+              <h2>Delete this model</h2>
+              <p>Removes every file from storage, its commit history, and its hardware tags. This cannot be undone.</p>
+            </div>
+            <label className="wizard-label settings-confirm">
+              <span>
+                Type <code>{model.id}</code> to confirm
+              </span>
               <input
-                id="new-repo-name"
-                value={newName}
-                onChange={(event) => setNewName(event.target.value)}
+                value={deleteConfirm}
+                onChange={(event) => setDeleteConfirm(event.target.value)}
                 autoComplete="off"
                 spellCheck={false}
-                aria-invalid={Boolean(nameProblem) || undefined}
               />
-            </div>
-            {nameProblem && <p className="field-hint problem">{nameProblem}</p>}
-            {!unchanged && !nameProblem && newName.trim() && (
-              <div className="settings-warning">
-                <AlertTriangle size={15} />
-                <div>
-                  <strong>
-                    {model.id} becomes {target}
-                  </strong>
-                  <p>
-                    Old links, <code>vllm serve {model.id}</code>, and git remotes stop working; there is no
-                    redirect. Files, commit history, saves, and hardware tags move with it.
-                    {transfer && !model.owned && ' It becomes owned and stays public until you change that.'}
-                  </p>
-                </div>
-              </div>
-            )}
-            {!unchanged && !nameProblem && newName.trim() && (
-              <label className="wizard-label settings-confirm">
-                <span>
-                  Type <code>{model.id}</code> to confirm
-                </span>
-                <input
-                  value={renameConfirm}
-                  onChange={(event) => setRenameConfirm(event.target.value)}
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </label>
-            )}
-            {renameError && <div className="inline-error"><AlertTriangle size={16} /> {renameError}</div>}
+            </label>
             <div className="settings-block-actions">
-              <button
-                className="secondary-button compact"
-                disabled={unchanged || Boolean(nameProblem) || !newName.trim() || renameConfirm !== model.id || renaming}
-              >
-                {renaming && <LoaderCircle size={14} className="spin" />}
-                {transfer ? 'Transfer' : 'Rename'}
+              <button className="danger-button compact" disabled={deleteConfirm !== model.id || deleting}>
+                {deleting ? <LoaderCircle size={14} className="spin" /> : <Trash2 size={14} />} Delete model
               </button>
             </div>
-          </>
-        )}
-      </form>
-
-      <section className="settings-block">
-        <div className="settings-block-heading">
-          <h2>Storage</h2>
-          <p>Where the files live. Moving between locations is not available yet.</p>
-        </div>
-        <p className="settings-storage">
-          {remote ? <Cloud size={15} /> : <HardDrive size={15} />} {model.storage_target_name}
-          <code>{model.remote_uri || model.local_path}</code>
-        </p>
-      </section>
-
-      <form className="settings-block danger" onSubmit={remove}>
-        <div className="settings-block-heading">
-          <h2>Delete this model</h2>
-          <p>Removes every file from storage, its commit history, and its hardware tags. This cannot be undone.</p>
-        </div>
-        <label className="wizard-label settings-confirm">
-          <span>
-            Type <code>{model.id}</code> to confirm
-          </span>
-          <input
-            value={deleteConfirm}
-            onChange={(event) => setDeleteConfirm(event.target.value)}
-            autoComplete="off"
-            spellCheck={false}
-          />
-        </label>
-        <div className="settings-block-actions">
-          <button className="danger-button compact" disabled={deleteConfirm !== model.id || deleting}>
-            {deleting ? <LoaderCircle size={14} className="spin" /> : <Trash2 size={14} />} Delete model
-          </button>
-        </div>
-      </form>
+          </form>
+        </>
+      )}
     </div>
   )
 }

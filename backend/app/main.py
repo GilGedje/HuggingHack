@@ -1256,7 +1256,13 @@ def listing_view(repo_id: str, detected: dict[str, Any], overrides: dict[str, An
         # The library shows no task for a config.model_type fallback, and a size the
         # name agrees with over the exact count.
         "listed_task": model_task({"pipeline_tag": listed.get("pipeline_tag"), "config": {"model_type": detected.get("model_type")}}),
-        "nominal_parameters": nominal_parameters({"id": repo_id, "parameter_count": listed.get("parameter_count")}),
+        "nominal_parameters": nominal_parameters(
+            {
+                "id": repo_id,
+                "parameter_count": listed.get("parameter_count"),
+                "parameters_corrected": "parameter_count" in overrides,
+            }
+        ),
         "precisions": PRECISIONS,
     }
 
@@ -2352,7 +2358,14 @@ def list_upload_repositories(user: UploadLister) -> dict:
     for repository in database.list_owned_repositories(user["id"]):
         role = uploads.access(repository, user["id"])
         if role in {"admin", "write"}:
-            items.append({**repository, "my_role": role})
+            # Listing corrections come along so resuming an upload shows and keeps them.
+            items.append(
+                {
+                    **repository,
+                    "my_role": role,
+                    "listing_overrides": database.listing_overrides(repository["repo_id"]),
+                }
+            )
     return {"items": items}
 
 

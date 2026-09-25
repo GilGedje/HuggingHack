@@ -376,6 +376,8 @@ export interface OwnedRepository {
   updated_at: string
   /** Your role on it: admins manage visibility and deletion, writers upload. */
   my_role: 'admin' | 'write'
+  /** Listing corrections already saved, so a resumed upload keeps them. */
+  listing_overrides?: ListingOverrides
 }
 
 export interface StorageModel {

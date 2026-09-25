@@ -564,7 +564,8 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
     { id: 'commits', label: 'Commits', to: `${base}/commits`, count: model.commit_count },
     { id: 'config', label: 'Config', to: `${base}/config`, count: model.config_count || undefined },
     ...(ggufFiles.length ? [{ id: 'gguf', label: 'GGUF', to: `${base}/gguf`, count: ggufFiles.length }] : []),
-    ...(model.can_manage ? [{ id: 'settings', label: 'Settings', to: `${base}/settings` }] : []),
+    // Writers get Settings for the listing; the rest of it is for the repository's admins.
+    ...(model.can_manage || model.can_edit ? [{ id: 'settings', label: 'Settings', to: `${base}/settings` }] : []),
   ]
 
   return (
@@ -681,7 +682,7 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
               onToast={onToast}
             />
           )}
-          {section === 'settings' && model.can_manage && (
+          {section === 'settings' && (model.can_manage || model.can_edit) && (
             <RepositorySettings model={model} onChanged={() => setReloadKey((value) => value + 1)} onToast={onToast} />
           )}
           {section === 'gguf' && (

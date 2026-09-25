@@ -140,3 +140,19 @@ def test_listing_corrections_follow_the_model(org):  # noqa: F811
     deleted = admin.request("DELETE", "/api/repos", params={"repo_id": "Nvidia/tiny-v2"}, json={"confirmation": "Nvidia/tiny-v2"})
     assert deleted.status_code == 200, deleted.text
     assert main.database.listing_overrides("Nvidia/tiny-v2") == {}
+
+
+def test_a_corrected_size_is_the_listed_size(org):  # noqa: F811
+    writer, _ = login("writer")
+    assert writer.post("/api/uploads/repositories", json={"slug": "Tiny-8B", "visibility": "private"}).status_code == 201
+    saved = put_listing(writer, "writer/Tiny-8B", {"parameter_count": 8_200_000_000, "license": "mit"})
+    # The name says 8B, but a size set by hand wins over the name.
+    assert saved.json()["nominal_parameters"] == 8_200_000_000
+    # Resuming an upload gets the saved corrections back with the repository.
+    listed = {item["repo_id"]: item for item in writer.get("/api/uploads/repositories").json()["items"]}
+    assert listed["writer/Tiny-8B"]["listing_overrides"] == {"parameter_count": 8_200_000_000, "license": "mit"}
+    upload(writer, "writer/Tiny-8B", FILES)
+    within = writer.get("/api/library/models", params={"parameters": "min:8.1B,max:8.3B"}).json()["items"]
+    assert "writer/Tiny-8B" in [item["id"] for item in within]
+    below = writer.get("/api/library/models", params={"parameters": "min:4B,max:7.5B"}).json()["items"]
+    assert "writer/Tiny-8B" not in [item["id"] for item in below]
