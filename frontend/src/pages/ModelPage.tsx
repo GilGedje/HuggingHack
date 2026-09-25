@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -310,18 +310,34 @@ function CommitsSection({ model }: { model: LibraryModelDetails }) {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  // Only the newest request may change the list; older answers are dropped.
+  const latestRequest = useRef(0)
 
   const load = useCallback(
     (offset: number) => {
+      const request = ++latestRequest.current
       setLoading(true)
+      setError('')
       api
         .commits(model.id, 50, offset)
         .then((payload) => {
-          setCommits((current) => (offset ? [...current, ...payload.items] : payload.items))
+          if (request !== latestRequest.current) return
+          setCommits((current) => {
+            if (!offset) return payload.items
+            // Commits made since the last page shift the offset, so the next page
+            // can repeat some already shown.
+            const shown = new Set(current.map((commit) => commit.id))
+            return [...current, ...payload.items.filter((commit) => !shown.has(commit.id))]
+          })
           setTotal(payload.total)
+          setError('')
         })
-        .catch((reason) => setError(reason.message))
-        .finally(() => setLoading(false))
+        .catch((reason) => {
+          if (request === latestRequest.current) setError(reason.message)
+        })
+        .finally(() => {
+          if (request === latestRequest.current) setLoading(false)
+        })
     },
     [model.id],
   )
@@ -437,8 +453,12 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
   const rest = params['*'] || ''
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
-  const [model, setModel] = useState<LibraryModelDetails | null>(null)
-  const [error, setError] = useState('')
+  // Kept with the repository they were loaded for: when the address moves to
+  // another model, the previous one is never shown under it.
+  const [loaded, setLoaded] = useState<{ repoId: string; model: LibraryModelDetails } | null>(null)
+  const [failure, setFailure] = useState<{ repoId: string; message: string } | null>(null)
+  const model = loaded?.repoId === repoId ? loaded.model : null
+  const error = failure?.repoId === repoId ? failure.message : ''
   const [saving, setSaving] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
 
@@ -466,16 +486,24 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
         : null
   const uploading = searchParams.get('upload') === '1'
 
+  /** Changes the model shown, only while it is still the one at this address. */
+  const updateModel = useCallback(
+    (change: (current: LibraryModelDetails) => LibraryModelDetails) => {
+      setLoaded((current) => (current?.repoId === repoId ? { repoId, model: change(current.model) } : current))
+    },
+    [repoId],
+  )
+
   useEffect(() => {
     let ignore = false
-    setError('')
+    setFailure(null)
     api
       .libraryModelDetails(repoId)
       .then((payload) => {
-        if (!ignore) setModel(payload)
+        if (!ignore) setLoaded({ repoId, model: payload })
       })
       .catch((reason) => {
-        if (!ignore) setError(reason.message)
+        if (!ignore) setFailure({ repoId, message: reason.message })
       })
     return () => {
       ignore = true
@@ -506,6 +534,7 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
 
   async function toggleSaved() {
     if (!model) return
+    const saved = !model.saved
     setSaving(true)
     try {
       if (model.saved) await api.unsaveModel(model.id)
@@ -523,7 +552,7 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
           },
         })
       }
-      setModel({ ...model, saved: !model.saved })
+      updateModel((current) => (current.id === model.id ? { ...current, saved } : current))
     } catch (reason) {
       onToast(reason instanceof Error ? reason.message : 'Unable to update saved models', 'error')
     } finally {
@@ -764,7 +793,7 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
             <HardwareCard
               key={model.id}
               model={model}
-              onSaved={(hardware) => setModel((current) => (current ? { ...current, hardware } : current))}
+              onSaved={(hardware) => updateModel((current) => (current.id === model.id ? { ...current, hardware } : current))}
               onToast={onToast}
             />
 

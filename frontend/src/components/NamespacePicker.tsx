@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Building2, Check, ChevronDown, UserRound } from 'lucide-react'
+import { prefersReducedMotion } from '../motion'
 import type { UploadNamespace } from '../types'
 import { avatarUrl } from '../utils'
 import { Avatar } from './Avatar'
+
+/** How long the list takes to leave; matches `.namespace-menu.leaving` in styles.css. */
+const MENU_EXIT_MS = 140
 
 interface NamespacePickerProps {
   namespaces: UploadNamespace[]
@@ -13,9 +17,24 @@ interface NamespacePickerProps {
 
 /** Chooses who owns a new repository: yourself or an organization you can write to. */
 export function NamespacePicker({ namespaces, value, onChange, id }: NamespacePickerProps) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpenState] = useState(false)
+  // The list stays on screen while it leaves, so it folds back into the field.
+  const [leaving, setLeaving] = useState(false)
+  const leaveTimer = useRef(0)
   const [active, setActive] = useState(0)
   const root = useRef<HTMLDivElement>(null)
+
+  useEffect(() => () => window.clearTimeout(leaveTimer.current), [])
+
+  function setOpen(next: boolean) {
+    window.clearTimeout(leaveTimer.current)
+    if (!next && open && !prefersReducedMotion()) {
+      setLeaving(true)
+      leaveTimer.current = window.setTimeout(() => setLeaving(false), MENU_EXIT_MS)
+    }
+    if (next) setLeaving(false)
+    setOpenState(next)
+  }
   const selected =
     namespaces.find((item) => item.name.toLowerCase() === value.toLowerCase()) || namespaces[0]
 
@@ -85,8 +104,13 @@ export function NamespacePicker({ namespaces, value, onChange, id }: NamespacePi
         <span className="namespace-name">{selected.name}</span>
         {!single && <ChevronDown size={15} className="namespace-chevron" />}
       </button>
-      {open && (
-        <ul className="namespace-menu" role="listbox" aria-activedescendant={`namespace-${active}`}>
+      {(open || leaving) && (
+        <ul
+          className={open ? 'namespace-menu' : 'namespace-menu leaving'}
+          role="listbox"
+          aria-activedescendant={`namespace-${active}`}
+          aria-hidden={open ? undefined : true}
+        >
           {namespaces.map((item, index) => (
             <li
               key={item.name}

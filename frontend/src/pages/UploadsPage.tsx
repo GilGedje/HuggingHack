@@ -190,7 +190,7 @@ export function UploadsPage({ user, onToast }: { user: User; onToast: ToastHandl
               <span className="eyebrow">Created, but not every file has arrived</span>
               <h2>Unfinished uploads</h2>
             </div>
-            <span>{unfinished.length}</span>
+            <span>{unfinished.length} {unfinished.length === 1 ? 'repository' : 'repositories'}</span>
           </div>
           <div className="repository-grid">
             {unfinished.map((repository) => (
@@ -209,10 +209,10 @@ export function UploadsPage({ user, onToast }: { user: User; onToast: ToastHandl
       <section className="repository-section">
         <div className="section-heading">
           <div>
-            <span className="eyebrow">Yours, and your organizations' where you can write</span>
+            <span className="eyebrow">Yours and your organizations’</span>
             <h2>Published models</h2>
           </div>
-          <span>{loaded ? published.length : ''}</span>
+          <span>{loaded ? `${published.length} ${published.length === 1 ? 'model' : 'models'}` : ''}</span>
         </div>
         {!loaded ? (
           <RowSkeletons rows={3} cells={3} label="Loading your repositories" />

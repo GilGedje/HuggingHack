@@ -3,18 +3,24 @@ import { Bold, Code, Heading2, Italic, Link2, List, ListOrdered } from 'lucide-r
 import ReactMarkdown, { type Components } from 'react-markdown'
 import rehypeSanitize from 'rehype-sanitize'
 import remarkGfm from 'remark-gfm'
+import { rehypeGithubAlerts } from '../markdownAlerts'
 import { applyFormat, type MarkdownFormat } from '../markdownText'
 import { useFadeOnChange, useTabIndicator } from '../motion'
+import { DropWhenImagesFail, MarkdownImage, MarkdownParagraph } from './MarkdownParts'
 
 const components: Components = {
   a: ({ node: _node, href, children, ...props }) => {
     const external = /^https?:/i.test(href || '')
     return (
-      <a {...props} href={href} target={external ? '_blank' : undefined} rel={external ? 'noreferrer noopener' : undefined}>
-        {children}
-      </a>
+      <DropWhenImagesFail content={children}>
+        <a {...props} href={href} target={external ? '_blank' : undefined} rel={external ? 'noreferrer noopener' : undefined}>
+          {children}
+        </a>
+      </DropWhenImagesFail>
     )
   },
+  img: MarkdownImage,
+  p: MarkdownParagraph,
 }
 
 /**
@@ -24,7 +30,7 @@ const components: Components = {
 export function MarkdownText({ source, className }: { source: string; className?: string }) {
   return (
     <div className={['model-card-document', 'markdown-text', className].filter(Boolean).join(' ')}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]} components={components}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize, rehypeGithubAlerts]} components={components}>
         {source}
       </ReactMarkdown>
     </div>

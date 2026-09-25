@@ -30,7 +30,7 @@ export interface GgufInspection {
   }
 }
 
-const inspectionCache = new Map<string, Promise<GgufInspection>>()
+const inspectionCache = new Map<string, { file: HubFile; pending: Promise<GgufInspection> }>()
 
 function scalarPreview(value: string | number | bigint | boolean): string {
   if (typeof value === 'string') {
@@ -58,8 +58,16 @@ export function metadataPreview(value: MetadataValue): {
 
 const GGUF_RANGE_ENDPOINT = '/api/library/gguf-range'
 
-function cacheKey(repoId: string, revision: string, file: HubFile): string {
-  return [repoId, revision, file.path, file.blob_id || 'no-blob'].join('\u0000')
+export function ggufCacheKey(repoId: string, revision: string, file: HubFile): string {
+  return [repoId, revision, file.path, file.size, file.blob_id || 'no-blob'].join('\u0000')
+}
+
+/** Whether a header read for `cached` still describes `file`. A content hash
+ * settles it; without one (library files have none, and their revision stays
+ * "main"), only the same file listing may reuse it, since a reloaded listing
+ * may describe a file replaced under the same name and size. */
+export function ggufCacheReusable(cached: HubFile, file: HubFile): boolean {
+  return cached === file || Boolean(file.blob_id && cached.blob_id === file.blob_id && cached.size === file.size)
 }
 
 async function inspect(
@@ -166,13 +174,13 @@ export function inspectGguf(
   revision: string,
   file: HubFile,
 ): Promise<GgufInspection> {
-  const key = cacheKey(repoId, revision, file)
+  const key = ggufCacheKey(repoId, revision, file)
   const cached = inspectionCache.get(key)
-  if (cached) return cached
+  if (cached && ggufCacheReusable(cached.file, file)) return cached.pending
   const pending = inspect(repoId, revision, file).catch((error) => {
-    inspectionCache.delete(key)
+    if (inspectionCache.get(key)?.pending === pending) inspectionCache.delete(key)
     throw error
   })
-  inspectionCache.set(key, pending)
+  inspectionCache.set(key, { file, pending })
   return pending
 }

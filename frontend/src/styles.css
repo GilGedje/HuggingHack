@@ -249,6 +249,19 @@ p { text-wrap: pretty; }
   color: var(--text-secondary); font-size: 13px; white-space: nowrap;
 }
 .quiet-link:hover, .text-link:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+/* Text buttons answer a press by dimming, the way links do; scaling words looks wrong. */
+:is(.quiet-link, .text-link, .danger-text, .collection-open, .saved-card-open, .commit-more, .file-browser-name,
+  .model-tree-name, .model-tree-group-link) {
+  transition: color 160ms var(--ease-out), opacity 120ms var(--ease-out);
+}
+:is(button, a):is(.quiet-link, .text-link, .danger-text, .collection-open, .saved-card-open, .file-browser-name,
+  .model-tree-name, .model-tree-group-link):active:not(:disabled) { opacity: 0.55; }
+/* On touch screens small text buttons get a finger-sized target without moving anything. */
+@media (pointer: coarse) {
+  .app-shell :is(button, a):is(.quiet-link, .text-link, .model-tree-name, .model-tree-group-link) {
+    padding-block: 6px; margin-block: -6px;
+  }
+}
 .catalog-tools, .local-tools { display: flex; align-items: center; gap: 12px; }
 .catalog-search {
   height: 44px; min-width: 0; flex: 1; padding: 0 13px;
@@ -273,8 +286,9 @@ p { text-wrap: pretty; }
   border: 1px solid var(--border); border-radius: 8px;
   background: var(--canvas); color: var(--text-secondary);
 }
+/* The select fills the whole box, so a tap anywhere on it opens the list. */
 .sort-control select {
-  appearance: none; padding-right: 18px; border: 0; outline: 0;
+  align-self: stretch; margin-right: -9px; appearance: none; padding-right: 27px; border: 0; outline: 0;
   background: transparent; color: var(--text); cursor: pointer; font-size: 13px;
 }
 .sort-control > svg:last-child { position: absolute; right: 9px; pointer-events: none; }
@@ -892,7 +906,8 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
 .wizard-drop strong { font-size: 13px; }
 .wizard-drop span { font-size: 11px; }
 .repository-section { margin-top: 38px; }
-.section-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; }
+/* The count sits on the heading's baseline, not below it. */
+.section-heading { display: flex; align-items: last baseline; justify-content: space-between; gap: 20px; }
 .section-heading h2 { margin-top: 3px; font-size: 23px; }
 .section-heading > span { color: var(--text-muted); font-size: 10px; }
 .repository-grid { margin-top: 14px; border-top: 1px solid var(--border); }
@@ -1619,6 +1634,7 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
 @keyframes backdrop-in { from { background-color: transparent; } }
 @keyframes backdrop-out { to { background-color: transparent; } }
 @keyframes menu-in { from { transform: translateY(-4px) scale(0.98); opacity: 0; } }
+@keyframes menu-out { to { transform: translateY(-4px) scale(0.98); opacity: 0; } }
 @keyframes fade-in { from { opacity: 0; } }
 @keyframes icon-turn { from { transform: rotate(-70deg) scale(0.6); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) {
@@ -1650,6 +1666,17 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
     padding: 12px 16px 18px; display: grid; gap: 5px;
     border-bottom: 1px solid var(--border); background: var(--canvas);
     box-shadow: 0 18px 35px rgb(17 24 39 / 0.12);
+    transform-origin: top center;
+    transition: opacity 200ms var(--ease-out), transform 240ms var(--ease-out);
+  }
+  /* The menu drops from the bar it opens from and lifts back into it; the
+     transitions start from wherever it is, so a quick second tap reverses it. */
+  @starting-style {
+    .mobile-panel { opacity: 0; transform: translateY(-8px); }
+  }
+  .mobile-panel.closing {
+    pointer-events: none; opacity: 0; transform: translateY(-6px);
+    transition-duration: 180ms; transition-timing-function: var(--ease-exit);
   }
   .mobile-search {
     height: 42px; margin-bottom: 5px; padding: 0 11px;
@@ -1876,7 +1903,8 @@ button.quiet-link:disabled { cursor: progress; opacity: 0.7; }
   margin-top: 16px; display: flex; flex-wrap: wrap; gap: 8px 26px; color: var(--text-muted); font-size: 12px;
 }
 .storage-target-stats strong { color: var(--text); font-size: 15px; }
-.storage-model-table { margin-top: 16px; overflow-x: auto; border: 1px solid var(--border); }
+/* Positioned so hidden labels inside stay in the table's own scroll, not the page's. */
+.storage-model-table { position: relative; margin-top: 16px; overflow-x: auto; border: 1px solid var(--border); }
 .upload-access {
   margin-top: 14px; padding-top: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 7px;
   border-top: 1px solid var(--border); font-size: 12px;
@@ -2388,7 +2416,9 @@ button.file-browser-name:hover { text-decoration: underline; text-underline-offs
 .new-token strong { font-size: 13px; }
 .new-token p { color: var(--text-muted); font-size: 12px; }
 .preferences .account-form { max-width: 420px; }
-.account-chip-link { min-width: 0; display: flex; align-items: center; gap: 7px; color: inherit; }
+.account-chip-link { min-width: 0; align-self: stretch; display: flex; align-items: center; gap: 7px; color: inherit; }
+/* Without accounts there is no sign-out button to close the pill on the right. */
+.account-chip:not(:has(> button)) { padding-right: 12px; }
 .account-chip-link span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-chip-link:hover span { text-decoration: underline; text-underline-offset: 3px; }
 
@@ -2452,6 +2482,8 @@ button.file-browser-name:hover { text-decoration: underline; text-underline-offs
   border-radius: 6px; background: var(--canvas); color: var(--text-secondary); cursor: pointer;
 }
 .admin-user-actions :is(button, a):hover { border-color: var(--border-strong); color: var(--text); }
+/* A labelled action sizes to its words; only icon actions are squares. */
+.admin-user-actions .secondary-button { width: auto; padding: 0 10px; display: inline-flex; white-space: nowrap; }
 .admin-user-actions button.danger-text { color: var(--danger); }
 .admin-create-user { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 14px; }
 .admin-create-user .wide { grid-column: 1 / -1; }
@@ -2605,6 +2637,7 @@ button.file-browser-name:hover { text-decoration: underline; text-underline-offs
   border: 1px solid var(--border); border-radius: 9px; background: var(--canvas); box-shadow: var(--shadow);
   transform-origin: top center; animation: menu-in 180ms var(--ease-out) backwards;
 }
+.namespace-menu.leaving { pointer-events: none; animation: menu-out 140ms var(--ease-exit) both; }
 .namespace-menu li {
   padding: 7px 8px; display: flex; align-items: center; gap: 10px; border-radius: 6px; cursor: pointer;
 }
@@ -2907,7 +2940,7 @@ a.model-tree-name:hover { text-decoration: underline; text-underline-offset: 3px
 
 /* Where the site keeps its own files, on the Storage page. */
 .system-strip {
-  margin-top: 14px; padding: 14px 16px; display: grid; grid-template-columns: 22px minmax(0, 1fr) auto;
+  margin: 14px 0 22px; padding: 14px 16px; display: grid; grid-template-columns: 22px minmax(0, 1fr) auto;
   align-items: start; gap: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--canvas);
   animation: fade-in 260ms var(--ease-out) backwards;
 }
@@ -2921,3 +2954,38 @@ a.model-tree-name:hover { text-decoration: underline; text-underline-offset: 3px
   .system-strip { grid-template-columns: 22px minmax(0, 1fr); }
   .system-strip > .status-pill { grid-column: 2; justify-self: start; }
 }
+
+/* ==== Frontend fixes: callouts, optional hints, runtime checks (start) ==== */
+/* An optional field's hint sits on the label's line, as in the upload wizard. */
+.account-form label > span small { margin-left: 4px; }
+
+/* GitHub alerts in Markdown (> [!NOTE] …), in the colors of the site's notes. */
+.model-card-document blockquote.markdown-alert {
+  --alert: var(--text-secondary);
+  border: 1px solid color-mix(in oklch, var(--alert) 28%, var(--border));
+  border-left: 3px solid var(--alert);
+  background: var(--canvas-subtle); color: var(--text-secondary);
+}
+.model-card-document blockquote.markdown-alert-tip { --alert: var(--success); background: var(--success-bg); }
+.model-card-document blockquote.markdown-alert-important {
+  --alert: color-mix(in oklch, var(--brand-warm) 70%, var(--text));
+  background: color-mix(in oklch, var(--brand-primary) 10%, var(--canvas));
+}
+.model-card-document blockquote.markdown-alert-warning { --alert: var(--warning); background: var(--warning-bg); }
+.model-card-document blockquote.markdown-alert-caution { --alert: var(--danger); background: var(--danger-bg); }
+.model-card-document blockquote.markdown-alert > p.markdown-alert-title {
+  margin-bottom: 6px; display: flex; align-items: center; gap: 6px;
+  color: var(--alert); font-weight: 600;
+}
+.model-card-document .markdown-alert-title svg { flex: none; }
+
+/* A paragraph left with nothing once its images failed to load. */
+.model-card-document p:empty { display: none; }
+
+/* A runtime job whose status checks keep failing. */
+.runtime-job-inline p.runtime-poll-error { color: var(--text-secondary); }
+.runtime-poll-error .text-link {
+  padding: 0; border: 0; background: none; cursor: pointer;
+  color: var(--text); font-size: inherit; text-decoration: underline; text-underline-offset: 2px;
+}
+/* ==== Frontend fixes (end) ==== */

@@ -16,7 +16,7 @@ import {
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { ADMIN_CAPABILITIES, useAccess } from '../access'
 import { api } from '../api'
-import { crossfadeTheme, useTabIndicator } from '../motion'
+import { crossfadeTheme, prefersReducedMotion, useTabIndicator } from '../motion'
 import type { User } from '../types'
 import { avatarUrl } from '../utils'
 import { Avatar } from './Avatar'
@@ -26,6 +26,9 @@ interface ShellProps {
   user: User
   onLogout: () => void
 }
+
+/** How long the phone menu takes to leave; matches `.mobile-panel.closing` in styles.css. */
+const MENU_EXIT_MS = 180
 
 const links = [
   { to: '/models', label: 'Models', icon: Box, capability: 'models.browse' },
@@ -52,10 +55,17 @@ export default function Shell({ children, user, onLogout }: ShellProps) {
   const navigate = useNavigate()
   const searchInput = useRef<HTMLInputElement>(null)
   const [query, setQuery] = useState('')
-  const [mobileOpen, setMobileOpen] = useState(false)
+  // `closing` keeps the phone menu on screen while it leaves; opening again
+  // before it has gone turns it around from wherever it is.
+  const [menu, setMenu] = useState<'closed' | 'open' | 'closing'>('closed')
+  const menuTimer = useRef(0)
+  const mobileOpen = menu === 'open'
   const { can } = useAccess()
   const visibleLinks = links.filter((link) => can(link.capability))
   const isAdmin = ADMIN_CAPABILITIES.some((capability) => can(capability))
+  // Without accounts everyone is the built-in "local" user, and there is
+  // nothing to sign out of.
+  const signOut = user.id !== 'local'
   const { pathname } = useLocation()
   const nav = useTabIndicator<HTMLElement>(`${pathname.split('/')[1]}:${visibleLinks.length}:${isAdmin}`)
   const themeApplied = useRef(false)
@@ -98,11 +108,39 @@ export default function Shell({ children, user, onLogout }: ShellProps) {
     }
   }, [theme])
 
+  useEffect(() => () => window.clearTimeout(menuTimer.current), [])
+
+  function openMenu() {
+    window.clearTimeout(menuTimer.current)
+    setMenu('open')
+  }
+
+  function closeMenu() {
+    window.clearTimeout(menuTimer.current)
+    if (prefersReducedMotion()) {
+      setMenu('closed')
+      return
+    }
+    setMenu((current) => (current === 'closed' ? current : 'closing'))
+    menuTimer.current = window.setTimeout(() => setMenu('closed'), MENU_EXIT_MS)
+  }
+
+  useEffect(() => {
+    if (!mobileOpen) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeMenu()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [mobileOpen])
+
   useEffect(() => {
     function focusSearch(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null
       const isTyping = target?.matches('input, textarea, select, [contenteditable="true"]')
-      if (event.key === '/' && !isTyping) {
+      // An open dialog owns the keyboard; the search box is behind it.
+      const dialogOpen = Boolean(document.querySelector('[aria-modal="true"]'))
+      if (event.key === '/' && !isTyping && !dialogOpen) {
         event.preventDefault()
         searchInput.current?.focus()
       }
@@ -114,7 +152,7 @@ export default function Shell({ children, user, onLogout }: ShellProps) {
   function search(event: FormEvent) {
     event.preventDefault()
     navigate(`/models?search=${encodeURIComponent(query.trim())}`)
-    setMobileOpen(false)
+    closeMenu()
   }
 
   return (
@@ -181,22 +219,24 @@ export default function Shell({ children, user, onLogout }: ShellProps) {
               )}
               <span>{user.display_name}</span>
             </Link>
-            <button type="button" onClick={onLogout} aria-label="Sign out" title="Sign out">
-              <LogOut size={15} />
-            </button>
+            {signOut && (
+              <button type="button" onClick={onLogout} aria-label="Sign out" title="Sign out">
+                <LogOut size={15} />
+              </button>
+            )}
           </div>
           <button
             type="button"
             className="icon-button mobile-menu-button"
-            onClick={() => setMobileOpen(!mobileOpen)}
+            onClick={() => (mobileOpen ? closeMenu() : openMenu())}
             aria-label="Toggle navigation"
             aria-expanded={mobileOpen}
           >
             {mobileOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
         </div>
-        {mobileOpen && (
-          <div className="mobile-panel">
+        {menu !== 'closed' && (
+          <div className={menu === 'closing' ? 'mobile-panel closing' : 'mobile-panel'}>
             <form className="mobile-search" onSubmit={search}>
               <Search size={17} />
               <input
@@ -206,25 +246,27 @@ export default function Shell({ children, user, onLogout }: ShellProps) {
               />
             </form>
             {visibleLinks.map(({ to, label, icon: Icon }) => (
-              <NavLink key={to} to={to} onClick={() => setMobileOpen(false)}>
+              <NavLink key={to} to={to} onClick={closeMenu}>
                 <Icon size={18} />
                 {label}
               </NavLink>
             ))}
             {isAdmin && (
-              <NavLink to="/admin" onClick={() => setMobileOpen(false)}>
+              <NavLink to="/admin" onClick={closeMenu}>
                 <ShieldCheck size={18} />
                 Administration
               </NavLink>
             )}
-            <NavLink to="/account" onClick={() => setMobileOpen(false)}>
+            <NavLink to="/account" onClick={closeMenu}>
               <Settings size={18} />
               Account
             </NavLink>
-            <button type="button" className="mobile-account" onClick={onLogout}>
-              <LogOut size={18} />
-              Sign out {user.display_name}
-            </button>
+            {signOut && (
+              <button type="button" className="mobile-account" onClick={onLogout}>
+                <LogOut size={18} />
+                Sign out {user.display_name}
+              </button>
+            )}
           </div>
         )}
       </header>

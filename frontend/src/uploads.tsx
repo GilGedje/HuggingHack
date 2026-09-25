@@ -21,6 +21,7 @@ import {
 import { Link } from 'react-router-dom'
 import { api } from './api'
 import { DOCK_EXIT_MS, prefersReducedMotion, useFadeOnChange } from './motion'
+import { LEASE_HEARTBEAT_MS, claimOrphans, parseTabRecord, type TabRecord } from './uploadStore'
 import { formatBytes } from './utils'
 
 export interface UploadItem {
@@ -71,8 +72,17 @@ interface UploadContextValue {
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
-const STORAGE_KEY = 'hugginghack-uploads'
+// Before tabs kept their own records, every tab shared this one list.
+const LEGACY_STORAGE_KEY = 'hugginghack-uploads'
+const STORAGE_PREFIX = 'hugginghack-uploads:'
 const UNFINISHED: JobStatus[] = ['queued', 'uploading', 'committing', 'interrupted', 'error']
+const IN_PROGRESS: JobStatus[] = ['queued', 'uploading', 'committing']
+// Fresh on every page load, so a reloaded tab takes over its own earlier jobs.
+// randomUUID needs a secure context; plain-HTTP LAN servers get the fallback.
+const TAB_ID = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`
+const OWN_KEY = `${STORAGE_PREFIX}${TAB_ID}`
+// Records of gone tabs whose jobs this tab took over, removed once it has saved them.
+const adoptedKeys = new Set<string>()
 const UploadContext = createContext<UploadContextValue | null>(null)
 
 export function useUploads(): UploadContextValue {
@@ -158,11 +168,20 @@ function uploadedBytes(job: UploadJob): number {
   return Object.values(job.uploaded).reduce((sum, value) => sum + value, 0)
 }
 
+/** Jobs left behind by tabs that are gone. Jobs another open tab is running
+ * stay with that tab. */
 function restoreJobs(): UploadJob[] {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
-    const saved = raw ? (JSON.parse(raw) as UploadJob[]) : []
-    return saved.map((job) => ({
+    const records: Array<[string, TabRecord<UploadJob>]> = []
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index)
+      if (key !== LEGACY_STORAGE_KEY && !key?.startsWith(STORAGE_PREFIX)) continue
+      records.push([key, parseTabRecord<UploadJob>(window.localStorage.getItem(key)) || { seen: 0, jobs: [] }])
+    }
+    const orphans = claimOrphans(records, OWN_KEY, Date.now())
+    // Removed only after this tab saves the jobs, so a second call (StrictMode) finds them too.
+    for (const key of orphans.keys) adoptedKeys.add(key)
+    return orphans.jobs.map((job) => ({
       ...job,
       items: [],
       uploaded: {},
@@ -174,13 +193,17 @@ function restoreJobs(): UploadJob[] {
   }
 }
 
-function persistJobs(jobs: UploadJob[]): void {
+/** Saves this tab's unfinished jobs under its own key, the only one it writes.
+ * `seen` 0 tells other tabs this one is gone. */
+function persistJobs(jobs: UploadJob[], seen = Date.now()): void {
   try {
     const unfinished = jobs
       .filter((job) => UNFINISHED.includes(job.status))
       .map(({ items: _items, uploaded: _uploaded, ...rest }) => ({ ...rest, items: [], uploaded: {} }))
-    if (unfinished.length) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(unfinished))
-    else window.localStorage.removeItem(STORAGE_KEY)
+    if (unfinished.length) window.localStorage.setItem(OWN_KEY, JSON.stringify({ seen, jobs: unfinished }))
+    else window.localStorage.removeItem(OWN_KEY)
+    for (const key of adoptedKeys) window.localStorage.removeItem(key)
+    adoptedKeys.clear()
   } catch {
     // Remembering interrupted uploads is a convenience only.
   }
@@ -215,6 +238,23 @@ export function UploadProvider({
     persistJobs(jobs)
   }, [jobs])
 
+  const owning = jobs.some((job) => UNFINISHED.includes(job.status))
+  useEffect(() => {
+    if (!owning) return
+    const renew = () => persistJobs(jobsRef.current)
+    // A closed or reloaded tab lets go at once, so the next page load can pick
+    // its jobs up as interrupted; a page restored from the back cache takes them back.
+    const release = () => persistJobs(jobsRef.current, 0)
+    const timer = window.setInterval(renew, LEASE_HEARTBEAT_MS)
+    window.addEventListener('pagehide', release)
+    window.addEventListener('pageshow', renew)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('pagehide', release)
+      window.removeEventListener('pageshow', renew)
+    }
+  }, [owning])
+
   useEffect(() => {
     api
       .health()
@@ -228,7 +268,7 @@ export function UploadProvider({
     setJobs((current) => current.map((job) => (job.id === id ? { ...job, ...changes } : job)))
   }, [])
 
-  const active = jobs.some((job) => ['queued', 'uploading', 'committing'].includes(job.status))
+  const active = jobs.some((job) => IN_PROGRESS.includes(job.status))
 
   useEffect(() => {
     if (!active) return
@@ -248,7 +288,13 @@ export function UploadProvider({
       try {
         update(job.id, { status: 'uploading', error: undefined })
         if (job.kind === 'change' && !sessionId) {
-          sessionId = (await api.startChange(job.repoId)).id
+          const started = (await api.startChange(job.repoId)).id
+          // Cancelled while the session was being opened: close it again.
+          if (controller.signal.aborted) {
+            await api.abortChange(started).catch(() => undefined)
+            throw new DOMException('Upload cancelled', 'AbortError')
+          }
+          sessionId = started
           update(job.id, { sessionId })
         }
         for (const item of job.items) {
@@ -289,7 +335,9 @@ export function UploadProvider({
         window.dispatchEvent(new CustomEvent('hugginghack:repository-changed', { detail: job.repoId }))
       } catch (reason) {
         if (controller.signal.aborted) {
-          update(job.id, { status: 'cancelled', currentFile: undefined })
+          // The staged files of a change are discarded with its session.
+          if (job.kind === 'change' && sessionId) await api.abortChange(sessionId).catch(() => undefined)
+          update(job.id, { status: 'cancelled', currentFile: undefined, sessionId: undefined })
         } else {
           const message = reason instanceof Error ? reason.message : 'Upload failed'
           update(job.id, { status: 'error', error: message, currentFile: undefined })
@@ -340,7 +388,12 @@ export function UploadProvider({
   }, [])
 
   async function cancel(job: UploadJob) {
-    controllers.current.get(job.id)?.abort()
+    const controller = controllers.current.get(job.id)
+    if (controller) {
+      // A running job closes its own change session, including one still opening.
+      controller.abort()
+      return
+    }
     if (job.kind === 'change' && job.sessionId) {
       await api.abortChange(job.sessionId).catch(() => undefined)
     }
@@ -386,8 +439,9 @@ export function UploadProvider({
   const value = useMemo(() => ({ jobs, active, enqueue }), [jobs, active, enqueue])
   const visible = jobs
   const current = jobs.find((job) => job.status === 'uploading' || job.status === 'committing')
+  // Paused, failed, and interrupted jobs are not moving, so they leave the total.
   const totals = jobs
-    .filter((job) => UNFINISHED.includes(job.status))
+    .filter((job) => IN_PROGRESS.includes(job.status))
     .reduce(
       (sum, job) => ({ done: sum.done + uploadedBytes(job), total: sum.total + job.total }),
       { done: 0, total: 0 },
@@ -484,7 +538,11 @@ export function UploadProvider({
                         </p>
                       )}
                       {job.status === 'cancelled' && (
-                        <p className="upload-job-state">Cancelled; staged files were discarded.</p>
+                        <p className="upload-job-state">
+                          {job.kind === 'change'
+                            ? 'Cancelled; staged files were discarded.'
+                            : 'Cancelled. Files already sent are kept: resume or delete the repository under Unfinished uploads.'}
+                        </p>
                       )}
                       {job.error && (
                         <p className="upload-job-state danger">

@@ -82,6 +82,7 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
   const showButton = useRef<HTMLButtonElement>(null)
   const focusAfterToggle = useRef(false)
   const [saving, setSaving] = useState<string | null>(null)
+  const latestRequest = useRef(0)
   const navigate = useNavigate()
   const urlSearch = searchParams.get('search') || ''
   // Models made from one model, opened from its Model tree; only ever set by a link.
@@ -109,18 +110,25 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
       params.set('base_model', lineageBase)
       if (lineageRelation) params.set('relation', lineageRelation)
     }
+    // A slower answer to an earlier search must not replace a newer one.
+    const request = ++latestRequest.current
     setLoading(true)
     setError('')
     api
       .libraryModels(params)
       .then((payload) => {
+        if (request !== latestRequest.current) return
         setModels(payload.items)
         setFacets(payload.facets)
         setLibraryTotal(payload.total)
         setLibraryBytes(payload.total_bytes)
       })
-      .catch((reason) => setError(reason.message))
-      .finally(() => setLoading(false))
+      .catch((reason) => {
+        if (request === latestRequest.current) setError(reason.message)
+      })
+      .finally(() => {
+        if (request === latestRequest.current) setLoading(false)
+      })
   }, [filters, search, sort, lineageBase, lineageRelation])
 
   useEffect(() => {

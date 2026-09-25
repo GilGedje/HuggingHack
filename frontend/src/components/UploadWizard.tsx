@@ -292,13 +292,23 @@ export function UploadWizard({
           <span className={`wizard-started-icon ${done ? 'done' : failed ? 'failed' : ''}`}>
             {done ? <Check size={22} /> : failed ? <AlertTriangle size={22} /> : <UploadCloud size={22} />}
           </span>
-          <h2>{done ? `${started} is ready` : failed ? 'Upload paused' : `Uploading ${started}`}</h2>
+          <h2>
+            {done
+              ? `${started} is ready`
+              : job?.status === 'cancelled'
+                ? 'Upload cancelled'
+                : failed ? 'Upload paused' : `Uploading ${started}`}
+          </h2>
           <p>
             {done
               ? 'Every file was committed and the model is in the library.'
-              : failed
-                ? 'Retry from the upload panel at the bottom of the screen; finished files are kept.'
-                : 'You can keep browsing. Progress also stays at the bottom of the screen.'}
+              : job?.status === 'cancelled'
+                ? 'Files already sent are kept. Resume or delete the repository under Unfinished uploads.'
+                : job?.status === 'interrupted'
+                  ? 'Choose the same folder in the upload panel at the bottom of the screen to resume; finished files are kept.'
+                  : failed
+                    ? 'Retry from the upload panel at the bottom of the screen; finished files are kept.'
+                    : 'You can keep browsing. Progress also stays at the bottom of the screen.'}
           </p>
           <div
             className={done || failed ? 'capacity-track wizard-progress' : 'capacity-track wizard-progress live'}

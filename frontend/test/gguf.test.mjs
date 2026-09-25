@@ -21,3 +21,17 @@ test('GGUF scalar metadata is readable and bounded', () => {
   })
   assert.equal(metadataPreview('x'.repeat(600)).value.length, 501)
 })
+
+test('GGUF header cache follows the file, not only its name', async () => {
+  const { ggufCacheKey, ggufCacheReusable } = await import('../src/gguf.ts')
+  const file = { path: 'model.gguf', size: 100 }
+  assert.notEqual(ggufCacheKey('a/b', 'main', file), ggufCacheKey('a/b', 'main', { ...file, size: 101 }))
+  assert.notEqual(
+    ggufCacheKey('a/b', 'main', { ...file, blob_id: 'x' }),
+    ggufCacheKey('a/b', 'main', { ...file, blob_id: 'y' }),
+  )
+  // Library files have no content hash: only the same listing may reuse a header.
+  assert.equal(ggufCacheReusable(file, file), true)
+  assert.equal(ggufCacheReusable(file, { ...file }), false)
+  assert.equal(ggufCacheReusable({ ...file, blob_id: 'x' }, { ...file, blob_id: 'x' }), true)
+})

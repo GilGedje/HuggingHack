@@ -1,12 +1,9 @@
 import 'katex/dist/katex.min.css'
 import {
-  Children,
-  isValidElement,
   memo,
   useEffect,
   useMemo,
   useState,
-  type ReactNode,
 } from 'react'
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import rehypeKatex from 'rehype-katex'
@@ -30,6 +27,7 @@ import {
   resolveLocalModelCardUrl,
   resolveModelCardUrl,
 } from '../modelCard'
+import { rehypeGithubAlerts } from '../markdownAlerts'
 import type {
   HubFile,
   RuntimeJob,
@@ -37,16 +35,7 @@ import type {
 } from '../types'
 import { formatBytes } from '../utils'
 import { useConfirm } from './ConfirmDialog'
-
-function childText(children: ReactNode): string {
-  return Children.toArray(children)
-    .map((child) => {
-      if (typeof child === 'string' || typeof child === 'number') return String(child)
-      if (isValidElement<{ children?: ReactNode }>(child)) return childText(child.props.children)
-      return ''
-    })
-    .join('')
-}
+import { childText, DropWhenImagesFail, MarkdownImage, MarkdownParagraph } from './MarkdownParts'
 
 function scrollToCardHeading(event: React.MouseEvent<HTMLAnchorElement>, href: string) {
   event.preventDefault()
@@ -99,25 +88,28 @@ const modelCardComponents: Components = {
     const showExternalIcon =
       !isHeadingLink && /^https?:/i.test(href || '') && childText(children).trim().length > 0
     return (
-      <a
-        {...props}
-        href={href}
-        target={isHeadingLink ? undefined : '_blank'}
-        rel={isHeadingLink ? undefined : 'noreferrer noopener'}
-        onClick={isHeadingLink && href ? (event) => scrollToCardHeading(event, href) : undefined}
-      >
-        {children}
-        {showExternalIcon && <ExternalLink size={11} aria-hidden="true" />}
-      </a>
+      <DropWhenImagesFail content={children}>
+        <a
+          {...props}
+          href={href}
+          target={isHeadingLink ? undefined : '_blank'}
+          rel={isHeadingLink ? undefined : 'noreferrer noopener'}
+          onClick={isHeadingLink && href ? (event) => scrollToCardHeading(event, href) : undefined}
+        >
+          {children}
+          {showExternalIcon && <ExternalLink size={11} aria-hidden="true" />}
+        </a>
+      </DropWhenImagesFail>
     )
   },
+  p: MarkdownParagraph,
   img: ({ node: _node, className, src, alt, ...props }) => {
     const badge =
       typeof src === 'string' &&
       /(?:img\.shields\.io|badge(?:s)?[./_-]|colab-badge)/i.test(src)
     const classes = [className, badge ? 'model-card-badge' : ''].filter(Boolean).join(' ')
     return (
-      <img
+      <MarkdownImage
         {...props}
         className={classes || undefined}
         src={src}
@@ -148,6 +140,7 @@ export const ModelCardDocument = memo(function ModelCardDocument({
         rehypePlugins={[
           rehypeRaw,
           [rehypeSanitize, modelCardSanitizeSchema],
+          rehypeGithubAlerts,
           rehypeKatex,
         ]}
         urlTransform={(url, attribute) => {
@@ -165,6 +158,10 @@ export const ModelCardDocument = memo(function ModelCardDocument({
 })
 
 const activeRuntimeStatuses = ['queued', 'preparing', 'transferring', 'loading']
+const RUNTIME_POLL_MS = 1200
+const RUNTIME_POLL_MAX_MS = 15_000
+/** Failed status checks in a row before the button is given back. */
+const RUNTIME_POLL_ATTEMPTS = 5
 
 interface ModelActionsProps {
   repoId: string
@@ -196,10 +193,16 @@ export function ModelActions({
   const [runtimeSourceFile, setRuntimeSourceFile] = useState('')
   const [runtimeJob, setRuntimeJob] = useState<RuntimeJob | null>(null)
   const [dispatching, setDispatching] = useState(false)
+  // Status checks that failed in a row, and why the last one did.
+  const [pollFailures, setPollFailures] = useState(0)
+  const [pollError, setPollError] = useState('')
+  const pollStopped = pollFailures >= RUNTIME_POLL_ATTEMPTS
 
   useEffect(() => {
     setError('')
     setRuntimeJob(null)
+    setPollFailures(0)
+    setPollError('')
     setRuntimeModelName(repoId.replace('/', '-').toLowerCase())
     setRuntimeSourceFile('')
   }, [repoId])
@@ -224,11 +227,17 @@ export function ModelActions({
   }, [canManageRuntimes, repoId])
 
   useEffect(() => {
-    if (!runtimeJob || !activeRuntimeStatuses.includes(runtimeJob.status)) return
+    if (!runtimeJob || !activeRuntimeStatuses.includes(runtimeJob.status) || pollStopped) return
+    let ignore = false
+    // Each failed check waits twice as long before the next one.
+    const delay = Math.min(RUNTIME_POLL_MS * 2 ** pollFailures, RUNTIME_POLL_MAX_MS)
     const timer = window.setTimeout(() => {
       api
         .runtimeJob(runtimeJob.id)
         .then((next) => {
+          if (ignore) return
+          setPollFailures(0)
+          setPollError('')
           setRuntimeJob(next)
           if (next.status === 'ready') {
             onToast(`${next.runtime_model_name} is ready on ${next.target_name}.`)
@@ -236,15 +245,23 @@ export function ModelActions({
             onToast(next.error || 'Runtime load failed.', 'error')
           }
         })
-        .catch(() => undefined)
-    }, 1200)
-    return () => window.clearTimeout(timer)
-  }, [onToast, runtimeJob])
+        .catch((reason) => {
+          if (ignore) return
+          setPollError(reason instanceof Error ? reason.message : 'The server did not answer.')
+          setPollFailures((count) => count + 1)
+        })
+    }, delay)
+    return () => {
+      ignore = true
+      window.clearTimeout(timer)
+    }
+  }, [onToast, runtimeJob, pollFailures, pollStopped])
 
   const ggufFiles = files.filter((file) => file.path.toLowerCase().endsWith('.gguf'))
   const selectedTarget = runtimeTargets.find((target) => target.id === runtimeTargetId)
   const needsSourceFile = selectedTarget?.kind === 'ollama' && ggufFiles.length > 1
-  const runtimeBusy = Boolean(runtimeJob && activeRuntimeStatuses.includes(runtimeJob.status))
+  // After repeated failed checks the job's state is unknown, so the button is usable again.
+  const runtimeBusy = Boolean(runtimeJob && activeRuntimeStatuses.includes(runtimeJob.status) && !pollStopped)
 
   async function changeCache() {
     if (storageBackend !== 's3') return
@@ -287,6 +304,8 @@ export function ModelActions({
         runtime_model_name: runtimeModelName.trim(),
         ...(runtimeSourceFile ? { source_file: runtimeSourceFile } : {}),
       })
+      setPollFailures(0)
+      setPollError('')
       setRuntimeJob(job)
       onToast(`${repoId} was queued for ${job.target_name}.`)
     } catch (reason) {
@@ -404,6 +423,21 @@ export function ModelActions({
                 <span style={{ width: `${runtimeJob.progress}%` }} />
               </div>
               {runtimeJob.error && <p>{runtimeJob.error}</p>}
+              {pollStopped && (
+                <p className="runtime-poll-error">
+                  Lost track of this job: {pollError}{' '}
+                  <button
+                    type="button"
+                    className="text-link"
+                    onClick={() => {
+                      setPollFailures(0)
+                      setPollError('')
+                    }}
+                  >
+                    Check again
+                  </button>
+                </p>
+              )}
             </div>
           )}
         </section>

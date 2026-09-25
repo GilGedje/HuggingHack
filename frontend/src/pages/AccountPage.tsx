@@ -106,7 +106,7 @@ function ProfileTab({ overview, onToast, onSaved }: { overview: AccountOverview;
               <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={80} required disabled={!editable} />
             </label>
             <label>
-              Email {!external && <small>optional</small>}
+              <span>Email {!external && <small>Optional</small>}</span>
               <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} maxLength={254} disabled={!editable} />
             </label>
             {external ? (
@@ -283,7 +283,9 @@ function TokensTab({ overview, onToast }: { overview: AccountOverview; onToast: 
     event.preventDefault()
     setSaving(true)
     try {
-      const expires = EXPIRY_OPTIONS.find(([label]) => label === expiry)?.[1] ?? 90
+      // null is a real choice ("Never"); only an unknown label falls back to 90 days.
+      const option = EXPIRY_OPTIONS.find(([label]) => label === expiry)
+      const expires = option ? option[1] : 90
       const token = await api.createToken({ name, scope, expires_in_days: expires })
       setCreated(token)
       setName('')
@@ -364,7 +366,7 @@ function TokensTab({ overview, onToast }: { overview: AccountOverview; onToast: 
             </div>
             <p>Use it anywhere Hugging Face tokens work:</p>
             <div className="snippet-code">
-              <pre><code>{`export HF_ENDPOINT="${server}"\nexport HF_TOKEN="${created.token}"\nhf download owner/model\n\ngit clone ${scheme}://${overview.user.username}:${created.token}@${host}/owner/model`}</code></pre>
+              <pre><code>{`export HF_ENDPOINT="${server}"\nexport HF_TOKEN="${created.token}"\nhf download owner/model\n\ngit config --global credential.helper cache\n# If git asks for a password, paste the token\ngit clone ${scheme}://${overview.user.username}@${host}/owner/model`}</code></pre>
               <CopyButton text={`export HF_ENDPOINT="${server}"\nexport HF_TOKEN="${created.token}"`} label="Copy environment variables" />
             </div>
           </div>

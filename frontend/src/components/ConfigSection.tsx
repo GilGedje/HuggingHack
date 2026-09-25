@@ -600,20 +600,25 @@ function NewRevision({
   const [problems, setProblems] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [loadError, setLoadError] = useState('')
+  const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
     if (!latest) return
     let ignore = false
+    setLoadError('')
     api
       .configRevision(model.id, latest.id)
       .then((detail) => {
         if (!ignore) setFiles(detail.files.map((file) => ({ path: file.path, content: file.content, original: file.content, removed: false, open: false })))
       })
-      .catch((reason) => setError(message(reason, 'Could not load the latest revision.')))
+      .catch((reason) => {
+        if (!ignore) setLoadError(message(reason, 'Could not load the latest revision.'))
+      })
     return () => {
       ignore = true
     }
-  }, [latest, model.id])
+  }, [latest, model.id, attempt])
 
   function merge(incoming: Array<{ path: string; content: string }>) {
     setFiles((current) => {
@@ -677,6 +682,23 @@ function NewRevision({
     }
   }
 
+  if (!files && loadError) {
+    return (
+      <div className="config-new">
+        <Link to={`${base}/config`} className="text-link">
+          <ArrowLeft size={14} /> All configs
+        </Link>
+        <div className="page-error">
+          <AlertTriangle size={18} />
+          <div>
+            <strong>Could not load the latest files</strong>
+            <p>{loadError}</p>
+          </div>
+          <button type="button" onClick={() => setAttempt((value) => value + 1)}>Retry</button>
+        </div>
+      </div>
+    )
+  }
   if (!files) {
     return (
       <div className="drawer-loading">
