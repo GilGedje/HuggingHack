@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { RotateCcw } from 'lucide-react'
+import { api } from '../api'
 import { precisionLabel, TASKS } from '../catalog'
 import { parseParameters, parseTags, tidyOverrides, writeParameters } from '../listingFields'
+import { RELATIONS, relationName } from '../modelTree'
 import type { ListingFields, ListingOverrides, ModelListing } from '../types'
 import { formatNumber, taskLabel } from '../utils'
 
@@ -14,7 +16,10 @@ const FIELDS: Array<{ id: Field; label: string; hint: string }> = [
   { id: 'library_name', label: 'Library', hint: 'From the model card' },
   { id: 'license', label: 'License', hint: 'From the model card' },
   { id: 'tags', label: 'Tags', hint: 'From the model card' },
+  { id: 'base_model', label: 'Base model', hint: 'The model this one was made from, from the card’s base_model' },
+  { id: 'base_model_relation', label: 'Made as', hint: 'From the card, or worked out from the weights: quantized weights make a quantization' },
 ]
+const REPO_ID = /^[A-Za-z0-9][\w.-]{0,95}\/[\w.-]{1,96}$/
 const OTHER_TASK = '__other'
 
 /** The task the files name, leaving out config.model_type, which is not a task. */
@@ -38,6 +43,7 @@ function show(field: Field, value: unknown, listing: ModelListing, exact: boolea
       : `${writeParameters(count)} (${count.toLocaleString('en')})`
   }
   if (field === 'tags') return (value as string[]).join(', ')
+  if (field === 'base_model_relation') return relationName(String(value))
   return String(value)
 }
 
@@ -68,6 +74,15 @@ export function ListingEditor({
   const [otherTask, setOtherTask] = useState(false)
   const [problem, setProblem] = useState('')
   const detected = Object.fromEntries(FIELDS.map(({ id }) => [id, detectedValue(listing, id)])) as ListingOverrides
+  // Library models to pick a base model from; any Hugging Face id also works.
+  const [libraryIds, setLibraryIds] = useState<string[]>([])
+  useEffect(() => {
+    api
+      .libraryModels(new URLSearchParams({ sort: 'name' }))
+      .then((payload) => setLibraryIds(payload.items.map((item) => item.id)))
+      .catch(() => undefined)
+  }, [])
+  const hasBase = Boolean(overrides.base_model ?? detected.base_model)
 
   function start(field: Field) {
     const value = overrides[field] ?? detected[field]
@@ -95,6 +110,17 @@ export function ListingEditor({
       }
     }
     if (field === 'tags') value = parseTags(draft)
+    if (field === 'base_model' && value != null && !REPO_ID.test(String(value))) {
+      setProblem('Use a repository id, like Qwen/Qwen3-0.6B.')
+      return
+    }
+    if (field === 'base_model' && value != null && !(overrides.base_model_relation ?? detected.base_model_relation)) {
+      // A base named by hand needs a relation too; weights decide the likely one.
+      const quantized = ['fp8', 'int8', 'nvfp4', 'mxfp4', 'int4'].includes(String(overrides.precision ?? detected.precision))
+      onChange(tidyOverrides({ ...overrides, base_model: String(value), base_model_relation: quantized ? 'quantized' : 'finetune' }, detected))
+      setEditing(null)
+      return
+    }
     onChange(tidyOverrides({ ...overrides, [field]: value }, detected))
     setEditing(null)
   }
@@ -108,7 +134,7 @@ export function ListingEditor({
 
   return (
     <dl className="listing-editor">
-      {FIELDS.map(({ id, label, hint }) => {
+      {FIELDS.filter(({ id }) => id !== 'base_model_relation' || hasBase).map(({ id, label, hint }) => {
         const corrected = overrides[id] !== undefined
         const value = corrected ? overrides[id] : detected[id]
         return (
@@ -147,6 +173,26 @@ export function ListingEditor({
                       {TASKS.map((task) => <option key={task} value={task}>{taskLabel(task)}</option>)}
                       <option value={OTHER_TASK}>Other task…</option>
                     </select>
+                  ) : id === 'base_model_relation' ? (
+                    <select value={draft} aria-label={label} autoFocus onChange={(event) => setDraft(event.target.value)}>
+                      <option value="" disabled>Choose how it was made</option>
+                      {RELATIONS.map((item) => <option key={item} value={item}>{relationName(item)}</option>)}
+                    </select>
+                  ) : id === 'base_model' ? (
+                    <>
+                      <input
+                        value={draft}
+                        aria-label={label}
+                        autoFocus
+                        list="listing-library-models"
+                        placeholder="Qwen/Qwen3-0.6B"
+                        onChange={(event) => setDraft(event.target.value)}
+                        maxLength={200}
+                      />
+                      <datalist id="listing-library-models">
+                        {libraryIds.map((item) => <option key={item} value={item} />)}
+                      </datalist>
+                    </>
                   ) : id === 'precision' ? (
                     <select value={draft} aria-label={label} autoFocus onChange={(event) => setDraft(event.target.value)}>
                       <option value="" disabled>Choose a precision</option>

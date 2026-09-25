@@ -195,9 +195,14 @@ export interface HubFile {
 
 export type ModelFormat = 'safetensors' | 'gguf' | 'pytorch' | 'onnx' | 'tensorflow' | 'flax'
 
+export type BaseModelRelation = 'quantized' | 'finetune' | 'adapter' | 'merge'
+
 export interface LibraryModel {
   id: string
   author?: string | null
+  /** The model this one was made from, as its card or a correction names it. */
+  base_model?: string | null
+  base_model_relation?: BaseModelRelation | null
   pipeline_tag?: string | null
   library_name?: string | null
   tags: string[]
@@ -238,7 +243,20 @@ export interface LibrarySearchResult {
   facets: LibraryFacets
 }
 
+/** Where a model comes from and what was made from it, as far as the viewer may see. */
+export interface ModelTree {
+  base: {
+    id: string
+    relation: BaseModelRelation
+    /** In the library and visible to you; otherwise only its name is known. */
+    in_library: boolean
+    organization?: { name: string; display_name: string } | null
+  } | null
+  children: Partial<Record<BaseModelRelation, Array<{ id: string; precision?: string | null; parameter_count?: number | null }>>>
+}
+
 export interface LibraryModelDetails extends LibraryModel {
+  model_tree: ModelTree
   files: LibraryFile[]
   latest_commit?: CommitSummary | null
   commit_count: number
@@ -631,6 +649,8 @@ export interface ListingFields {
   library_name: string | null
   license: string | null
   tags: string[]
+  base_model: string | null
+  base_model_relation: BaseModelRelation | null
 }
 
 export type ListingOverrides = Partial<ListingFields>

@@ -29,7 +29,10 @@ NAMED_PARAMETER_PATTERN = re.compile(r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)")
 # How a model is listed, as people corrected it. Detected values stay in
 # local_models, so rescans keep refreshing them underneath; the corrections are
 # merged in whenever a model is read.
-LISTING_FIELDS = ("pipeline_tag", "precision", "parameter_count", "library_name", "license", "tags")
+LISTING_FIELDS = (
+    "pipeline_tag", "precision", "parameter_count", "library_name", "license", "tags",
+    "base_model", "base_model_relation",
+)
 LISTED_MODEL = (
     "local_models.*, model_listing.overrides_json AS listing_json FROM local_models "
     "LEFT JOIN model_listing ON model_listing.repo_id = local_models.repo_id"
@@ -307,6 +310,8 @@ class Database:
                     remote_uri TEXT,
                     parameter_count BIGINT,
                     formats_json TEXT NOT NULL DEFAULT '[]',
+                    base_model TEXT,
+                    base_model_relation TEXT,
                     storage_target TEXT NOT NULL DEFAULT 'local'
                 );
 
@@ -543,6 +548,9 @@ class Database:
                     "ALTER TABLE local_models ADD COLUMN formats_json "
                     "TEXT NOT NULL DEFAULT '[]'"
                 )
+            for column in ("base_model", "base_model_relation"):
+                if column not in local_model_columns:
+                    connection.execute(f"ALTER TABLE local_models ADD COLUMN {column} TEXT")
             if "storage_target" not in local_model_columns:
                 connection.execute(
                     "ALTER TABLE local_models ADD COLUMN storage_target "
@@ -1337,6 +1345,8 @@ class Database:
         record = {
             "parameter_count": None,
             "formats_json": "[]",
+            "base_model": None,
+            "base_model_relation": None,
             "storage_target": "s3" if record.get("storage_backend") == "s3" else "local",
             **record,
         }
@@ -1348,13 +1358,13 @@ class Database:
                     downloaded_at, revision, sha, pipeline_tag, library_name,
                     license, tags_json, config_json, source_url, managed,
                     storage_backend, cached, remote_uri, parameter_count, formats_json,
-                    storage_target
+                    storage_target, base_model, base_model_relation
                 ) VALUES (
                     :repo_id, :relative_path, :size_bytes, :file_count, :modified_at,
                     :downloaded_at, :revision, :sha, :pipeline_tag, :library_name,
                     :license, :tags_json, :config_json, :source_url, :managed,
                     :storage_backend, :cached, :remote_uri, :parameter_count, :formats_json,
-                    :storage_target
+                    :storage_target, :base_model, :base_model_relation
                 )
                 ON CONFLICT(repo_id) DO UPDATE SET
                     relative_path = excluded.relative_path,
@@ -1376,7 +1386,9 @@ class Database:
                     remote_uri = excluded.remote_uri,
                     parameter_count = excluded.parameter_count,
                     formats_json = excluded.formats_json,
-                    storage_target = excluded.storage_target
+                    storage_target = excluded.storage_target,
+                    base_model = excluded.base_model,
+                    base_model_relation = excluded.base_model_relation
                 """,
                 record,
             )

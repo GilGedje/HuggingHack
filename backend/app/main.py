@@ -1205,6 +1205,7 @@ def search_library_models(
     hardware: Annotated[str, Query(max_length=200)] = "",
     parameters: Annotated[str, Query(max_length=100)] = "",
     owner: Annotated[str, Query(max_length=64)] = "",
+    built_on: Annotated[str, Query(max_length=96)] = "",
 ) -> dict:
     models = database.list_visible_local_models(user["id"])
     try:
@@ -1218,6 +1219,7 @@ def search_library_models(
             hardware=hardware,
             parameters=parameters,
             owner=owner,
+            built_on=built_on,
             # Only tags of models this user can see, so counts reveal nothing else.
             hardware_tags=database.model_hardware([model["repo_id"] for model in models]),
         )
@@ -1259,6 +1261,40 @@ class ListingPreviewRequest(BaseModel):
 
 class ListingRequest(BaseModel):
     overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+def model_tree(model: dict[str, Any], user_id: str) -> dict[str, Any]:
+    """Where a model comes from and what was made from it, as far as this user may
+    see. A base the user cannot open reads exactly like one that is not here."""
+    visible = database.list_visible_local_models(user_id)
+    by_id = {item["repo_id"].lower(): item for item in visible}
+    base = None
+    if model.get("base_model"):
+        found = by_id.get(model["base_model"].lower())
+        organization = database.get_organization(model["base_model"].split("/", 1)[0])
+        base = {
+            "id": found["repo_id"] if found else model["base_model"],
+            "relation": model.get("base_model_relation") or "finetune",
+            "in_library": bool(found),
+            "organization": (
+                {"name": organization["name"], "display_name": organization["display_name"]}
+                if organization
+                else None
+            ),
+        }
+    children: dict[str, list[dict[str, Any]]] = {}
+    for item in visible:
+        if (item.get("base_model") or "").lower() == model["repo_id"].lower() and item["repo_id"] != model["repo_id"]:
+            children.setdefault(item.get("base_model_relation") or "finetune", []).append(
+                {
+                    "id": item["repo_id"],
+                    "precision": (item.get("config") or {}).get("precision"),
+                    "parameter_count": item.get("parameter_count"),
+                }
+            )
+    for items in children.values():
+        items.sort(key=lambda child: child["id"].lower())
+    return {"base": base, "children": children}
 
 
 def detected_listing(model: dict[str, Any]) -> dict[str, Any]:
@@ -1743,6 +1779,7 @@ async def library_model(repo_id: str, user: Browser) -> dict:
     tagged = database.model_hardware([model["repo_id"]]).get(model["repo_id"], [])
     details["hardware"] = [key for key in HARDWARE if key in tagged]
     details["hardware_options"] = [[key, label] for key, label in HARDWARE.items()]
+    details["model_tree"] = model_tree(model, user["id"])
     details["listing"] = listing_view(
         model["repo_id"], detected_listing(model), model.get("listing_overrides") or {}
     )

@@ -407,6 +407,9 @@ def repository_facts(root: Path, manifest: dict[str, Any] | None = None) -> dict
 
 
 README_MAX_BYTES = 1_000_000
+# Hugging Face's names for how a model relates to its base model.
+BASE_MODEL_RELATIONS = ("quantized", "finetune", "adapter", "merge")
+BASE_MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][\w.-]{0,95}/[\w.-]{1,96}$")
 
 
 def readme_metadata(path: Path) -> dict[str, Any]:
@@ -442,7 +445,38 @@ def card_metadata(text: str) -> dict[str, Any]:
     tags = metadata.get("tags")
     if isinstance(tags, list):
         result["tags"] = [tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()][:50]
+    # The model this one was made from, as the Hub reads it: a repo id or a list of them.
+    bases = metadata.get("base_model")
+    bases = [bases] if isinstance(bases, str) else bases if isinstance(bases, list) else []
+    bases = [item.strip() for item in bases if isinstance(item, str) and BASE_MODEL_PATTERN.fullmatch(item.strip())]
+    if bases:
+        result["base_models"] = bases[:20]
+    relation = metadata.get("base_model_relation")
+    if isinstance(relation, str) and relation.strip().lower() in BASE_MODEL_RELATIONS:
+        result["base_model_relation"] = relation.strip().lower()
     return result
+
+
+def base_model_of(
+    card: dict[str, Any], paths: list[str], precision: str | None
+) -> tuple[str | None, str | None]:
+    """The model this one derives from and how, the way the Hub decides when the card
+    does not say: quantized weights make a quantization, an adapter file an adapter,
+    several bases a merge, anything else a fine-tune."""
+    bases = card.get("base_models") or []
+    if not bases:
+        return None, None
+    relation = card.get("base_model_relation")
+    if relation not in BASE_MODEL_RELATIONS:
+        if len(bases) > 1:
+            relation = "merge"
+        elif any(path.rsplit("/", 1)[-1] == "adapter_config.json" for path in paths):
+            relation = "adapter"
+        elif precision in QUANTIZED_PRECISIONS:
+            relation = "quantized"
+        else:
+            relation = "finetune"
+    return bases[0], relation
 
 
 def classify(
@@ -464,6 +498,11 @@ def classify(
     parameter_count = shards_parameter_count(shards, precision) if shards else None
     if parameter_count is None:
         parameter_count = gguf_count
+    base_model, base_model_relation = (
+        (manifest.get("base_model"), manifest.get("base_model_relation"))
+        if manifest.get("base_model")
+        else base_model_of(card, paths, precision)
+    )
     return {
         # S3 syncs used to store config.model_type as the task; a real task from
         # the model card wins over that fallback.
@@ -480,6 +519,8 @@ def classify(
         "library_name": manifest.get("library_name") or card.get("library_name"),
         "license": manifest.get("license") or card.get("license"),
         "tags": manifest.get("tags") or card.get("tags") or [],
+        "base_model": base_model,
+        "base_model_relation": base_model_relation,
         "precision": precision,
         "parameter_count": parameter_count,
         "formats": model_formats(paths),
@@ -558,6 +599,8 @@ class LocalModelIndexer:
             "revision": manifest.get("revision"),
             "sha": manifest.get("sha"),
             "pipeline_tag": facts["pipeline_tag"],
+            "base_model": facts["base_model"],
+            "base_model_relation": facts["base_model_relation"],
             "library_name": facts["library_name"],
             "license": facts["license"],
             "tags_json": json.dumps(facts["tags"]),
@@ -590,6 +633,8 @@ class LocalModelIndexer:
             "revision": model.get("revision"),
             "sha": model.get("sha"),
             "pipeline_tag": model.get("pipeline_tag"),
+            "base_model": model.get("base_model"),
+            "base_model_relation": model.get("base_model_relation"),
             "library_name": model.get("library_name"),
             "license": model.get("license"),
             "tags_json": json.dumps(model.get("tags") or []),

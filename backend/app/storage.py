@@ -490,6 +490,11 @@ class S3ModelStorage(FilesystemModelStorage):
         # Only what the files measure; the manifest's own task, license, and tags
         # (from the Hub) must not be replaced by the model card's.
         manifest.update({key: facts[key] for key in ("parameter_count", "formats", "precision")})
+        # What the model derives from comes from its card; a manifest that already
+        # names one (from the Hub) keeps it.
+        if not manifest.get("base_model") and facts.get("base_model"):
+            manifest["base_model"] = facts["base_model"]
+            manifest["base_model_relation"] = facts["base_model_relation"]
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
         with self._lock:
@@ -633,6 +638,8 @@ class S3ModelStorage(FilesystemModelStorage):
                     "revision": manifest.get("revision"),
                     "sha": manifest.get("sha"),
                     "pipeline_tag": manifest.get("pipeline_tag"),
+                    "base_model": manifest.get("base_model"),
+                    "base_model_relation": manifest.get("base_model_relation"),
                     "library_name": manifest.get("library_name"),
                     "license": manifest.get("license"),
                     "tags": manifest.get("tags") or [],

@@ -1351,7 +1351,7 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
   min-width: 0; display: flex; align-items: center; gap: 6px;
   color: var(--text-muted); font-size: 11px;
 }
-.model-owner-line > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-owner-line > span:first-child { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-card-body > h3 {
   margin-top: 2px; overflow: hidden; color: var(--text); font-size: 16px;
   font-weight: 600; letter-spacing: -0.018em; text-overflow: ellipsis; white-space: nowrap;
@@ -2089,7 +2089,12 @@ button.quiet-link:disabled { cursor: progress; opacity: 0.7; }
 .model-page-body.with-aside { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 36px; align-items: start; }
 .model-page-main { min-width: 0; }
 .model-page-main > .model-card-document { width: 100%; max-width: 86ch; margin: 0; padding: 0 0 48px; }
-.model-page-aside { display: grid; gap: 14px; position: sticky; top: 88px; }
+.model-page-aside {
+  display: grid; gap: 14px; align-content: start; position: sticky; top: 88px;
+  /* Taller than the window, it scrolls on its own so its last card stays reachable. */
+  max-height: calc(100vh - 104px); overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: thin; margin-right: -6px; padding-right: 6px;
+}
 .aside-card { padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--canvas); }
 .aside-card h2 { font-size: 14px; }
 .aside-card > p { margin-top: 2px; color: var(--text-muted); font-size: 12px; }
@@ -2259,7 +2264,7 @@ button.file-browser-name:hover { text-decoration: underline; text-underline-offs
 
 @media (max-width: 1080px) {
   .model-page-body.with-aside { grid-template-columns: minmax(0, 1fr); }
-  .model-page-aside { position: static; order: -1; }
+  .model-page-aside { position: static; order: -1; max-height: none; overflow: visible; margin-right: 0; padding-right: 0; }
 }
 @media (max-width: 780px) {
   .model-tabs { flex-direction: column; align-items: stretch; }
@@ -2764,3 +2769,48 @@ a, button, input, select, textarea, summary,
 .org-about .markdown-text :is(h1, h2, h3) { margin-top: 14px !important; font-size: 15px; }
 .org-about .markdown-text, .markdown-editor .markdown-text { width: auto; max-width: 820px; margin: 0; padding: 0; min-height: 0; }
 .markdown-editor-body .markdown-text.markdown-preview { padding: 14px 16px; min-height: 200px; }
+
+/* Model relationships: where a model comes from and what was made from it. */
+.model-lineage {
+  margin-top: 8px; display: inline-flex; align-items: center; gap: 6px;
+  color: var(--text-secondary); font-size: 12px;
+}
+.model-lineage a { color: var(--text); font-weight: 600; }
+.model-lineage a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.model-card-lineage {
+  min-width: 0; display: inline-flex; align-items: center; gap: 4px; overflow: hidden;
+  color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap;
+}
+.model-card-lineage svg { flex: none; }
+.model-tree h2 { margin-bottom: 12px; }
+.model-tree-list { margin: 0; padding: 0; list-style: none; }
+/* A line runs down the left through every node, like a family tree. */
+.model-tree-node {
+  position: relative; padding: 0 0 14px 20px; display: grid; gap: 2px; font-size: 12px;
+  animation: fade-in 260ms var(--ease-out) backwards;
+}
+.model-tree-node:nth-child(2) { animation-delay: 60ms; }
+.model-tree-node:nth-child(3) { animation-delay: 120ms; }
+.model-tree-node::before {
+  position: absolute; top: 5px; left: 4px; width: 9px; height: 9px; content: '';
+  border: 1px solid var(--border-strong); border-radius: 50%; background: var(--canvas);
+}
+.model-tree-node:not(:last-child)::after {
+  position: absolute; top: 16px; bottom: 0; left: 8px; width: 1px; content: ''; background: var(--border-strong);
+}
+.model-tree-node.current::before { border-color: var(--brand-warm); background: var(--brand-primary); }
+.model-tree-kind { color: var(--text-muted); font-size: 10px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+.model-tree-kind em {
+  margin-left: 4px; padding: 0 5px; border-radius: 8px; background: var(--canvas-subtle);
+  color: var(--text-secondary); font-style: normal;
+}
+.model-tree-name { min-width: 0; overflow-wrap: anywhere; color: var(--text); }
+a.model-tree-name { font-weight: 600; }
+a.model-tree-name:hover { text-decoration: underline; text-underline-offset: 3px; }
+.model-tree-name.external { color: var(--text-secondary); }
+.model-tree-node small { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; color: var(--text-muted); font-size: 11px; }
+.model-tree-node small a { display: inline-flex; align-items: center; gap: 3px; color: var(--text-secondary); }
+.model-tree-node small a:hover { color: var(--text); }
+.model-tree-node ul { margin: 4px 0 0; padding: 0; display: grid; gap: 6px; list-style: none; }
+.model-tree-node ul li { display: grid; gap: 1px; }
+.org-built-on-note { margin-bottom: 4px; color: var(--text-secondary); font-size: 13px; }

@@ -585,3 +585,30 @@ def test_postgresql_storage_moves_and_revision_aliases():
             connection.execute("DELETE FROM storage_moves WHERE id = ?", (move_id,))
             connection.execute("DELETE FROM revision_aliases WHERE repo_id = ?", (repo_id,))
         database.delete_owned_repository(repo_id)
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
+def test_postgresql_models_keep_their_base_model():
+    database = Database(POSTGRES_URL or "")
+    database.initialize()
+    repo_id = f"pg-{uuid.uuid4().hex}/quant"
+    timestamp = "2026-09-25T12:00:00+00:00"
+    record = {
+        "repo_id": repo_id, "relative_path": repo_id, "size_bytes": 1, "file_count": 1,
+        "modified_at": timestamp, "downloaded_at": None, "revision": None, "sha": None,
+        "pipeline_tag": None, "library_name": None, "license": None, "tags_json": "[]",
+        "config_json": "{}", "source_url": None, "managed": 0, "storage_backend": "filesystem",
+        "cached": 1, "remote_uri": None,
+    }
+    try:
+        database.upsert_local_model(record)  # callers that know nothing of base models
+        assert database.get_local_model(repo_id)["base_model"] is None
+        database.upsert_local_model({**record, "base_model": "Qwen/Qwen3-0.6B", "base_model_relation": "quantized"})
+        model = database.get_local_model(repo_id)
+        assert (model["base_model"], model["base_model_relation"]) == ("Qwen/Qwen3-0.6B", "quantized")
+        database.set_listing_overrides(repo_id, {"base_model_relation": "finetune"}, timestamp, None)
+        model = database.get_local_model(repo_id)
+        assert model["base_model_relation"] == "finetune" and model["detected"]["base_model_relation"] == "quantized"
+    finally:
+        database.set_listing_overrides(repo_id, {}, timestamp, None)
+        database.delete_owned_repository(repo_id)

@@ -9,6 +9,7 @@ import {
   File,
   Folder,
   GitBranch,
+  GitFork,
   GitCommitHorizontal,
   HardDrive,
   Heart,
@@ -44,6 +45,8 @@ import type {
 import { formatBytes, formatNumber, initials, relativeTime, taskLabel } from '../utils'
 import { visibilityLabel } from '../visibility'
 import { ModelPageSkeleton, RowSkeletons } from '../components/Skeletons'
+import { ModelTreeCard } from '../components/ModelTree'
+import { relationOf } from '../modelTree'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -589,6 +592,17 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
               {model.saved ? 'Saved' : 'Save'}
             </button>
           </div>
+          {model.model_tree.base && (
+            <p className="model-lineage">
+              <GitFork size={13} />
+              {relationOf(model.model_tree.base.relation)}{' '}
+              {model.model_tree.base.in_library ? (
+                <Link to={`/models/${model.model_tree.base.id}`}>{model.model_tree.base.id}</Link>
+              ) : (
+                <span>{model.model_tree.base.id}</span>
+              )}
+            </p>
+          )}
           <div className="drawer-tags model-hero-tags">
             {model.pipeline_tag && <span className="task-tag">{taskLabel(model.pipeline_tag)}</span>}
             {model.formats.map((format) => (
@@ -743,6 +757,8 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
               </dl>
               {model.description && <p className="model-description">{model.description}</p>}
             </section>
+
+            <ModelTreeCard model={model} />
 
             <HardwareCard
               key={model.id}

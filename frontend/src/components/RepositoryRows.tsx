@@ -4,6 +4,7 @@ import {
   Cloud,
   Cpu,
   FileBox,
+  GitFork,
   HardDrive,
   Heart,
   RefreshCw,
@@ -12,6 +13,7 @@ import {
 import { precisionLabel } from '../catalog'
 import type { LibraryModel, ModelFormat } from '../types'
 import { formatBytes, formatNumber, initials, relativeTime, taskLabel } from '../utils'
+import { relationOf } from '../modelTree'
 
 function visualClass(task?: string | null): string {
   if (!task) return 'model-visual-neutral'
@@ -116,6 +118,11 @@ export function LibraryModelRow({ model, onOpen, onUse, onSave, saving, hardware
       <div className="model-card-body">
         <div className="model-owner-line">
           <span>{owner}</span>
+          {model.base_model && (
+            <span className="model-card-lineage" title={`${relationOf(model.base_model_relation)} ${model.base_model}`}>
+              <GitFork size={11} /> {relationOf(model.base_model_relation)} {model.base_model}
+            </span>
+          )}
         </div>
         <h3 title={model.id}>{name || model.id}</h3>
         <div className="repo-tags">

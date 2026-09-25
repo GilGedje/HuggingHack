@@ -120,6 +120,8 @@ def catalog_item(
         "license": model.get("license"),
         "parameter_count": model.get("parameter_count"),
         "parameters_corrected": "parameter_count" in (model.get("listing_overrides") or {}),
+        "base_model": model.get("base_model"),
+        "base_model_relation": model.get("base_model_relation"),
         "precision": (model.get("config") or {}).get("precision"),
         "hardware": [item for item in HARDWARE if item in (hardware or [])],
         "formats": model.get("formats") or [],
@@ -187,9 +189,15 @@ def _matches(
     hardware: set[str],
     parameter_range: tuple[int | None, int | None],
     owner: str = "",
+    built_on: str = "",
 ) -> bool:
     if owner and (item.get("author") or "").lower() != owner.lower():
         return False
+    if built_on:
+        # Others' models made from this owner's: quantizations, fine-tunes, and so on.
+        base_owner = (item.get("base_model") or "").split("/", 1)[0].lower()
+        if base_owner != built_on.lower() or (item.get("author") or "").lower() == built_on.lower():
+            return False
     if search:
         haystack = " ".join(
             [item["id"], item.get("pipeline_tag") or "", item.get("library_name") or ""]
@@ -255,6 +263,7 @@ def search_catalog(
     hardware: str = "",
     parameters: str = "",
     owner: str = "",
+    built_on: str = "",
     hardware_tags: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     parameter_range = parse_parameter_range(parameters)
@@ -269,7 +278,7 @@ def search_catalog(
     matched = [
         item
         for item in items
-        if _matches(item, search.strip(), tasks, precisions, chosen_hardware, parameter_range, owner)
+        if _matches(item, search.strip(), tasks, precisions, chosen_hardware, parameter_range, owner, built_on)
     ]
     matched.sort(key=_sort_key(sort), reverse=sort == "updated")
     return {

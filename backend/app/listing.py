@@ -6,6 +6,8 @@ import re
 from typing import Any
 
 from .indexer import (
+    BASE_MODEL_PATTERN,
+    BASE_MODEL_RELATIONS,
     CONFIG_DTYPES,
     HEADER_DTYPES,
     QUANTIZED_PRECISIONS,
@@ -46,7 +48,10 @@ def validate_overrides(raw: Any) -> dict[str, Any]:
     files say."""
     if not isinstance(raw, dict):
         raise ValueError("Listing corrections must be an object.")
-    unknown = sorted(set(raw) - {"pipeline_tag", "precision", "parameter_count", "library_name", "license", "tags"})
+    unknown = sorted(
+        set(raw)
+        - {"pipeline_tag", "precision", "parameter_count", "library_name", "license", "tags", "base_model", "base_model_relation"}
+    )
     if unknown:
         raise ValueError(f"Unknown listing fields: {', '.join(unknown)}.")
     result: dict[str, Any] = {}
@@ -69,6 +74,16 @@ def validate_overrides(raw: Any) -> dict[str, Any]:
         value = _text(raw.get(field), label, limit)
         if value is not None:
             result[field] = value
+    base = _text(raw.get("base_model"), "Base model", 200)
+    if base is not None:
+        if not BASE_MODEL_PATTERN.fullmatch(base):
+            raise ValueError("Base model is a repository id, like Qwen/Qwen3-0.6B.")
+        result["base_model"] = base
+    relation = raw.get("base_model_relation")
+    if relation is not None:
+        if relation not in BASE_MODEL_RELATIONS:
+            raise ValueError(f"How it relates to its base is one of {', '.join(BASE_MODEL_RELATIONS)}.")
+        result["base_model_relation"] = relation
     tags = raw.get("tags")
     if tags is not None:
         if not isinstance(tags, list) or len(tags) > MAX_TAGS:

@@ -236,6 +236,8 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
   const navigate = useNavigate()
   const [organization, setOrganization] = useState<OrganizationDetails | null>(null)
   const [models, setModels] = useState<LibraryModel[] | null>(null)
+  // Others' models made from this organization's: quantizations, fine-tunes, and so on.
+  const [builtOn, setBuiltOn] = useState<LibraryModel[]>([])
   const [hardwareLabels, setHardwareLabels] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
   const indicator = useTabIndicator<HTMLDivElement>(`${tab}:${organization?.name}:${organization?.can_manage}`)
@@ -250,6 +252,10 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
         setHardwareLabels(Object.fromEntries(payload.facets.hardware.map(([id, label]) => [id, label])))
       })
       .catch(() => setModels([]))
+    api
+      .libraryModels(new URLSearchParams({ built_on: name, sort: 'updated' }))
+      .then((payload) => setBuiltOn(payload.items))
+      .catch(() => setBuiltOn([]))
   }, [name])
 
   useEffect(() => {
@@ -260,7 +266,9 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
     try {
       if (model.saved) await api.unsaveModel(model.id)
       else await api.saveModel({ repo_id: model.id, metadata: { author: model.author, local: true } })
-      setModels((current) => current?.map((item) => (item.id === model.id ? { ...item, saved: !model.saved } : item)) || null)
+      const flip = (item: LibraryModel) => (item.id === model.id ? { ...item, saved: !model.saved } : item)
+      setModels((current) => current?.map(flip) || null)
+      setBuiltOn((current) => current.map(flip))
     } catch (reason) {
       onToast(errorMessage(reason, 'Could not update saved models.'), 'error')
     }
@@ -270,6 +278,7 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
   if (!organization) return <div className="standard-page"><RowSkeletons rows={5} cells={2} label="Loading the organization" /></div>
   const tabs = [
     { id: 'models', label: 'Models', count: models?.length },
+    ...(builtOn.length ? [{ id: 'built-on', label: `Built on ${organization.display_name}`, count: builtOn.length }] : []),
     { id: 'members', label: 'Members', count: organization.members.length },
     ...(organization.can_manage ? [{ id: 'settings', label: 'Settings' }] : []),
   ]
@@ -337,6 +346,25 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
               <p>{organization.can_upload ? 'Upload the first model for this organization.' : 'Models published by this organization appear here.'}</p>
             </div>
           )
+        )}
+        {tab === 'built-on' && (
+          <>
+            <p className="org-built-on-note">
+              Quantizations, fine-tunes, and adapters that other publishers made from {organization.display_name}’s models.
+            </p>
+            <div className="model-card-grid">
+              {builtOn.map((model) => (
+                <LibraryModelRow
+                  key={model.id}
+                  model={model}
+                  onOpen={(repoId) => navigate(`/models/${repoId}`)}
+                  onUse={(item) => navigate(`/models/${item.id}?${item.apps.includes('vllm') ? 'local-app=vllm' : 'clone=true'}`)}
+                  onSave={toggleSaved}
+                  hardwareLabels={hardwareLabels}
+                />
+              ))}
+            </div>
+          </>
         )}
         {tab === 'members' && (
           <MembersTab
