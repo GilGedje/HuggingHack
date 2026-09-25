@@ -253,7 +253,7 @@ safetensors/GGUF headers with bounded sizes. Pickle-family files are only flagge
 | `OIDC_ISSUER` `OIDC_CLIENT_ID` `OIDC_CLIENT_SECRET` | empty | SSO is on when accounts are enabled and issuer + client id are set |
 | `OIDC_SCOPES` `OIDC_PROVIDER_NAME` `OIDC_DEFAULT_ROLE`(`viewer`) `OIDC_ALLOWED_GROUPS` `OIDC_GROUPS_CLAIM`(`groups`) `OIDC_USERNAME_CLAIM`(`preferred_username`) `OIDC_REDIRECT_URL` `OIDC_CA_BUNDLE` `OIDC_VERIFY_SSL`(`true`) | see config | SSO details |
 | `RUNTIME_TARGETS_JSON` / `RUNTIME_WORKERS` / `RUNTIME_API_TOKEN` | `[]` / `2` / empty | Ollama and vLLM-agent targets / pool / bearer for the runtime endpoints |
-| `APP_NAME` / `APP_VERSION` | HuggingHack / `1.2.0` | Shown in health and the UI |
+| `APP_NAME` / `APP_VERSION` | HuggingHack / `1.2.1` | Shown in health and the UI |
 
 Not in `config.py`: `FORWARDED_ALLOW_IPS` (read by uvicorn `--proxy-headers`, set it to the proxy IP, never `*`), `AWS_*`/`AWS_CA_BUNDLE` (boto3), and `VLLM_AGENT_*` (`vllm_agent.py`).
 

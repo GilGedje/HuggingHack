@@ -528,7 +528,7 @@ MODEL_STORAGE_PATH=/mnt/tank/ai/models
 # QNAP
 MODEL_STORAGE_PATH=/share/Container/models
 
-# Run as this NAS user instead of root (find the ids with `id your-nas-user`):
+# Run as the NAS user that owns the folders (find the ids with `id your-nas-user`):
 PUID=1026
 PGID=100
 ```

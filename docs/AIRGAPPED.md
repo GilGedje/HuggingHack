@@ -89,12 +89,12 @@ Settings that matter for an air-gapped install:
 | `ACCOUNTS_ENABLED` | `true` (default) | Web UI sign-in, roles, and API tokens. `false` skips sign-in on a single-user trusted network. |
 | `ALLOWED_HOSTS` | empty, or your server's names | See [Security settings](#security-settings). |
 | `HF_TOKEN` | leave empty | Only used to download from the real Hugging Face Hub. |
-| `PUID` / `PGID` | `0` / `0` (root) | The user and group the container runs as. See below. |
+| `PUID` / `PGID` | `1000` / `1000` | The user and group the container runs as. See below. |
 
-**Run as an unprivileged user.** Docker Compose runs the container as `PUID:PGID`, which
-default to `0:0` (root). To run it as an ordinary account instead, set `PUID` and `PGID` to that account's ids (`id your-user`) and
-give it the two mounted folders first, or the server cannot write its database, uploads, or
-git mirrors:
+**The container runs as an unprivileged user.** Docker Compose runs it as `PUID:PGID`, which
+default to `1000:1000`. That user must be able to write the two mounted folders, or the server
+cannot write its database, uploads, or git mirrors. Give them to it before the first start, or
+set `PUID` and `PGID` to the account that already owns them (`id your-user`):
 
 ```bash
 sudo chown -R 1000:1000 ./data /mnt/tank/ai/models   # your ids, ./data and MODEL_STORAGE_PATH
@@ -105,8 +105,10 @@ PUID=1000
 PGID=1000
 ```
 
-Do the same `chown` when switching an existing root installation over. On macOS and Windows,
-Docker Desktop maps file ownership itself, so these settings rarely matter there.
+**Upgrading an installation that ran as root.** Versions before 1.2.1 ran as root by default,
+so `./data` and the model folder belong to root. Either run the `chown` above once before
+restarting, or keep the old behaviour with `PUID=0` and `PGID=0` in `.env`. On macOS and
+Windows, Docker Desktop maps file ownership itself, so these settings rarely matter there.
 
 Find the server's LAN IP with `ipconfig getifaddr en0` (macOS), `hostname -I` (Linux), or
 `ipconfig` (Windows). Prefer a fixed IP or a DNS name so commands stay valid.

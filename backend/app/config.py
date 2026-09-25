@@ -54,7 +54,7 @@ def _optional_boolean(name: str) -> bool | None:
 @dataclass(frozen=True)
 class Settings:
     app_name: str = os.getenv("APP_NAME", "HuggingHack")
-    app_version: str = os.getenv("APP_VERSION", "1.2.0")
+    app_version: str = os.getenv("APP_VERSION", "1.2.1")
     model_storage: Path = Path(os.getenv("MODEL_STORAGE", "/models")).expanduser().resolve()
     model_storage_backend: str = os.getenv("MODEL_STORAGE_BACKEND", "filesystem").strip().lower()
     data_dir: Path = Path(os.getenv("DATA_DIR", "/data")).expanduser().resolve()
