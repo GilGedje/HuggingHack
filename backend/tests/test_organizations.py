@@ -151,8 +151,18 @@ def test_organization_admins_manage_members_and_keep_one_admin(org):
     writer, _ = login("writer")
     assert writer.put("/api/organizations/Nvidia/members/outsider", json={"role": "admin"}).status_code == 403
     assert writer.delete("/api/organizations/Nvidia/members/writer").status_code == 200  # leaving is allowed
-    # Server admins can override the safeguard.
+    # Not even a server admin can leave an organization without an admin.
+    refused = admin.delete("/api/organizations/Nvidia/members/member")
+    assert refused.status_code == 409 and "at least one admin" in refused.json()["detail"]
+    assert admin.put("/api/organizations/Nvidia/members/member", json={"role": "read"}).status_code == 409
+    assert admin.put("/api/organizations/Nvidia/members/outsider", json={"role": "admin"}).status_code == 200
     assert admin.delete("/api/organizations/Nvidia/members/member").status_code == 200
+    # The last admin left can neither step down nor leave, whoever asks.
+    outsider, _ = login("outsider")
+    assert outsider.delete("/api/organizations/Nvidia/members/outsider").status_code == 409
+    assert admin.put("/api/organizations/Nvidia/members/outsider", json={"role": "write"}).status_code == 409
+    roles = {item["username"]: item["role"] for item in admin.get("/api/organizations/Nvidia").json()["members"]}
+    assert roles["outsider"] == "admin"
 
 
 def test_deleting_the_creator_keeps_organization_repositories(org):

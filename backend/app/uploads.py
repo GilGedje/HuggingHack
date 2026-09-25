@@ -1,36 +1,43 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Iterator
 
 from .config import Settings, validate_repo_id
 from .database import VISIBILITIES, Database
 from .indexer import (
     LocalModelIndexer,
     directory_stats,
+    hidden_path,
     manifest_target,
     model_formats,
     utc_now,
 )
 from .permissions import can
-from .storage import FilesystemModelStorage, StorageRegistry
+from .storage import FilesystemModelStorage, StorageRegistry, StorageUnavailableError
 
 if TYPE_CHECKING:
     from .history import RepoHistory
 
 
+logger = logging.getLogger("hugginghack")
 SLUG_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 RESERVED_FILENAMES = {".hugginghack.json"}
 RESERVED_PARTS = {".git", ".cache", "__pycache__"}
 PART_SUFFIX = ".hugginghack-part"
 STAGING_DIRECTORY = ".hugginghack-staging"
+# Beside a change session: the files a commit replaced or deleted, kept until the
+# change is safely stored so a failure can put them back.
+BACKUP_SUFFIX = ".backup"
 SESSION_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 # A change session untouched this long is abandoned and no longer blocks a rename.
 STALE_CHANGE_SECONDS = 24 * 60 * 60
@@ -172,6 +179,7 @@ class UploadManager:
             try:
                 if json.loads(path.read_text(encoding="utf-8")).get("repo_id") == repo_id:
                     shutil.rmtree(path.with_suffix(""), ignore_errors=True)
+                    shutil.rmtree(path.with_suffix(BACKUP_SUFFIX), ignore_errors=True)
                     path.unlink(missing_ok=True)
             except (OSError, json.JSONDecodeError):
                 continue
@@ -308,7 +316,14 @@ class UploadManager:
         owner_name = organization["name"] if organization else user["username"]
         repo_id = validate_repo_id(f"{owner_name}/{name}")
         target = self._repository_root(repo_id)
-        if target.exists() or self.database.get_owned_repository(repo_id):
+        # Also a model in the library without a local folder (kept only in S3),
+        # or objects already in the bucket: an upload must never take one over.
+        if (
+            target.exists()
+            or self.database.get_owned_repository(repo_id)
+            or self.database.get_local_model(repo_id)
+            or self._bucket_has(target_storage, repo_id)
+        ):
             raise FileExistsError("That repository already exists.")
         target.mkdir(parents=True, exist_ok=False)
         timestamp = utc_now()
@@ -341,6 +356,17 @@ class UploadManager:
         except Exception:
             shutil.rmtree(target, ignore_errors=True)
             raise
+
+    @staticmethod
+    def _bucket_has(storage: FilesystemModelStorage, repo_id: str) -> bool:
+        if not storage.remote:
+            return False
+        try:
+            return storage.has_objects(repo_id)
+        except Exception as error:
+            raise StorageUnavailableError(
+                "The storage location could not be reached. Try again later."
+            ) from error
 
     def file_status(self, repo_id: str, user_id: str, file_path: str) -> dict[str, Any]:
         self._owned(repo_id, user_id)
@@ -437,6 +463,8 @@ class UploadManager:
             ]
             if not files:
                 raise ValueError("Upload at least one model or metadata file first.")
+            # Named the way the file list shows them, without .gitattributes and the like.
+            listed = [path for path in files if not hidden_path(path.relative_to(root).as_posix())]
             size, file_count, _ = directory_stats(root)
             completed = utc_now()
             target_storage = self.storages.for_manifest(self._read_manifest(root))
@@ -451,10 +479,19 @@ class UploadManager:
                 "file_count": file_count,
                 "storage_target": target_storage.id,
             }
-            (root / ".hugginghack.json").write_text(
-                json.dumps(manifest, indent=2), encoding="utf-8"
-            )
-            target_storage.sync_repository(repo_id, root)
+            manifest_path = root / ".hugginghack.json"
+            unfinished = manifest_path.read_bytes() if manifest_path.is_file() else None
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            try:
+                with self._storage_errors(
+                    target_storage, repo_id, "The upload could not be saved to object storage. Finalize it again."
+                ):
+                    target_storage.sync_repository(repo_id, root)
+            except BaseException:
+                # Still unfinished, so a rescan does not list it before it is stored.
+                if unfinished is not None:
+                    manifest_path.write_bytes(unfinished)
+                raise
             model = self.indexer.index_path(root)
             updated = self.database.update_owned_repository(
                 repo_id, status="ready", updated_at=completed
@@ -462,7 +499,7 @@ class UploadManager:
             if self.history and model:
                 self.history.record(
                     model,
-                    message or f"Upload {len(files)} file{'' if len(files) == 1 else 's'}",
+                    message or f"Upload {len(listed)} file{'' if len(listed) == 1 else 's'}",
                     author=self.database.get_user(user_id, include_secret=False),
                     description=description,
                 )
@@ -815,6 +852,7 @@ class UploadManager:
     def abort_change(self, session_id: str, user: dict[str, Any]) -> None:
         root, _ = self._session(session_id, user)
         shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(root.parent / f"{session_id}{BACKUP_SUFFIX}", ignore_errors=True)
         (root.parent / f"{session_id}.json").unlink(missing_ok=True)
 
     def commit_change(
@@ -852,37 +890,17 @@ class UploadManager:
 
         with self._write_lock:
             if local_copy:
-                for relative, source in staged.items():
-                    target = repository_root.joinpath(*PurePosixPath(relative).parts)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    if target.is_symlink():
-                        raise ValueError("Symbolic links cannot be replaced.")
-                    os.replace(source, target)
-                for relative in removed:
-                    target = repository_root.joinpath(*PurePosixPath(relative).parts)
-                    if target.is_file() and not target.is_symlink():
-                        target.unlink()
-                        parent = target.parent
-                        while parent != repository_root and not any(parent.iterdir()):
-                            parent.rmdir()
-                            parent = parent.parent
-                manifest_path = repository_root / ".hugginghack.json"
-                manifest = self._read_manifest(repository_root)
-                if manifest:
-                    size, file_count, _ = directory_stats(repository_root)
-                    manifest.update(
-                        {"total_bytes": size, "file_count": file_count, "updated_at": utc_now()}
-                    )
-                    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-                if storage.remote:
-                    storage.sync_repository(repo_id, repository_root, set(staged) | removed)
+                self._apply_local_change(root, repo_id, storage, repository_root, staged, removed)
                 updated = self.indexer.index_path(repository_root)
             else:
-                manifest = storage.repository_manifest(repo_id) or {
-                    "status": "complete",
-                    "repo_id": repo_id,
-                }
-                storage.apply_changes(repo_id, staged, removed, manifest)
+                # The staged files stay where they are, so a failure can be retried.
+                # A manifest that cannot be read fails the commit too: writing a
+                # new one over it could drop who owns the repository.
+                with self._storage_errors(storage, repo_id):
+                    manifest = storage.repository_manifest(
+                        repo_id, strict=True
+                    ) or self._replacement_manifest(repo_id)
+                    storage.apply_changes(repo_id, staged, removed, manifest)
                 updated = self._reindex_remote(model, storage)
             self.abort_change(session_id, user)
         if self.database.get_owned_repository(repo_id):
@@ -898,13 +916,125 @@ class UploadManager:
             )
         return {"model": updated, "commit": commit}
 
+    def _replacement_manifest(self, repo_id: str) -> dict[str, Any]:
+        """A manifest for a bucket repository that has none, keeping an upload's
+        owner and organization so the next scan still lists it for them. Its
+        visibility lives in the database and is unchanged."""
+        manifest: dict[str, Any] = {"status": "complete", "repo_id": repo_id}
+        owned = self.database.get_owned_repository(repo_id)
+        if owned:
+            manifest |= {
+                "source": "user-upload",
+                "owner_id": owned["owner_id"],
+                "organization_id": owned.get("organization_id"),
+            }
+        return manifest
+
+    @staticmethod
+    @contextmanager
+    def _storage_errors(
+        storage: FilesystemModelStorage,
+        repo_id: str,
+        message: str = "The change could not be saved to object storage. Nothing was changed; try again.",
+    ) -> Iterator[None]:
+        """Report a bucket failure without its details, which can name the bucket,
+        endpoint, or account; they go to the server log instead."""
+        try:
+            yield
+        except StorageUnavailableError:
+            raise
+        except Exception as error:
+            # Our own checks raise ValueError with a message meant for people; a
+            # few botocore errors are ValueErrors too, and are wrapped like the rest.
+            ours = isinstance(error, ValueError) and not type(error).__module__.startswith(("botocore", "boto3"))
+            if ours or not storage.remote:
+                raise
+            logger.error(
+                "Storing a change to %s in %s failed: %s",
+                repo_id, storage.id, storage.redact(str(error) or error.__class__.__name__),
+            )
+            raise StorageUnavailableError(message) from error
+
+    def _apply_local_change(
+        self,
+        session_root: Path,
+        repo_id: str,
+        storage: FilesystemModelStorage,
+        repository_root: Path,
+        staged: dict[str, Path],
+        removed: set[str],
+    ) -> None:
+        """Move a change into the repository folder and store it in its bucket.
+
+        Files it replaces or deletes wait in a backup folder until the bucket has
+        the change. If anything fails, every file goes back where it was, including
+        the staged ones, so the same change session can be committed again.
+        """
+        backup = session_root.with_name(f"{session_root.name}{BACKUP_SUFFIX}")
+        manifest_path = repository_root / ".hugginghack.json"
+        original_manifest = manifest_path.read_bytes() if manifest_path.is_file() else None
+        moved: list[tuple[Path, Path]] = []
+
+        def move(source: Path, destination: Path) -> None:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(source, destination)
+            moved.append((source, destination))
+
+        try:
+            for relative, source in staged.items():
+                parts = PurePosixPath(relative).parts
+                target = repository_root.joinpath(*parts)
+                if target.is_symlink():
+                    raise ValueError("Symbolic links cannot be replaced.")
+                if target.is_dir():
+                    raise ValueError(f"{relative} is a folder in this repository.")
+                if target.exists():
+                    move(target, backup.joinpath(*parts))
+                move(source, target)
+            for relative in removed:
+                parts = PurePosixPath(relative).parts
+                target = repository_root.joinpath(*parts)
+                if target.is_file() and not target.is_symlink():
+                    move(target, backup.joinpath(*parts))
+            manifest = self._read_manifest(repository_root)
+            if manifest:
+                size, file_count, _ = directory_stats(repository_root)
+                manifest.update(
+                    {"total_bytes": size, "file_count": file_count, "updated_at": utc_now()}
+                )
+                manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+            if storage.remote:
+                with self._storage_errors(storage, repo_id):
+                    storage.sync_repository(repo_id, repository_root, set(staged) | removed)
+        except BaseException:
+            for source, destination in reversed(moved):
+                source.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(destination, source)
+            if original_manifest is None:
+                manifest_path.unlink(missing_ok=True)
+            else:
+                manifest_path.write_bytes(original_manifest)
+            # Folders made for new files.
+            for relative in staged:
+                self._remove_empty_parents(repository_root, PurePosixPath(relative))
+            shutil.rmtree(backup, ignore_errors=True)
+            raise
+        shutil.rmtree(backup, ignore_errors=True)
+        for relative in removed:
+            self._remove_empty_parents(repository_root, PurePosixPath(relative))
+
+    @staticmethod
+    def _remove_empty_parents(root: Path, relative: PurePosixPath) -> None:
+        parent = root.joinpath(*relative.parts).parent
+        while parent != root and parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
+
     def _reindex_remote(
         self, model: dict[str, Any], storage: FilesystemModelStorage
     ) -> dict[str, Any] | None:
         entries = storage.list_repository_entries(model["repo_id"]) or []
-        visible = [
-            entry for entry in entries if not PurePosixPath(entry["path"]).name.startswith(".")
-        ]
+        visible = [entry for entry in entries if not hidden_path(entry["path"])]
         return self.indexer.index_remote(
             {
                 **model,

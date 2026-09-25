@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -15,16 +16,30 @@ from .config import Settings, repository_path, validate_repo_id
 from .indexer import (
     LEGACY_S3_TARGET_ID,
     LOCAL_TARGET_ID,
+    PART_SUFFIXES,
     UNSAFE_EXTENSIONS,
+    hidden_path,
     manifest_target,
     model_formats,
     repository_facts,
 )
 
 
+logger = logging.getLogger("hugginghack")
 MANIFEST_NAME = ".hugginghack.json"
-PART_SUFFIXES = (".hugginghack-part", ".hugginghack-s3-part")
 TARGET_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+
+
+class StorageUnavailableError(Exception):
+    """Object storage failed or was unreachable. The message is safe to show; the
+    underlying error, which may name the bucket or endpoint, is only logged."""
+
+
+def _missing_object(error: Exception) -> bool:
+    """Whether an S3 error says the object does not exist, rather than that the
+    request failed."""
+    details = (getattr(error, "response", None) or {}).get("Error") or {}
+    return str(details.get("Code") or "") in {"NoSuchKey", "404", "NotFound"}
 
 
 @dataclass(frozen=True)
@@ -240,7 +255,7 @@ class FilesystemModelStorage:
     def discover_repositories(self) -> list[dict[str, Any]]:
         return []
 
-    def repository_manifest(self, repo_id: str) -> dict[str, Any] | None:
+    def repository_manifest(self, repo_id: str, *, strict: bool = False) -> dict[str, Any] | None:
         return None
 
     def list_repository_files(
@@ -457,10 +472,12 @@ class S3ModelStorage(FilesystemModelStorage):
     def sync_repository(
         self, repo_id: str, root: Path, changed: set[str] | None = None
     ) -> str:
-        """Upload a complete repository, publishing its manifest last.
+        """Upload a complete repository, publishing its manifest after its files.
 
         With `changed`, only those paths are uploaded; other objects keep their
         timestamps so commit history does not see untouched files as modified.
+        The manifest is never removed first, so a failed sync leaves the previous
+        version listed; objects no longer in the folder are removed last.
         """
         validated = validate_repo_id(repo_id)
         expected_root = repository_path(validated, self.settings.model_storage)
@@ -506,7 +523,6 @@ class S3ModelStorage(FilesystemModelStorage):
         with self._lock:
             repo_prefix = self._repo_prefix(validated)
             manifest_key = self._manifest_key(validated)
-            self._delete_keys([manifest_key])
             local_files = self._local_files(root)
             intended_keys = {f"{repo_prefix}{relative}" for _, relative in local_files}
             for path, relative in local_files:
@@ -520,14 +536,22 @@ class S3ModelStorage(FilesystemModelStorage):
                     f"{repo_prefix}{relative}",
                     **self._upload_options(),
                 )
-            existing_keys = {item["Key"] for item in self._objects(repo_prefix)}
-            self._delete_keys(existing_keys - intended_keys)
             self.client.upload_file(
                 str(manifest_path),
                 self.bucket,
                 manifest_key,
                 **self._upload_options(),
             )
+            # The new version is published; leftovers only cost space, and the
+            # next sync of this repository removes whatever this one could not.
+            try:
+                existing_keys = {item["Key"] for item in self._objects(repo_prefix)}
+                self._delete_keys(existing_keys - intended_keys)
+            except Exception as error:
+                logger.warning(
+                    "Could not remove old objects of %s from %s: %s",
+                    validated, self.id, self.redact(str(error) or error.__class__.__name__),
+                )
         return self.remote_uri(validated)
 
     def apply_changes(
@@ -537,17 +561,18 @@ class S3ModelStorage(FilesystemModelStorage):
         deletions: set[str],
         manifest: dict[str, Any],
     ) -> None:
-        """Change a repository that has no local cache, directly in the bucket."""
+        """Change a repository that has no local cache, directly in the bucket.
+
+        Files are uploaded, then the manifest, then deletions made; the manifest is
+        never removed, so a failure part-way leaves the repository listed and the
+        same change can simply be applied again.
+        """
         validated = validate_repo_id(repo_id)
         repo_prefix = self._repo_prefix(validated)
         with self._lock:
-            self._delete_keys([self._manifest_key(validated)])
             for relative, path in files.items():
                 key = f"{repo_prefix}{_safe_relative_key(relative).as_posix()}"
                 self.client.upload_file(str(path), self.bucket, key, **self._upload_options())
-            self._delete_keys(
-                f"{repo_prefix}{_safe_relative_key(relative).as_posix()}" for relative in deletions
-            )
             manifest = {
                 **manifest,
                 "storage_backend": "s3",
@@ -559,13 +584,20 @@ class S3ModelStorage(FilesystemModelStorage):
                 Key=self._manifest_key(validated),
                 Body=json.dumps(manifest, indent=2).encode("utf-8"),
             )
+            self._delete_keys(
+                f"{repo_prefix}{_safe_relative_key(relative).as_posix()}" for relative in deletions
+            )
 
     def delete_repository(self, repo_id: str) -> None:
         with self._lock:
             keys = [item["Key"] for item in self._objects(self._repo_prefix(repo_id))]
             self._delete_keys(keys)
 
-    def repository_manifest(self, repo_id: str) -> dict[str, Any] | None:
+    def repository_manifest(self, repo_id: str, *, strict: bool = False) -> dict[str, Any] | None:
+        """The repository's manifest, or None without one. Normally any failure also
+        reads as None; with `strict`, only a manifest that does not exist does, and
+        an unreachable bucket or unreadable manifest raises, for callers that would
+        otherwise write a new manifest over the real one."""
         try:
             response = self.client.get_object(
                 Bucket=self.bucket,
@@ -576,10 +608,21 @@ class S3ModelStorage(FilesystemModelStorage):
             close = getattr(body, "close", None)
             if close:
                 close()
-            manifest = json.loads(payload.decode("utf-8"))
-            return manifest if isinstance(manifest, dict) else None
-        except Exception:
+        except Exception as error:
+            if strict and not _missing_object(error):
+                raise
             return None
+        try:
+            manifest = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            if strict:
+                raise ValueError("The repository's manifest in object storage is unreadable.") from error
+            return None
+        if not isinstance(manifest, dict):
+            if strict:
+                raise ValueError("The repository's manifest in object storage is unreadable.")
+            return None
+        return manifest
 
     def discover_repositories(self) -> list[dict[str, Any]]:
         root_prefix = f"{self._prefix()}/" if self._prefix() else ""
@@ -634,7 +677,11 @@ class S3ModelStorage(FilesystemModelStorage):
                     "repo_id": repo_id,
                     "relative_path": repo_id,
                     "size_bytes": int(manifest.get("total_bytes") or 0),
-                    "file_count": int(manifest.get("file_count") or 0),
+                    # Counted from the objects, as the file list shows them, so a
+                    # manifest written before hidden files were left out is corrected.
+                    "file_count": sum(
+                        1 for entry in repository_entries.get(repo_id, []) if not hidden_path(entry["path"])
+                    ),
                     "modified_at": (
                         manifest.get("uploaded_at")
                         or manifest.get("downloaded_at")

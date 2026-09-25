@@ -86,6 +86,7 @@ Settings that matter for an air-gapped install:
 | `PUBLIC_URL` | `http://<server-LAN-IP>:7860` | **Set this.** It is the address shown in every copy-paste command. Without it, commands use the address in your browser, which is wrong when you browse via `localhost`. |
 | `HUB_API_ENABLED` | `true` (default) | Lets other machines pull without a token. Set `false` to require a personal API token for every pull. |
 | `ACCOUNTS_ENABLED` | `true` (default) | Web UI sign-in, roles, and API tokens. `false` skips sign-in on a single-user trusted network. |
+| `ALLOWED_HOSTS` | empty, or your server's names | See [Security settings](#security-settings). |
 | `HF_TOKEN` | leave empty | Only used to download from the real Hugging Face Hub. |
 
 Find the server's LAN IP with `ipconfig getifaddr en0` (macOS), `hostname -I` (Linux), or
@@ -122,11 +123,21 @@ Administrators open **Admin** in the top bar:
   - **Viewer**: browse, save, and pull models; personal API tokens.
   - **Member**: a viewer who can also upload and change their own repositories, and rescan
     storage.
-  - **Administrator**: everything, including storage, runtimes, and accounts.
+  - **Administrator**: everything, including storage, runtimes, and accounts. Administrators
+    see every repository, private ones included, in the web UI and when pulling with their
+    token.
 - **Storage**, **Runtimes**, and **Server** (the `.env` configuration, secrets hidden).
 
 Everyone has **Account** (the gear icon, or click your name): profile, password and active
 sessions, preferences (theme, default sort, default upload location), and **API tokens**.
+
+Changing your password signs out your other sessions and revokes all your API tokens, since
+either may be what leaked; create new tokens afterwards. A password reset by an administrator
+does the same, including the session in use. Nobody can delete an account that is the only
+admin of an organization, and an organization's last admin can neither step down nor leave:
+make another member an admin first. Only admins who can act count here: an admin role held
+by a disabled account or a Viewer does not, and a server administrator can always appoint a
+new admin to an organization left without one.
 
 ## 5b. Organizations
 
@@ -401,7 +412,38 @@ Set `HF_ENDPOINT` before Python starts; it is read at import time.
   cannot manage accounts or tokens, and read tokens cannot change anything.
 - Nothing can be pushed or modified through the pull endpoints or git.
 - Model card images inside a model folder are shown; images hosted on the internet are
-  skipped, so pages never try to reach outside the network.
+  skipped, so pages never try to reach outside the network. A Content Security Policy
+  stops the web UI from loading scripts, styles, or images from anywhere else.
+- Web pages from other sites cannot change anything here: a write whose `Origin` names
+  another site is refused, even with `ACCOUNTS_ENABLED=false`. git, the `hf` CLI, and
+  scripts send no `Origin` and are unaffected.
+- After repeated wrong passwords, sign-in pauses for a few minutes: 8 failures for one
+  account from one address, or 30 across all accounts from one address. No account is
+  ever locked for everyone.
+
+### Security settings
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `ALLOWED_HOSTS` | empty (any name) | Comma-separated host names the server answers to, such as `hugginghack.example.internal,192.168.0.10`. Requests for any other `Host` get `400 Invalid host header`, which blocks DNS rebinding. `localhost` and `127.0.0.1` always work, so the container health check keeps passing. List every name and IP that GPU hosts use in `HF_ENDPOINT` and git clone URLs as well, or their pulls fail with 400. Behind a proxy, list the name people browse to; the proxy must pass it on as `Host`. |
+| `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` headers are believed. See below. |
+| `API_DOCS_ENABLED` | `false` | `true` serves the interactive API reference at `/api/docs` and the schema at `/openapi.json`. |
+| `DATABASE_POOL_SIZE` | `10` | PostgreSQL connections kept open and reused (1-100). Keep it below the database's `max_connections`. Not used with SQLite. |
+| `CORS_ORIGINS` | empty | Other web origins allowed to call the API with users' cookies, and to post to it. |
+
+### Behind a reverse proxy
+
+A reverse proxy (nginx, Traefik, Caddy) in front of HuggingHack must pass the original
+`Host` header (or `X-Forwarded-Host`) and `X-Forwarded-For`/`X-Forwarded-Proto`. Then:
+
+- Set `FORWARDED_ALLOW_IPS` to the proxy's IP address, as the container sees it (for
+  example `172.18.0.1` for a proxy on the Docker host). Only then does HuggingHack see each
+  browser's own address, which the sign-in limits and the session list rely on; otherwise
+  every sign-in appears to come from the proxy and shares one limit.
+- Never set `FORWARDED_ALLOW_IPS=*` when the port can also be reached directly: any client
+  could then claim any address.
+- Set `PUBLIC_URL` to the address people browse to, for example
+  `https://hugginghack.example.internal`, and `ALLOWED_HOSTS` to its host name.
 
 ## 9. Troubleshooting
 
@@ -421,6 +463,10 @@ Set `HF_ENDPOINT` before Python starts; it is read at import time.
 | A bucket shows **Offline** on the Storage page | Check its `endpoint_url`, the credential variables it names, and the bucket permissions. Its models stay listed until it reconnects. |
 | Storage page warns that a model exists in two locations | Delete one copy; the earlier storage target in the list is the one being served. |
 | Upload panel says "Choose the same folder again" | The page was reloaded mid-upload. Pick the same folder; already-sent bytes are skipped. |
+| `Requests from other sites are not allowed` | The browser's address differs from how the server is reached, typically behind a proxy that rewrites `Host`. Pass the original `Host` or `X-Forwarded-Host`, or set `PUBLIC_URL` to the address in the browser. |
+| `Invalid host header` | The name in the browser's address bar is not in `ALLOWED_HOSTS`. Add it and restart. |
+| Everyone is told there were too many sign-in attempts | Behind a proxy, `FORWARDED_ALLOW_IPS` is not set, so all sign-ins share the proxy's address. Set it to the proxy's IP. |
+| `/api/docs` returns 404 | The API reference is off by default. Set `API_DOCS_ENABLED=true` and restart. |
 
 ## 10. Limitations
 

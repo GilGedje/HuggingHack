@@ -8,7 +8,7 @@ import re
 import secrets
 import threading
 import uuid
-from collections import defaultdict, deque
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -25,6 +25,13 @@ TOUCH_INTERVAL_SECONDS = 300
 SCRYPT_N = 2**14
 SCRYPT_R = 8
 SCRYPT_P = 1
+# Failed sign-ins remembered per window: a few per account from one address, and
+# more across all accounts, so trying one password on many names is slowed too.
+# Nothing locks an account by name alone, which anyone could use to lock others out.
+ATTEMPT_WINDOW_SECONDS = 300
+MAX_FAILURES_PER_ACCOUNT = 8
+MAX_FAILURES_PER_ADDRESS = 30
+MAX_TRACKED_KEYS = 10_000
 
 
 def utc_now() -> datetime:
@@ -100,7 +107,7 @@ class AuthService:
     def __init__(self, settings: Settings, database: Database):
         self.settings = settings
         self.database = database
-        self._attempts: dict[str, deque[float]] = defaultdict(deque)
+        self._attempts: dict[str, deque[float]] = {}
         self._attempt_lock = threading.Lock()
         self._setup_lock = threading.Lock()
         self._touched: dict[str, float] = {}
@@ -160,19 +167,23 @@ class AuthService:
                 raise ValueError("The owner account already exists.")
             return self.create_user(username, display_name, password, role="admin")
 
-    def authenticate(self, username: str, password: str, client_key: str) -> dict[str, Any] | None:
-        self._check_rate_limit(client_key)
+    def authenticate(self, username: str, password: str, client: str) -> dict[str, Any] | None:
+        """The account these credentials sign in to, or None. `client` is the
+        caller's address; failures are counted per address and per account."""
+        keys = (f"{client}:{username.strip().lower()}", f"{client}:*")
+        self._check_rate_limit(*keys)
         try:
             normalized = normalize_username(username)
         except ValueError:
-            self._record_failure(client_key)
+            self._record_failure(*keys)
             return None
         user = self.database.get_user_by_username(normalized)
         if not user or not verify_password(password, user["password_hash"]):
-            self._record_failure(client_key)
+            self._record_failure(*keys)
             return None
         with self._attempt_lock:
-            self._attempts.pop(client_key, None)
+            # The address keeps its count, so a success cannot reset a spray.
+            self._attempts.pop(keys[0], None)
         if user.get("disabled"):
             raise PermissionError("This account is disabled. Ask an administrator to enable it.")
         return user
@@ -365,7 +376,9 @@ class AuthService:
         current_password: str,
         new_password: str,
         raw_session_token: str,
-    ) -> None:
+    ) -> int:
+        """Change a password, signing out every other session and revoking every
+        API token, since either may be what leaked. Returns the tokens revoked."""
         user = self.database.get_user(user_id)
         if not user or not verify_password(current_password, user["password_hash"]):
             raise ValueError("Current password is incorrect.")
@@ -373,6 +386,7 @@ class AuthService:
         self.database.update_user_password(user_id, replacement, utc_iso())
         keep_hash = hashlib.sha256(raw_session_token.encode("utf-8")).hexdigest()
         self.database.delete_other_sessions(user_id, keep_hash)
+        return self.database.delete_user_tokens(user_id)
 
     def verify_csrf(self, session: dict[str, Any], token: str | None) -> bool:
         if not self.settings.accounts_enabled:
@@ -381,15 +395,43 @@ class AuthService:
             str(session.get("csrf_token") or ""), token
         )
 
-    def _check_rate_limit(self, key: str) -> None:
-        cutoff = utc_now().timestamp() - 300
+    def _recent(self, key: str, cutoff: float) -> int:
+        """Failures for a key since the cutoff, forgetting older ones. Call with the lock."""
+        attempts = self._attempts.get(key)
+        if attempts is None:
+            return 0
+        while attempts and attempts[0] < cutoff:
+            attempts.popleft()
+        if not attempts:
+            del self._attempts[key]
+        return len(attempts)
+
+    def _check_rate_limit(self, account_key: str, address_key: str) -> None:
+        cutoff = utc_now().timestamp() - ATTEMPT_WINDOW_SECONDS
         with self._attempt_lock:
-            attempts = self._attempts[key]
-            while attempts and attempts[0] < cutoff:
-                attempts.popleft()
-            if len(attempts) >= 8:
+            if (
+                self._recent(account_key, cutoff) >= MAX_FAILURES_PER_ACCOUNT
+                or self._recent(address_key, cutoff) >= MAX_FAILURES_PER_ADDRESS
+            ):
                 raise ValueError("Too many sign-in attempts. Try again in a few minutes.")
 
-    def _record_failure(self, key: str) -> None:
+    def _record_failure(self, *keys: str) -> None:
+        now = utc_now().timestamp()
         with self._attempt_lock:
-            self._attempts[key].append(utc_now().timestamp())
+            if len(self._attempts) + len(keys) > MAX_TRACKED_KEYS:
+                self._prune(now - ATTEMPT_WINDOW_SECONDS)
+            for key in keys:
+                self._attempts.setdefault(key, deque()).append(now)
+                # Only the newest failures matter within the window.
+                if len(self._attempts[key]) > MAX_FAILURES_PER_ADDRESS:
+                    self._attempts[key].popleft()
+
+    def _prune(self, cutoff: float) -> None:
+        """Drop expired entries; if too many are still recent, keep only the newest
+        half, so memory stays bounded however many addresses and names are tried."""
+        for key in list(self._attempts):
+            self._recent(key, cutoff)
+        if len(self._attempts) > MAX_TRACKED_KEYS // 2:
+            newest = sorted(self._attempts, key=lambda key: self._attempts[key][-1], reverse=True)
+            for key in newest[MAX_TRACKED_KEYS // 2 :]:
+                del self._attempts[key]

@@ -38,7 +38,7 @@ ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
     "admin": frozenset(CAPABILITIES),
 }
 ROLE_DESCRIPTIONS = {
-    "admin": "Full control of the server, storage, runtimes, and accounts.",
+    "admin": "Full control of the server, storage, runtimes, and accounts; sees every repository, private ones included.",
     "member": "Uploads and maintains their own models.",
     "viewer": "Read-only: browses, saves, and pulls models, including shared uploads.",
 }

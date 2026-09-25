@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from botocore.exceptions import ClientError
 
 from app.auth import AuthService, verify_password
 from app.catalog import (
@@ -101,12 +102,12 @@ class FakeS3Client:
 
     def head_object(self, *, Bucket: str, Key: str):
         if Key not in self.objects:
-            raise KeyError(Key)
+            raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
         return {"ContentLength": len(self.objects[Key])}
 
     def get_object(self, *, Bucket: str, Key: str, Range: str | None = None):
         if Key not in self.objects:
-            raise KeyError(Key)
+            raise ClientError({"Error": {"Code": "NoSuchKey", "Message": "The specified key does not exist."}}, "GetObject")
         payload = self.objects[Key]
         if Range:
             start, end = (int(value) for value in Range.removeprefix("bytes=").split("-"))
@@ -578,7 +579,8 @@ def test_chunked_upload_is_confined_owned_and_indexed(tmp_path: Path):
     manifest = json.loads(
         (storage / repository["repo_id"] / ".hugginghack.json").read_text(encoding="utf-8")
     )
-    assert manifest["file_count"] == 3
+    # config.json and empty.marker; the manifest itself is not counted.
+    assert manifest["file_count"] == 2
     indexed_model = database.get_local_model(repository["repo_id"])
     assert indexed_model is not None
     assert indexed_model["storage_backend"] == "s3"

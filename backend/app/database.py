@@ -9,12 +9,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from .permissions import ROLE_CAPABILITIES
+
 try:
     import psycopg
     from psycopg.rows import dict_row
 except ImportError:  # SQLite remains usable when the optional adapter is absent.
     psycopg = None
     dict_row = None
+
+try:
+    from psycopg_pool import ConnectionPool
+except ImportError:
+    ConnectionPool = None
 
 
 if psycopg is None:
@@ -72,15 +79,20 @@ def _postgres_query(query: str, parameters: object = ()) -> str:
 
 
 class _PostgresConnection:
-    def __init__(self, connection: Any):
-        self._connection = connection
+    def __init__(self, lease: Any):
+        # The pool's connection() context: entering it borrows a connection.
+        self._lease = lease
+        self._connection: Any = None
 
     def __enter__(self) -> _PostgresConnection:
-        self._connection.__enter__()
+        self._connection = self._lease.__enter__()
         return self
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> object:
-        return self._connection.__exit__(exc_type, exc_value, traceback)
+        try:
+            return self._lease.__exit__(exc_type, exc_value, traceback)
+        finally:
+            self._connection = None
 
     def execute(
         self,
@@ -175,8 +187,15 @@ OWNED_REPOSITORY_FIELDS = (
     "id", "owner_id", "repo_id", "description", "visibility", "status",
     "created_at", "updated_at", "organization_id",
 )
+# An organization admin acts as one only while their account is enabled and their
+# server role may create repositories; a Viewer's organization roles only read
+# (see effective_org_role). A WHERE fragment over `users`.
+ACTING_ORG_ADMIN = "users.disabled = 0 AND users.role IN ({})".format(
+    ", ".join(f"'{role}'" for role, capabilities in ROLE_CAPABILITIES.items() if "repos.create" in capabilities)
+)
 # Who may see an uploaded repository, as a WHERE fragment over `owned_repositories`
-# that takes the viewing user's id twice. Models that are not uploads are public.
+# that takes the viewing user's id three times. Models that are not uploads are
+# public, and server administrators see every repository, as they manage them all.
 VISIBLE_TO_USER = """(
                     owned_repositories.id IS NULL
                     OR owned_repositories.visibility = 'public'
@@ -188,11 +207,15 @@ VISIBLE_TO_USER = """(
                           AND (owned_repositories.visibility = 'organization'
                                OR role IN ('admin', 'write'))
                     )
+                    OR EXISTS (
+                        SELECT 1 FROM users
+                        WHERE users.id = ? AND users.role = 'admin' AND users.disabled = 0
+                    )
                 )"""
 
 
 class Database:
-    def __init__(self, target: Path | str):
+    def __init__(self, target: Path | str, pool_size: int = 10):
         value = str(target).strip()
         self.backend = (
             "postgresql"
@@ -202,15 +225,42 @@ class Database:
         self.path = Path(target) if self.backend == "sqlite" else None
         self._database_url = value if self.backend == "postgresql" else None
         self._write_lock = threading.RLock()
+        self._pool_size = max(1, pool_size)
+        self._pool: Any = None
+        self._pool_lock = threading.Lock()
+
+    def _connection_pool(self) -> Any:
+        """PostgreSQL connections, opened on first use and reused afterwards."""
+        with self._pool_lock:
+            if self._pool is None:
+                if psycopg is None or dict_row is None or ConnectionPool is None:
+                    raise RuntimeError(
+                        "PostgreSQL support requires the 'psycopg[binary,pool]' dependency."
+                    )
+                self._pool = ConnectionPool(
+                    self._database_url,
+                    min_size=1,
+                    max_size=self._pool_size,
+                    kwargs={"row_factory": dict_row},
+                    # A connection the server dropped (a restart) is replaced, not handed out.
+                    check=ConnectionPool.check_connection,
+                    name="hugginghack",
+                    open=True,
+                )
+            return self._pool
+
+    def close(self) -> None:
+        """Close pooled PostgreSQL connections; the next query opens a new pool."""
+        with self._pool_lock:
+            pool, self._pool = self._pool, None
+        if pool is not None:
+            pool.close()
 
     def connect(self) -> sqlite3.Connection | _PostgresConnection:
         if self.backend == "postgresql":
-            if psycopg is None or dict_row is None:
-                raise RuntimeError(
-                    "PostgreSQL support requires the 'psycopg[binary]' dependency."
-                )
-            connection = psycopg.connect(self._database_url, row_factory=dict_row)
-            return _PostgresConnection(connection)
+            # Leaving the block commits, or rolls back after an exception, and
+            # returns the connection to the pool.
+            return _PostgresConnection(self._connection_pool().connection())
         assert self.path is not None
         connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
@@ -1121,9 +1171,11 @@ class Database:
             )
             return bool(getattr(result, "rowcount", 1))
 
-    def delete_user_tokens(self, user_id: str) -> None:
+    def delete_user_tokens(self, user_id: str) -> int:
+        """Revoke every API token of a user; returns how many there were."""
         with self._write_lock, self.connect() as connection:
-            connection.execute("DELETE FROM api_tokens WHERE user_id = ?", (user_id,))
+            cursor = connection.execute("DELETE FROM api_tokens WHERE user_id = ?", (user_id,))
+        return max(0, int(cursor.rowcount or 0))
 
     def user_activity(self, user_ids: list[str] | None = None) -> dict[str, dict[str, int]]:
         """Counts shown next to each account on the admin page, optionally only
@@ -1475,7 +1527,7 @@ class Database:
     def list_visible_local_models(
         self, user_id: str, query: str = ""
     ) -> list[dict[str, Any]]:
-        parameters: list[Any] = [user_id, user_id]
+        parameters: list[Any] = [user_id, user_id, user_id]
         query_clause = ""
         if query:
             query_clause = (
@@ -1514,7 +1566,7 @@ class Database:
                 WHERE local_models.repo_id = ?
                   AND """ + VISIBLE_TO_USER + """
                 """,
-                (repo_id, user_id, user_id),
+                (repo_id, user_id, user_id, user_id),
             ).fetchone()
         return self._decode_row(row)
 
@@ -2341,7 +2393,7 @@ class Database:
                 FROM organizations
                 ORDER BY LOWER(organizations.name)
                 """,
-                (user_id, user_id, user_id),
+                (user_id, user_id, user_id, user_id),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -2473,30 +2525,45 @@ class Database:
         return row["role"] if row else None
 
     def _organization_admins(self, connection: Any, organization_id: str) -> int:
+        """Admins who can act as one; see ACTING_ORG_ADMIN."""
         row = connection.execute(
             "SELECT COUNT(*) AS count FROM organization_members "
-            "WHERE organization_id = ? AND role = 'admin'",
+            "JOIN users ON users.id = organization_members.user_id "
+            "WHERE organization_members.organization_id = ? AND organization_members.role = 'admin' "
+            f"AND {ACTING_ORG_ADMIN}",
             (organization_id,),
         ).fetchone()
         return int(row["count"])
 
+    def _membership(self, connection: Any, organization_id: str, user_id: str) -> Any:
+        """A member's role, and whether they act as an admin (1) or not (0)."""
+        return connection.execute(
+            "SELECT organization_members.role, "
+            f"CASE WHEN organization_members.role = 'admin' AND {ACTING_ORG_ADMIN} "
+            "THEN 1 ELSE 0 END AS acting_admin "
+            "FROM organization_members JOIN users ON users.id = organization_members.user_id "
+            "WHERE organization_members.organization_id = ? AND organization_members.user_id = ?",
+            (organization_id, user_id),
+        ).fetchone()
+
     def set_organization_member(
         self, organization_id: str, user_id: str, role: str, created_at: str, *, force: bool = False
     ) -> None:
-        """Add or change a member; the last organization admin stays unless `force`."""
+        """Add or change a member; the last acting organization admin stays unless
+        `force`. An admin row held by a disabled account or a Viewer does not count,
+        so such an organization can always be given a new admin."""
         with self._write_lock, self.connect() as connection:
-            current = connection.execute(
-                "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ?",
-                (organization_id, user_id),
-            ).fetchone()
+            current = self._membership(connection, organization_id, user_id)
             if (
                 current
-                and current["role"] == "admin"
+                and current["acting_admin"]
                 and role != "admin"
                 and not force
                 and self._organization_admins(connection, organization_id) <= 1
             ):
-                raise ValueError("An organization needs at least one admin.")
+                raise ValueError(
+                    "An organization needs at least one admin. Make another member an admin first."
+                )
             if current:
                 connection.execute(
                     "UPDATE organization_members SET role = ? "
@@ -2514,18 +2581,17 @@ class Database:
         self, organization_id: str, user_id: str, *, force: bool = False
     ) -> bool:
         with self._write_lock, self.connect() as connection:
-            current = connection.execute(
-                "SELECT role FROM organization_members WHERE organization_id = ? AND user_id = ?",
-                (organization_id, user_id),
-            ).fetchone()
+            current = self._membership(connection, organization_id, user_id)
             if not current:
                 return False
             if (
-                current["role"] == "admin"
+                current["acting_admin"]
                 and not force
                 and self._organization_admins(connection, organization_id) <= 1
             ):
-                raise ValueError("An organization needs at least one admin.")
+                raise ValueError(
+                    "An organization needs at least one admin. Make another member an admin first."
+                )
             connection.execute(
                 "DELETE FROM organization_members WHERE organization_id = ? AND user_id = ?",
                 (organization_id, user_id),
@@ -2546,6 +2612,26 @@ class Database:
                 (user_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def organizations_only_administered_by(self, user_id: str) -> list[str]:
+        """Organizations in which this user is the only admin who can act as one."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT organizations.name FROM organization_members
+                JOIN organizations ON organizations.id = organization_members.organization_id
+                JOIN users ON users.id = organization_members.user_id
+                WHERE organization_members.user_id = ? AND organization_members.role = 'admin'
+                  AND {ACTING_ORG_ADMIN}
+                  AND (SELECT COUNT(*) FROM organization_members AS others
+                       JOIN users ON users.id = others.user_id
+                       WHERE others.organization_id = organization_members.organization_id
+                         AND others.role = 'admin' AND {ACTING_ORG_ADMIN}) = 1
+                ORDER BY LOWER(organizations.name)
+                """,
+                (user_id,),
+            ).fetchall()
+        return [row["name"] for row in rows]
 
     def reassign_organization_repositories(self, from_user: str, to_user: str) -> int:
         """Keep an organization's repositories when the account that created them is deleted."""

@@ -18,7 +18,8 @@ from typing import Any, Iterator
 
 from .config import Settings, validate_repo_id
 from .database import Database
-from .storage import PART_SUFFIXES, FilesystemModelStorage, StorageRegistry
+from .indexer import hidden_path
+from .storage import FilesystemModelStorage, StorageRegistry
 
 
 STREAM_CHUNK_BYTES = 1024 * 1024
@@ -91,13 +92,7 @@ def hub_date(value: Any) -> str | None:
     return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
-def _hidden(relative: str) -> bool:
-    parts = PurePosixPath(relative).parts
-    return (
-        not parts
-        or any(part.startswith(".") or part == "__pycache__" for part in parts)
-        or any(parts[-1].endswith(suffix) for suffix in PART_SUFFIXES)
-    )
+_hidden = hidden_path
 
 
 def local_entries(root: Path) -> list[RepoEntry]:

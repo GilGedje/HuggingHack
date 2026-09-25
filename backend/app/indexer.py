@@ -5,7 +5,7 @@ import os
 import re
 import struct
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 from .config import Settings
@@ -38,6 +38,8 @@ FORMAT_EXTENSIONS = {
     ".h5": "tensorflow",
     ".msgpack": "flax",
 }
+# Unfinished upload and S3 download parts.
+PART_SUFFIXES = (".hugginghack-part", ".hugginghack-s3-part")
 GGUF_SHARD_PATTERN = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
 SAFETENSORS_MAX_HEADER_BYTES = 100_000_000
 # Weight number formats. BF16, FP8 and NVFP4 are the ones the model filters offer.
@@ -58,7 +60,22 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def hidden_path(relative: str) -> bool:
+    """Whether a repository path is left out of file lists, pulls, and file counts:
+    anything under a folder or named with a leading dot (.gitattributes, the
+    .hugginghack.json manifest), __pycache__, and unfinished parts."""
+    parts = PurePosixPath(relative).parts
+    return (
+        not parts
+        or any(part.startswith(".") or part == "__pycache__" for part in parts)
+        or any(parts[-1].endswith(suffix) for suffix in PART_SUFFIXES)
+    )
+
+
 def directory_stats(path: Path, include_cache: bool = False) -> tuple[int, int, float]:
+    """Total bytes on disk, the number of files a listing shows, and the newest
+    modification time. The size includes hidden files, since download progress
+    measures what is on disk."""
     size = 0
     count = 0
     latest = path.stat().st_mtime if path.exists() else 0
@@ -73,7 +90,8 @@ def directory_stats(path: Path, include_cache: bool = False) -> tuple[int, int, 
             except (FileNotFoundError, PermissionError, OSError):
                 continue
             size += stat.st_size
-            count += 1
+            if not hidden_path(file_path.relative_to(path).as_posix()):
+                count += 1
             latest = max(latest, stat.st_mtime)
     return size, count, latest
 

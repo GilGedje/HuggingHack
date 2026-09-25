@@ -61,6 +61,13 @@ def migrate(source_path: Path, target_url: str) -> dict[str, int]:
     if not target_url.startswith(("postgresql://", "postgres://")):
         raise ValueError("DATABASE_URL must point at PostgreSQL.")
     target = Database(target_url)
+    try:
+        return _copy(source_path, target)
+    finally:
+        target.close()
+
+
+def _copy(source_path: Path, target: Database) -> dict[str, int]:
     target.initialize()
     if target.count_users():
         raise ValueError("The PostgreSQL database already has accounts; refusing to overwrite it.")

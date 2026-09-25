@@ -13,7 +13,7 @@ from typing import Any
 
 from .config import Settings
 from .avatars import avatar_url
-from .indexer import BASE_MODEL_RELATIONS, UNSAFE_EXTENSIONS
+from .indexer import BASE_MODEL_RELATIONS, UNSAFE_EXTENSIONS, hidden_path
 from .reads import reads
 from .storage import FilesystemModelStorage, StorageRegistry
 
@@ -402,7 +402,7 @@ class LocalCatalog:
         files = [
             {"path": file["path"], "size": file["size"]}
             for file in listing.get("files") or []
-            if not any(part.startswith(".") for part in PurePosixPath(file["path"]).parts)
+            if not hidden_path(file["path"])
         ]
         files.sort(key=lambda file: file["path"])
         result = catalog_item(model, saved_ids)

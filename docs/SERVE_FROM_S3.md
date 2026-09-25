@@ -190,6 +190,11 @@ Notes:
   unexpected.
 - With `use_ssl: true` and a private certificate authority, copy the CA's PEM file to
   `./data/internal-ca.pem` and set `AWS_CA_BUNDLE=/data/internal-ca.pem`.
+- HuggingHack keeps up to `DATABASE_POOL_SIZE` (default 10) PostgreSQL connections open
+  and reuses them. Keep it below the server's `max_connections`, less what other clients
+  need.
+- The other security settings (`ALLOWED_HOSTS`, `FORWARDED_ALLOW_IPS`, `API_DOCS_ENABLED`)
+  are described in [Security settings](AIRGAPPED.md#security-settings).
 
 ## 7. Start and verify
 
@@ -331,6 +336,7 @@ before loading the model in a runtime that reads the shared path.
 | `git pull` fails on a clone made before the server was replaced | The git history was on the old server's disk because `SYSTEM_STORAGE_TARGET` was not set yet. Clone the model again; from then on the history is kept in the bucket. |
 | A model shows **S3 only** | Normal: it is pulled from the bucket. Restore it to the local cache only for runtimes that read the shared path. |
 | The Storage page warns that a model exists in more than one location | The warning names the copy that is served and the one that is ignored. Remove the copy you do not want. |
+| Committing a change says it could not be saved to object storage | The bucket failed part-way. Nothing changed: the repository keeps its previous files, and the change stays open. Commit it again once the bucket is back, or cancel it. The server log has the bucket's own error. |
 
 ## 12. Checklist
 

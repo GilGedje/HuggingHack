@@ -21,6 +21,8 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError, RevisionNotFoundError
 from pydantic import BaseModel, Field, field_validator
 
@@ -52,17 +54,17 @@ from .hub_api import (
     remote_entries,
 )
 from .hub_service import HubService
-from .indexer import LocalModelIndexer, upload_is_registered
+from .indexer import LocalModelIndexer, hidden_path, upload_is_registered
 from .moves import MoveManager
 from .reads import LeasedResponse, reads
 from .listing import PRECISIONS, preview as preview_listing, validate_overrides
 from .runtimes import RuntimeManager
-from .storage import create_storage_registry
+from .storage import StorageUnavailableError, create_storage_registry
 from .uploads import UploadManager
 
 
 logger = logging.getLogger("hugginghack")
-database = Database(settings.database_target)
+database = Database(settings.database_target, settings.database_pool_size)
 hub = HubService(settings)
 indexer = LocalModelIndexer(settings, database)
 storages = create_storage_registry(settings)
@@ -204,14 +206,18 @@ async def lifespan(_: FastAPI):
     downloads.shutdown()
     runtimes.shutdown()
     oidc.close()
+    database.close()
 
 
+API_DOCS_PATHS = ("/api/docs", "/openapi.json")
 app = FastAPI(
     title="HuggingHack API",
     version=settings.app_version,
     lifespan=lifespan,
-    docs_url="/api/docs",
+    # The API reference lists every route, so it is off unless API_DOCS_ENABLED.
+    docs_url=API_DOCS_PATHS[0] if settings.api_docs_enabled else None,
     redoc_url=None,
+    openapi_url=API_DOCS_PATHS[1] if settings.api_docs_enabled else None,
 )
 # Only origins named in CORS_ORIGINS may call the API with the user's cookies; by
 # default none, since the web UI is served from this origin (and Vite proxies /api).
@@ -230,6 +236,57 @@ app.add_middleware(
 )
 
 
+STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _authority(value: str, *, bare: bool = False) -> str | None:
+    """host[:port] of a URL, or of a bare Host header value, in lowercase and
+    without the default port; None if it has no usable host."""
+    try:
+        parts = urlsplit(f"//{value}" if bare else value)
+        hostname, port = parts.hostname, parts.port
+    except ValueError:
+        return None
+    if not hostname:
+        return None
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    # A Host header does not say which scheme it came over.
+    defaults = {80, 443} if bare else {443 if parts.scheme == "https" else 80}
+    return hostname if port is None or port in defaults else f"{hostname}:{port}"
+
+
+def same_site_origin(request: Request, origin: str) -> bool:
+    """Whether a browser's Origin header names this server: the address the request
+    came to, the one a reverse proxy forwarded, PUBLIC_URL, or a CORS_ORIGINS entry."""
+    if urlsplit(origin).scheme not in {"http", "https"}:
+        return False  # includes "null", sent by sandboxed pages and file:// documents
+    wanted = _authority(origin)
+    hosts = [request.headers.get("host"), *request.headers.get("x-forwarded-host", "").split(",")]
+    allowed = {_authority(host.strip(), bare=True) for host in hosts if host and host.strip()}
+    allowed |= {_authority(url) for url in (settings.public_url, *settings.cors_origin_list) if url}
+    return wanted is not None and wanted in allowed
+
+
+@app.middleware("http")
+async def reject_cross_site_writes(request: Request, call_next):
+    """Browsers name the page behind every write in Origin. With accounts disabled
+    there is no CSRF token, so this stops other sites from posting to the server.
+    Clients such as git, hf, and curl send no Origin and are unaffected."""
+    origin = request.headers.get("origin")
+    if request.method in STATE_CHANGING_METHODS and origin is not None and not same_site_origin(request, origin):
+        return JSONResponse({"detail": "Requests from other sites are not allowed."}, status_code=403)
+    return await call_next(request)
+
+
+# What the web UI needs and nothing more: its own scripts, styles, and API.
+CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; "
+    "base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+)
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -237,11 +294,43 @@ async def security_headers(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "same-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    # Pictures and model-card assets keep their stricter sandbox policy; the API
+    # reference, when enabled, loads Swagger UI from a CDN and runs inline scripts.
+    if not (settings.api_docs_enabled and request.url.path in API_DOCS_PATHS):
+        response.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
     if response.headers.get("content-type", "").startswith("text/html"):
         # Asset names are content hashed; the page itself must be revalidated so a
         # redeploy never leaves browsers on an old build.
         response.headers["Cache-Control"] = "no-cache"
     return response
+
+
+# Loopback names always pass, so the container health check keeps working; a DNS
+# rebinding attack arrives under the attacker's own host name.
+LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1", "[::1]")
+
+
+class AllowedHosts:
+    """Starlette's TrustedHostMiddleware, following ALLOWED_HOSTS when it is set."""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+        self._checker: tuple[tuple[str, ...], ASGIApp] | None = None
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        hosts = tuple(settings.allowed_host_list)
+        if not hosts or scope["type"] not in {"http", "websocket"}:
+            await self.app(scope, receive, send)
+            return
+        if self._checker is None or self._checker[0] != hosts:
+            checker = TrustedHostMiddleware(
+                self.app, allowed_hosts=[*hosts, *LOOPBACK_HOSTS], www_redirect=False
+            )
+            self._checker = (hosts, checker)
+        await self._checker[1](scope, receive, send)
+
+
+app.add_middleware(AllowedHosts)
 
 
 class CredentialsRequest(BaseModel):
@@ -614,11 +703,11 @@ def setup_account(payload: SetupRequest, request: Request, response: Response) -
 def login(payload: CredentialsRequest, request: Request, response: Response) -> dict:
     if not settings.accounts_enabled:
         raise HTTPException(status_code=409, detail="Accounts are disabled.")
+    # Behind a reverse proxy this is the browser's address only when the proxy is
+    # listed in FORWARDED_ALLOW_IPS; otherwise every sign-in shares the proxy's.
     client = request.client.host if request.client else "unknown"
     try:
-        user = auth.authenticate(
-            payload.username, payload.password, f"{client}:{payload.username.lower()}"
-        )
+        user = auth.authenticate(payload.username, payload.password, client)
     except ValueError as error:
         raise HTTPException(status_code=429, detail=str(error)) from error
     except PermissionError as error:
@@ -840,12 +929,13 @@ def change_password(
             detail="Password changes are unavailable when accounts are disabled.",
         )
     try:
-        auth.change_password(
+        revoked = auth.change_password(
             user["id"], payload.current_password, payload.new_password, raw_token
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    return {"status": "password_changed"}
+    # Other sessions are signed out and every API token is revoked; this one stays.
+    return {"status": "password_changed", "api_tokens_revoked": revoked}
 
 
 EMAIL_PATTERN = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}$")
@@ -1157,7 +1247,8 @@ def admin_reset_password(user_id: str, payload: AdminPasswordReset, admin: UserA
         raise HTTPException(status_code=400, detail=str(error)) from error
     database.update_user_password(user_id, hash_password(payload.new_password), utc_iso())
     database.delete_user_sessions(user_id)
-    return {"status": "password_reset"}
+    revoked = database.delete_user_tokens(user_id)
+    return {"status": "password_reset", "api_tokens_revoked": revoked}
 
 
 @app.post("/api/admin/users/{user_id}/revoke")
@@ -1172,11 +1263,10 @@ def admin_revoke(user_id: str, payload: AdminRevokeRequest, _: UserAdmin) -> dic
 
 @app.delete("/api/admin/users/{user_id}")
 def admin_delete_user(user_id: str, admin: UserAdmin) -> dict:
-    admin_target(user_id)
+    target = admin_target(user_id)
+    # Every refusal comes before anything changes.
     if user_id == admin["id"]:
         raise HTTPException(status_code=409, detail="You cannot delete your own account.")
-    # Organization repositories stay with the organization; the admin becomes their creator.
-    database.reassign_organization_repositories(user_id, admin["id"])
     owned = database.owned_repository_ids(user_id)
     if owned:
         raise HTTPException(
@@ -1186,6 +1276,19 @@ def admin_delete_user(user_id: str, admin: UserAdmin) -> dict:
                 f"({', '.join(owned[:5])}). Disable the account instead, or delete them first."
             ),
         )
+    sole_admin = database.organizations_only_administered_by(user_id)
+    if sole_admin:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This account is the only admin of {', '.join(sole_admin[:5])}. "
+                "Make someone else an admin there first, or disable the account instead."
+            ),
+        )
+    if target["role"] == "admin" and not target["disabled"] and database.count_active_admins() <= 1:
+        raise HTTPException(status_code=409, detail="At least one active administrator is required.")
+    # Organization repositories stay with the organization; the admin becomes their creator.
+    database.reassign_organization_repositories(user_id, admin["id"])
     try:
         database.delete_user(user_id)
     except ValueError as error:
@@ -1822,6 +1925,9 @@ async def commit_repository_change(
             payload.description,
             payload.deletions,
         )
+    except StorageUnavailableError as error:
+        # The change session is intact: commit it again, or cancel it.
+        raise HTTPException(status_code=502, detail=str(error)) from error
     except (PermissionError, FileNotFoundError, ValueError, OSError) as error:
         raise change_errors(error) from error
     return {
@@ -2015,13 +2121,10 @@ def model_for(user: dict[str, Any], model: dict[str, Any] | None) -> dict[str, A
 
 
 def listing_for(user: dict[str, Any], listing: dict[str, Any]) -> dict[str, Any]:
-    """A file listing without the site's own dotfiles (the .hugginghack.json manifest)
-    and with the model as this user may see it, as the library page shows it."""
-    files = [
-        file
-        for file in listing.get("files") or []
-        if not any(part.startswith(".") for part in PurePosixPath(file["path"]).parts)
-    ]
+    """A file listing without hidden files (the .hugginghack.json manifest, other
+    dotfiles, caches, unfinished parts) and with the model as this user may see it,
+    as the library page shows it."""
+    files = [file for file in listing.get("files") or [] if not hidden_path(file["path"])]
     result = {
         **listing,
         "files": files,
@@ -2521,13 +2624,12 @@ def check_org_role_fits(account: dict[str, Any], role: str) -> None:
         )
 
 
-def require_org_admin(organization: dict[str, Any], user: dict[str, Any]) -> bool:
-    """True for server-wide organization managers, who may bypass org safeguards."""
+def require_org_admin(organization: dict[str, Any], user: dict[str, Any]) -> None:
+    """Allow this organization's admins and server-wide organization managers."""
     if can(user, "orgs.manage"):
-        return True
+        return
     if effective_org_role(organization, user) != "admin":
         raise HTTPException(status_code=403, detail="Only this organization's admins can do that.")
-    return False
 
 
 def organization_payload(organization: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
@@ -2726,15 +2828,15 @@ def delete_organization(name: str, _: OrgCreator) -> dict:
 @app.put("/api/organizations/{name}/members/{username}")
 def set_organization_member(name: str, username: str, payload: MemberRequest, user: OrgEditor) -> dict:
     organization = organization_or_404(name)
-    force = require_org_admin(organization, user)
+    require_org_admin(organization, user)
     member = database.get_user_by_username(username)
     if not member:
         raise HTTPException(status_code=404, detail="User not found.")
     check_org_role_fits(member, payload.role)
     try:
-        database.set_organization_member(
-            organization["id"], member["id"], payload.role, utc_iso(), force=force
-        )
+        # Never forced, even by server administrators: an organization always
+        # keeps an admin who can manage it.
+        database.set_organization_member(organization["id"], member["id"], payload.role, utc_iso())
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return organization_payload(organization, user)
@@ -2746,10 +2848,12 @@ def remove_organization_member(name: str, username: str, user: OrgEditor) -> dic
     member = database.get_user_by_username(username)
     if not member:
         raise HTTPException(status_code=404, detail="User not found.")
-    # Anyone may leave; removing someone else takes an organization admin.
-    force = False if member["id"] == user["id"] else require_org_admin(organization, user)
+    # Anyone may leave; removing someone else takes an organization admin. The
+    # last admin stays either way, until another member is made an admin.
+    if member["id"] != user["id"]:
+        require_org_admin(organization, user)
     try:
-        removed = database.remove_organization_member(organization["id"], member["id"], force=force)
+        removed = database.remove_organization_member(organization["id"], member["id"])
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     if not removed:
@@ -2794,6 +2898,8 @@ def create_upload_repository(payload: RepositoryRequest, user: Uploader) -> dict
         )
     except PermissionError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
+    except StorageUnavailableError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
     except (ValueError, FileExistsError, *INTEGRITY_ERRORS) as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 
@@ -2889,6 +2995,8 @@ async def finalize_upload_repository(
         return await run_in_threadpool(
             uploads.finalize, repo_id, user["id"], payload.message, payload.description
         )
+    except StorageUnavailableError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
@@ -2917,11 +3025,19 @@ async def delete_upload_repository(
 # visible to every account are served, and private uploads never are.
 
 
+def header_value(value: str) -> str:
+    """Text safe to send as an HTTP header: printable ASCII, with anything else
+    (such as a non-Latin file name from the request path) percent-encoded."""
+    return "".join(
+        character if " " <= character <= "~" else quote(character, safe="") for character in value
+    )
+
+
 @app.exception_handler(HubError)
 async def hub_error_handler(_: Request, error: HubError) -> JSONResponse:
-    headers = {"X-Error-Code": error.code, "X-Error-Message": error.message}
+    headers = {"X-Error-Code": header_value(error.code), "X-Error-Message": header_value(error.message)}
     if error.commit:
-        headers["X-Repo-Commit"] = error.commit
+        headers["X-Repo-Commit"] = header_value(error.commit)
     if error.status_code == 401:
         # git only sends credentials after a Basic challenge.
         headers["WWW-Authenticate"] = 'Basic realm="HuggingHack"'
@@ -3039,7 +3155,7 @@ def hub_resolve(owner: str, name: str, revision: str, path: str, request: Reques
             request,
             snapshot,
             entry,
-            {"X-Repo-Commit": snapshot.commit, "ETag": f'"{entry.oid}"'},
+            {"X-Repo-Commit": header_value(snapshot.commit), "ETag": f'"{entry.oid}"'},
         )
 
     return leased(f"{owner}/{name}", build)

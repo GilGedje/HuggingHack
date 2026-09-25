@@ -62,6 +62,8 @@ class Settings:
         default=(os.getenv("DATABASE_URL") or "").strip() or None,
         repr=False,
     )
+    # PostgreSQL connections kept open for reuse (SQLite opens one per query).
+    database_pool_size: int = _positive_int("DATABASE_POOL_SIZE", 10, 100)
     hf_endpoint: str = os.getenv("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
     hf_token: str | None = os.getenv("HF_TOKEN") or None
     max_concurrent_downloads: int = _positive_int("MAX_CONCURRENT_DOWNLOADS", 2, 8)
@@ -117,6 +119,11 @@ class Settings:
     # Other origins (such as a separately served web UI) allowed to call the API
     # with the user's cookies. The Vite dev server proxies /api, so it needs none.
     cors_origins: str = os.getenv("CORS_ORIGINS", "").strip()
+    # Host names this server answers to, such as "models.example.com,localhost";
+    # empty answers to any, as before. Blocks DNS rebinding when set.
+    allowed_hosts: str = os.getenv("ALLOWED_HOSTS", "").strip()
+    # The interactive API reference at /api/docs and its /openapi.json schema.
+    api_docs_enabled: bool = _boolean("API_DOCS_ENABLED", False)
 
     @property
     def database_path(self) -> Path:
@@ -137,6 +144,10 @@ class Settings:
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip().rstrip("/") for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def allowed_host_list(self) -> list[str]:
+        return [host.strip().lower() for host in self.allowed_hosts.split(",") if host.strip()]
 
     @property
     def oidc_groups(self) -> tuple[str, ...]:

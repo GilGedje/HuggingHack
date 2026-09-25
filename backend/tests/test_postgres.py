@@ -196,6 +196,7 @@ def test_postgresql_database_crud_contract():
                 "DELETE FROM users WHERE id = ?",
                 (user_id,),
             )
+        database.close()
 
 
 @pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
@@ -237,6 +238,7 @@ def test_postgresql_admin_user_search():
     finally:
         for user_id in ids:
             database.delete_user(user_id)
+        database.close()
 
 
 @pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
@@ -271,11 +273,42 @@ def test_postgresql_admin_organization_search():
         assert rows[0]["name"] == f"{prefix}3"
         assert database.search_organizations(user_id, query=f"{prefix}%")[1] == 0
         assert database.search_organizations(user_id, query="has_under")[1] == 2
+        # Deleting this account would leave organization 3 without an admin.
+        assert database.organizations_only_administered_by(user_id) == [f"{prefix}3"]
+        with pytest.raises(ValueError):
+            database.set_organization_member(organizations[3]["id"], user_id, "write", timestamp)
+        with pytest.raises(ValueError):
+            database.remove_organization_member(organizations[3]["id"], user_id)
+        # A disabled account's or a Viewer's admin row does not count as an admin.
+        database.create_user(
+            {"id": f"{user_id}-2", "username": f"{prefix}v", "display_name": "Viewer", "password_hash": "test-only",
+             "role": "viewer", "created_at": timestamp, "updated_at": timestamp}
+        )
+        database.set_organization_member(organizations[3]["id"], f"{user_id}-2", "admin", timestamp)
+        assert database.organizations_only_administered_by(user_id) == [f"{prefix}3"]
+        assert database.organizations_only_administered_by(f"{user_id}-2") == []
+        with pytest.raises(ValueError):
+            database.set_organization_member(organizations[3]["id"], user_id, "write", timestamp)
+        database.update_user(f"{user_id}-2", role="member", disabled=1)
+        with pytest.raises(ValueError):
+            database.remove_organization_member(organizations[3]["id"], user_id)
+        database.update_user(f"{user_id}-2", disabled=0)
+        assert database.organizations_only_administered_by(user_id) == []
+        database.update_user(user_id, disabled=1)
+        # The disabled admin can now step down; the other admin acts.
+        database.set_organization_member(organizations[3]["id"], user_id, "read", timestamp)
+        database.update_user(user_id, disabled=0)
+        database.remove_organization_member(organizations[3]["id"], f"{user_id}-2", force=True)
+        database.delete_user(f"{user_id}-2")
+        database.set_organization_member(organizations[3]["id"], user_id, "admin", timestamp)
+        database.set_organization_member(organizations[3]["id"], user_id, "write", timestamp, force=True)
+        assert database.organizations_only_administered_by(user_id) == []
     finally:
         for organization in organizations:
             database.remove_organization_member(organization["id"], user_id, force=True)
             database.delete_organization(organization["id"])
         database.delete_user(user_id)
+        database.close()
 
 
 @pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
@@ -292,6 +325,7 @@ def test_postgresql_model_hardware_tags():
     finally:
         database.set_model_hardware(repo_id, [])
     assert repo_id not in database.model_hardware()
+    database.close()
 
 
 @pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
@@ -350,6 +384,7 @@ def test_postgresql_visibility_upgrade_and_storage_grants():
             connection.execute("DELETE FROM organizations WHERE id = ?", (org_id,))
             connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
     assert "pg-bucket" not in database.storage_grants()
+    database.close()
 
 
 @pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
@@ -400,6 +435,7 @@ def test_postgresql_repository_rename_moves_every_row():
         with database.connect() as connection:
             connection.execute("DELETE FROM organizations WHERE id = ?", (org_id,))
             connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        database.close()
 
 
 @pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
@@ -408,14 +444,20 @@ def test_postgresql_visible_counts_and_saves_after_a_rename():
     database.initialize()
     suffix = uuid.uuid4().hex
     owner_id, reader_id, org_id = f"owner-{suffix}", f"reader-{suffix}", f"org-{suffix}"
+    admin_id, retired_id = f"admin-{suffix}", f"retired-{suffix}"
     old, new = f"o{suffix}/tiny", f"u{suffix}/tiny"
     timestamp = "2026-09-25T12:00:00+00:00"
     try:
-        for user_id, username in ((owner_id, f"u{suffix}"), (reader_id, f"r{suffix}")):
+        for user_id, username, role in (
+            (owner_id, f"u{suffix}", "member"), (reader_id, f"r{suffix}", "member"),
+            (admin_id, f"a{suffix}", "admin"), (retired_id, f"d{suffix}", "admin"),
+        ):
             database.create_user(
                 {"id": user_id, "username": username, "display_name": username, "password_hash": "test-only",
-                 "role": "member", "created_at": timestamp, "updated_at": timestamp}
+                 "role": role, "created_at": timestamp, "updated_at": timestamp}
             )
+        # A disabled administrator sees no more than anyone else.
+        database.update_user(retired_id, disabled=1)
         database.create_organization(
             {"id": org_id, "name": f"o{suffix}", "display_name": "Org", "description": "",
              "created_at": timestamp, "updated_at": timestamp}
@@ -430,9 +472,9 @@ def test_postgresql_visible_counts_and_saves_after_a_rename():
             )
         counts = {
             user: next(item for item in database.list_organizations(user) if item["id"] == org_id)["repository_count"]
-            for user in (owner_id, reader_id, None)
+            for user in (owner_id, reader_id, admin_id, retired_id, None)
         }
-        assert counts == {owner_id: 2, reader_id: 1, None: 0}
+        assert counts == {owner_id: 2, reader_id: 1, admin_id: 2, retired_id: 0, None: 0}
 
         database.upsert_local_model(
             {"repo_id": old, "relative_path": old, "size_bytes": 1, "file_count": 1, "modified_at": timestamp,
@@ -440,7 +482,9 @@ def test_postgresql_visible_counts_and_saves_after_a_rename():
              "license": None, "tags_json": "[]", "config_json": "{}", "source_url": None, "managed": 0,
              "storage_backend": "filesystem", "cached": 1, "remote_uri": None}
         )
-        for user_id in (owner_id, reader_id):
+        assert database.get_visible_local_model(admin_id, old)["repo_id"] == old
+        assert database.get_visible_local_model(retired_id, old) is None
+        for user_id in (owner_id, reader_id, admin_id):
             database.save_model(
                 {"id": uuid.uuid4().hex, "user_id": user_id, "repo_id": old, "note": "", "metadata_json": "{}",
                  "created_at": timestamp, "updated_at": timestamp},
@@ -452,9 +496,13 @@ def test_postgresql_visible_counts_and_saves_after_a_rename():
         )
         assert database.saved_repo_ids(owner_id) == {new}
         assert database.saved_repo_ids(reader_id) == {old}
+        assert database.saved_repo_ids(admin_id) == {new}
+        assert database.get_visible_local_model(reader_id, new) is None
+        assert [model["repo_id"] for model in database.list_visible_local_models(admin_id, "tiny")] == [new]
+        assert database.list_visible_local_models(reader_id, "tiny") == []
     finally:
         with database.connect() as connection:
-            for user_id in (owner_id, reader_id):
+            for user_id in (owner_id, reader_id, admin_id):
                 connection.execute("DELETE FROM saved_models WHERE user_id = ?", (user_id,))
             for repo_id in (old, new):
                 connection.execute("DELETE FROM local_models WHERE repo_id = ?", (repo_id,))
@@ -463,8 +511,9 @@ def test_postgresql_visible_counts_and_saves_after_a_rename():
             )
             connection.execute("DELETE FROM organization_members WHERE organization_id = ?", (org_id,))
             connection.execute("DELETE FROM organizations WHERE id = ?", (org_id,))
-            for user_id in (owner_id, reader_id):
+            for user_id in (owner_id, reader_id, admin_id, retired_id):
                 connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        database.close()
 
 
 @pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
@@ -493,6 +542,7 @@ def test_postgresql_config_revisions():
     finally:
         database.delete_config_revisions(repo_id)
     assert database.count_config_revisions(repo_id) == 0
+    database.close()
 
 
 @pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
@@ -549,11 +599,15 @@ def test_postgresql_admin_user_detail_queries():
         assert database.delete_api_token(users[0], f"token-{users[0]}")
         assert database.list_api_tokens(users[0]) == []
         assert len(database.list_api_tokens(users[1])) == 1
+        # A password reset revokes every token and says how many.
+        assert database.delete_user_tokens(users[1]) == 1
+        assert database.delete_user_tokens(users[1]) == 0
     finally:
         for user_id in users:
             database.delete_user_tokens(user_id)
             database.delete_user_sessions(user_id)
             database.delete_user(user_id)
+        database.close()
 
 
 @pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
@@ -605,6 +659,7 @@ def test_postgresql_listing_corrections_merge_into_reads():
         for name in (repo_id, renamed):
             database.set_listing_overrides(name, {}, timestamp, None)
             database.delete_owned_repository(name)
+        database.close()
 
 
 @pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
@@ -653,6 +708,7 @@ def test_postgresql_storage_moves_and_revision_aliases():
             connection.execute("DELETE FROM storage_moves WHERE id = ?", (move_id,))
             connection.execute("DELETE FROM revision_aliases WHERE repo_id = ?", (repo_id,))
         database.delete_owned_repository(repo_id)
+        database.close()
 
 
 @pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
@@ -680,6 +736,7 @@ def test_postgresql_models_keep_their_base_model():
     finally:
         database.set_listing_overrides(repo_id, {}, timestamp, None)
         database.delete_owned_repository(repo_id)
+        database.close()
 
 
 @pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
@@ -711,3 +768,40 @@ def test_postgresql_profile_pictures():
     finally:
         database.delete_organization(org_id)
         database.delete_user(user_id)
+        database.close()
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
+def test_postgresql_pooled_connections_commit_roll_back_and_close():
+    from concurrent.futures import ThreadPoolExecutor
+
+    database = Database(POSTGRES_URL or "", pool_size=2)
+    database.initialize()
+    suffix = uuid.uuid4().hex
+    kept, dropped = f"pool-kept-{suffix}", f"pool-dropped-{suffix}"
+    timestamp = "2026-09-25T12:00:00+00:00"
+    row = {"display_name": "Pool", "password_hash": "test-only", "role": "member",
+           "created_at": timestamp, "updated_at": timestamp}
+    try:
+        database.create_user({**row, "id": kept, "username": kept})
+        # An error inside the block rolls back everything the block wrote.
+        with pytest.raises(RuntimeError):
+            with database.connect() as connection:
+                connection.execute(
+                    "INSERT INTO users (id, username, display_name, password_hash, role, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (dropped, dropped, "Pool", "test-only", "member", timestamp, timestamp),
+                )
+                raise RuntimeError("abandon")
+        assert database.get_user(dropped) is None
+        # More callers than connections wait their turn instead of failing.
+        with ThreadPoolExecutor(max_workers=8) as workers:
+            found = list(workers.map(lambda _: database.get_user(kept)["id"], range(40)))
+        assert found == [kept] * 40
+        database.close()
+        database.close()
+        assert database.get_user(kept)["id"] == kept  # a new pool opens on demand
+    finally:
+        with database.connect() as connection:
+            connection.execute("DELETE FROM users WHERE id IN (?, ?)", (kept, dropped))
+        database.close()

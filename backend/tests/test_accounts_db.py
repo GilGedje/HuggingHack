@@ -143,6 +143,7 @@ def test_postgresql_users_migration_replaces_the_role_check(fresh_postgres: str)
             connection.execute("UPDATE users SET role = 'root' WHERE id = 'u2'")
     database.delete_user("u2")
     assert database.list_sessions("u2") == []
+    database.close()
 
 
 def test_sqlite_installation_copies_into_postgresql(tmp_path: Path, fresh_postgres: str):
@@ -189,6 +190,7 @@ def test_sqlite_installation_copies_into_postgresql(tmp_path: Path, fresh_postgr
     assert target.get_owned_repository("Nvidia/GLM")["organization_name"] == "Nvidia"
     with pytest.raises(ValueError):
         migrate(source_path, fresh_postgres)
+    target.close()
 
 
 def test_postgresql_sso_state_and_external_accounts(fresh_postgres: str):
@@ -238,6 +240,7 @@ def test_postgresql_sso_state_and_external_accounts(fresh_postgres: str):
                 "external_subject": "subject-1",
             }
         )
+    database.close()
 
 
 def test_deleting_a_collection_keeps_its_saved_models(tmp_path: Path):
