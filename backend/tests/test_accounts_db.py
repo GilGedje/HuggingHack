@@ -238,3 +238,43 @@ def test_postgresql_sso_state_and_external_accounts(fresh_postgres: str):
                 "external_subject": "subject-1",
             }
         )
+
+
+def test_deleting_a_collection_keeps_its_saved_models(tmp_path: Path):
+    database = Database(tmp_path / "db.sqlite3")
+    database.initialize()
+    for user_id in ("u1", "u2"):
+        database.create_user(
+            {
+                "id": user_id,
+                "username": user_id,
+                "display_name": user_id,
+                "password_hash": "x",
+                "role": "member",
+                "created_at": "now",
+                "updated_at": "now",
+            }
+        )
+    database.create_collection(
+        {"id": "c1", "user_id": "u1", "name": "Rig", "description": "", "created_at": "now", "updated_at": "now"}
+    )
+    database.save_model(
+        {
+            "id": "s1",
+            "user_id": "u1",
+            "repo_id": "owner/model",
+            "note": "",
+            "metadata_json": "{}",
+            "created_at": "now",
+            "updated_at": "now",
+        },
+        ["c1"],
+    )
+
+    assert not database.delete_collection("c1", "u2")
+    assert database.delete_collection("c1", "u1")
+    assert not database.delete_collection("c1", "u1")
+    assert database.list_collections("u1") == []
+    [saved] = database.list_saved_models("u1")
+    assert saved["repo_id"] == "owner/model"
+    assert saved["collections"] == []

@@ -157,6 +157,9 @@ def test_postgresql_database_crud_contract():
         )
         assert saved["collections"] == [collection_id]
         assert database.list_saved_models(user_id, "PROMOTE")[0]["repo_id"] == repo_id
+        assert database.delete_collection(collection_id, user_id)
+        assert database.list_collections(user_id) == []
+        assert database.list_saved_models(user_id)[0]["collections"] == []
 
         database.create_owned_repository(
             {

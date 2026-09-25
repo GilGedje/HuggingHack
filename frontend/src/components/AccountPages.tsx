@@ -11,12 +11,14 @@ import {
   LockKeyhole,
   Plus,
   ShieldCheck,
+  Trash2,
   UploadCloud,
   X,
 } from 'lucide-react'
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
   type FormEvent,
 } from 'react'
@@ -29,6 +31,8 @@ import type {
 import { relativeTime, taskLabel } from '../utils'
 import { useNavigate } from 'react-router-dom'
 import { RowSkeletons } from './Skeletons'
+import { useConfirm } from './ConfirmDialog'
+import { prefersReducedMotion, useFadeOnChange } from '../motion'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -180,31 +184,48 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
   const [query, setQuery] = useState('')
   const [newCollection, setNewCollection] = useState('')
   const [loading, setLoading] = useState(true)
+  // The collection whose models are on screen. It changes only once they have
+  // arrived, so the grid fades from one collection's models straight to the next.
+  const [shown, setShown] = useState<string | null>(null)
+  const [removing, setRemoving] = useState<string | null>(null)
+  const latest = useRef(0)
+  const grid = useFadeOnChange<HTMLDivElement>(shown ?? '')
+  const confirm = useConfirm()
   const navigate = useNavigate()
   const [editing, setEditing] = useState<string | null>(null)
   const [draftNote, setDraftNote] = useState('')
   const [draftCollections, setDraftCollections] = useState<string[]>([])
 
   const load = useCallback(async () => {
+    const request = ++latest.current
     setLoading(true)
     try {
       const [saved, groups] = await Promise.all([
         api.savedModels(query, collectionId),
         api.collections(),
       ])
+      // A quicker click may have asked for another collection meanwhile.
+      if (request !== latest.current) return
       setItems(saved.items)
       setCollections(groups.items)
+      setShown(collectionId)
     } catch (reason) {
-      onToast(reason instanceof Error ? reason.message : 'Unable to load saved models', 'error')
+      if (request === latest.current) {
+        onToast(reason instanceof Error ? reason.message : 'Unable to load saved models', 'error')
+      }
     } finally {
-      setLoading(false)
+      if (request === latest.current) setLoading(false)
     }
   }, [collectionId, onToast, query])
 
+  // Typing waits a moment before searching; picking a collection loads at once.
+  const lastQuery = useRef(query)
   useEffect(() => {
-    const timer = window.setTimeout(load, 200)
+    const typed = lastQuery.current !== query
+    lastQuery.current = query
+    const timer = window.setTimeout(load, typed ? 200 : 0)
     return () => window.clearTimeout(timer)
-  }, [load])
+  }, [load, query])
 
   async function createCollection(event: FormEvent) {
     event.preventDefault()
@@ -216,6 +237,43 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
       onToast('Collection created.')
     } catch (reason) {
       onToast(reason instanceof Error ? reason.message : 'Unable to create collection', 'error')
+    }
+  }
+
+  async function deleteCollection(collection: Collection, row: HTMLElement | null) {
+    const count = collection.model_count
+    const sure = await confirm({
+      title: `Delete “${collection.name}”?`,
+      message: count
+        ? `The ${count === 1 ? 'model' : `${count} models`} in it stay${count === 1 ? 's' : ''} saved under All saved; only the collection goes.`
+        : 'The collection is empty. Nothing else changes.',
+      confirmLabel: 'Delete collection',
+      danger: true,
+    })
+    if (!sure) return
+    setRemoving(collection.id)
+    try {
+      await api.deleteCollection(collection.id)
+      // Fold the row away before it leaves the list, so the rows below slide up.
+      if (row?.animate && !prefersReducedMotion()) {
+        await row
+          .animate(
+            [
+              { height: `${row.offsetHeight}px`, minHeight: '0px', opacity: 1 },
+              { height: '0px', minHeight: '0px', opacity: 0 },
+            ],
+            { duration: 200, easing: 'cubic-bezier(0.32, 0.72, 0, 1)', fill: 'forwards' },
+          )
+          .finished.catch(() => undefined)
+      }
+      setCollections((current) => current.filter((item) => item.id !== collection.id))
+      if (collectionId === collection.id) setCollectionId('')
+      else await load()
+      onToast(`Collection “${collection.name}” deleted.`)
+    } catch (reason) {
+      onToast(reason instanceof Error ? reason.message : 'Unable to delete collection', 'error')
+    } finally {
+      setRemoving(null)
     }
   }
 
@@ -264,15 +322,26 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
               <BookMarked size={16} /> All saved <span>{collectionId === '' ? items.length : ''}</span>
             </button>
             {collections.map((collection) => (
-              <button
+              <div
                 key={collection.id}
-                className={collectionId === collection.id ? 'active' : ''}
-                onClick={() => setCollectionId(collection.id)}
+                className={collectionId === collection.id ? 'collection-row active' : 'collection-row'}
+                aria-busy={removing === collection.id || undefined}
               >
-                <Archive size={15} />
-                <span>{collection.name}</span>
-                <em>{collection.model_count}</em>
-              </button>
+                <button className="collection-open" onClick={() => setCollectionId(collection.id)}>
+                  <Archive size={15} />
+                  <span>{collection.name}</span>
+                  <em>{collection.model_count}</em>
+                </button>
+                <button
+                  className="collection-delete"
+                  aria-label={`Delete collection ${collection.name}`}
+                  title="Delete collection"
+                  disabled={removing !== null}
+                  onClick={(event) => deleteCollection(collection, event.currentTarget.parentElement)}
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
             ))}
             <form onSubmit={createCollection}>
               <input
@@ -293,10 +362,10 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
                 placeholder="Search saved models and notes"
               />
             </div>
-            {loading ? (
+            {loading && shown === null ? (
               <RowSkeletons rows={4} cells={0} label="Loading your saved models" />
             ) : (
-              <div className="saved-grid">
+              <div ref={grid} className={loading ? 'saved-grid refreshing' : 'saved-grid'} aria-busy={loading || undefined}>
                 {items.map((item) => (
                   <article className="saved-card" key={item.id}>
                     <button className="saved-card-open" onClick={() => navigate(`/models/${item.repo_id}`)}>
