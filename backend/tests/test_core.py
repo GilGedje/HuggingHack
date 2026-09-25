@@ -630,10 +630,16 @@ def test_s3_storage_sync_discover_evict_and_restore(tmp_path: Path):
                 "downloaded_at": "2026-07-24T12:00:00+00:00",
                 "total_bytes": 7,
                 "file_count": 3,
+                # Hub metadata the model card below does not repeat.
+                "pipeline_tag": "text-generation",
+                "license": "mit",
+                "library_name": "transformers",
+                "tags": ["hub-tag"],
             }
         ),
         encoding="utf-8",
     )
+    (root / "README.md").write_text("---\nlicense: apache-2.0\n---\n# Tiny\n", encoding="utf-8")
     fake = FakeS3Client()
     fake.objects["library/acme/tiny/obsolete.bin"] = b"old"
     model_storage = S3ModelStorage(
@@ -650,6 +656,10 @@ def test_s3_storage_sync_discover_evict_and_restore(tmp_path: Path):
     remote_manifest = json.loads(fake.objects[fake.uploads[-1]])
     assert remote_manifest["storage_backend"] == "s3"
     assert remote_manifest["config"]["model_type"] == "llama"
+    # Syncing measures the files but keeps the Hub's task, license, library, and tags.
+    assert (remote_manifest["pipeline_tag"], remote_manifest["license"]) == ("text-generation", "mit")
+    assert (remote_manifest["library_name"], remote_manifest["tags"]) == ("transformers", ["hub-tag"])
+    assert remote_manifest["formats"] == ["safetensors"]
     discovered = model_storage.discover_repositories()
     assert len(discovered) == 1
     assert discovered[0]["repo_id"] == "acme/tiny"

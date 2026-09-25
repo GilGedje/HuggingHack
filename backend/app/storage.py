@@ -483,7 +483,10 @@ class S3ModelStorage(FilesystemModelStorage):
         }
         if not manifest.get("pipeline_tag") and config.get("model_type"):
             manifest["pipeline_tag"] = config["model_type"]
-        manifest.update(repository_facts(root))
+        facts = repository_facts(root)
+        # Only what the files measure; the manifest's own task, license, and tags
+        # (from the Hub) must not be replaced by the model card's.
+        manifest.update({key: facts[key] for key in ("parameter_count", "formats", "precision")})
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
         with self._lock:
