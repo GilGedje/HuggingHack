@@ -5,7 +5,7 @@ import { api } from '../api'
 import { UploadWizard } from '../components/UploadWizard'
 import type { OwnedRepository, UploadNamespace, User, Visibility } from '../types'
 import { formatBytes, relativeTime } from '../utils'
-import { VISIBILITIES, visibilityAllowed, visibilityAudience, visibilityLabel } from '../visibility'
+import { VISIBILITIES, visibilityAllowed, visibilityAudience, visibilityConfirmation, visibilityLabel } from '../visibility'
 import { RowSkeletons } from '../components/Skeletons'
 import { useConfirm } from '../components/ConfirmDialog'
 
@@ -21,21 +21,27 @@ function RepositoryRow({
 }: {
   repository: OwnedRepository
   onResume: () => void
-  onChanged: () => void
+  onChanged: () => Promise<void>
   onToast: ToastHandler
 }) {
   const Icon = VISIBILITY_ICONS[repository.visibility] || LockKeyhole
   const ready = repository.status === 'ready'
   const organization = repository.organization_name || null
   const confirm = useConfirm()
+  const [pendingVisibility, setPendingVisibility] = useState<Visibility | null>(null)
 
   async function changeVisibility(visibility: Visibility) {
+    // The choice shows while the question is open; declining puts the old one back.
+    setPendingVisibility(visibility)
     try {
+      if (!(await confirm(visibilityConfirmation(repository.repo_id, visibility, organization)))) return
       await api.updateUploadRepository(repository.repo_id, { description: repository.description, visibility })
-      onChanged()
+      await onChanged()
       onToast(`${repository.repo_id} is now ${visibilityLabel(visibility).toLowerCase()}.`)
     } catch (reason) {
       onToast(reason instanceof Error ? reason.message : 'Unable to update repository', 'error')
+    } finally {
+      setPendingVisibility(null)
     }
   }
 
@@ -101,7 +107,7 @@ function RepositoryRow({
               <select
                 className="visibility-select"
                 aria-label={`Visibility of ${repository.repo_id}`}
-                value={repository.visibility}
+                value={pendingVisibility || repository.visibility}
                 onChange={(event) => changeVisibility(event.target.value as Visibility)}
               >
                 {VISIBILITIES.filter((option) => visibilityAllowed(option, organization)).map((option) => (

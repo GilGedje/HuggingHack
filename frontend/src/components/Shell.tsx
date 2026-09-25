@@ -16,7 +16,8 @@ import {
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { ADMIN_CAPABILITIES, useAccess } from '../access'
 import { api } from '../api'
-import { crossfadeTheme, prefersReducedMotion, useTabIndicator } from '../motion'
+import { useTabIndicator } from '../motion'
+import { announceThemePreference, type Theme } from '../theme'
 import type { User } from '../types'
 import { avatarUrl } from '../utils'
 import { Avatar } from './Avatar'
@@ -24,6 +25,8 @@ import { Avatar } from './Avatar'
 interface ShellProps {
   children: ReactNode
   user: User
+  /** The theme on screen, from useAppTheme. */
+  theme: Theme
   onLogout: () => void
 }
 
@@ -36,22 +39,7 @@ const links = [
   { to: '/uploads', label: 'Uploads', icon: UploadCloud, capability: 'repos.create' },
 ]
 
-type Theme = 'light' | 'dark'
-
-function systemTheme(): Theme {
-  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-}
-
-function storedTheme(): Theme | null {
-  try {
-    const value = localStorage.getItem('hugginghack-theme')
-    return value === 'dark' || value === 'light' ? value : null
-  } catch {
-    return null
-  }
-}
-
-export default function Shell({ children, user, onLogout }: ShellProps) {
+export default function Shell({ children, user, theme, onLogout }: ShellProps) {
   const navigate = useNavigate()
   const searchInput = useRef<HTMLInputElement>(null)
   const [query, setQuery] = useState('')
@@ -60,7 +48,7 @@ export default function Shell({ children, user, onLogout }: ShellProps) {
   const [menu, setMenu] = useState<'closed' | 'open' | 'closing'>('closed')
   const menuTimer = useRef(0)
   const mobileOpen = menu === 'open'
-  const { can } = useAccess()
+  const { can, refresh } = useAccess()
   const visibleLinks = links.filter((link) => can(link.capability))
   const isAdmin = ADMIN_CAPABILITIES.some((capability) => can(capability))
   // Without accounts everyone is the built-in "local" user, and there is
@@ -68,45 +56,6 @@ export default function Shell({ children, user, onLogout }: ShellProps) {
   const signOut = user.id !== 'local'
   const { pathname } = useLocation()
   const nav = useTabIndicator<HTMLElement>(`${pathname.split('/')[1]}:${visibleLinks.length}:${isAdmin}`)
-  const themeApplied = useRef(false)
-  const preferred = user.preferences?.theme
-  const [theme, setTheme] = useState<Theme>(() =>
-    preferred === 'light' || preferred === 'dark'
-      ? preferred
-      : preferred === 'system'
-        ? systemTheme()
-        : storedTheme() || 'light',
-  )
-
-  // The saved account preference wins; localStorage covers the moment before it loads.
-  useEffect(() => {
-    if (preferred === 'light' || preferred === 'dark') setTheme(preferred)
-    if (preferred === 'system') setTheme(systemTheme())
-  }, [preferred])
-
-  useEffect(() => {
-    const apply = (event: Event) => {
-      const value = (event as CustomEvent<string>).detail
-      setTheme(value === 'light' || value === 'dark' ? value : systemTheme())
-    }
-    window.addEventListener('hugginghack:theme', apply)
-    return () => window.removeEventListener('hugginghack:theme', apply)
-  }, [])
-
-  useEffect(() => {
-    const root = document.documentElement
-    const apply = () => {
-      root.dataset.theme = theme
-    }
-    if (themeApplied.current && root.dataset.theme !== theme) crossfadeTheme(apply)
-    else apply()
-    themeApplied.current = true
-    try {
-      localStorage.setItem('hugginghack-theme', theme)
-    } catch {
-      // The theme still applies for this page view.
-    }
-  }, [theme])
 
   useEffect(() => () => window.clearTimeout(menuTimer.current), [])
 
@@ -117,10 +66,7 @@ export default function Shell({ children, user, onLogout }: ShellProps) {
 
   function closeMenu() {
     window.clearTimeout(menuTimer.current)
-    if (prefersReducedMotion()) {
-      setMenu('closed')
-      return
-    }
+    // With reduced motion it fades instead of lifting away (styles.css), so it still waits.
     setMenu((current) => (current === 'closed' ? current : 'closing'))
     menuTimer.current = window.setTimeout(() => setMenu('closed'), MENU_EXIT_MS)
   }
@@ -201,8 +147,9 @@ export default function Shell({ children, user, onLogout }: ShellProps) {
             className="icon-button theme-toggle"
             onClick={() => {
               const next = theme === 'light' ? 'dark' : 'light'
-              setTheme(next)
-              api.updatePreferences({ theme: next }).catch(() => undefined)
+              // Applies at once, and the Preferences tab follows the new choice.
+              announceThemePreference(next)
+              api.updatePreferences({ theme: next }).then(refresh).catch(() => undefined)
             }}
             aria-label={theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
           >

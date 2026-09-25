@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Building2, Check, ChevronDown, UserRound } from 'lucide-react'
-import { prefersReducedMotion } from '../motion'
 import type { UploadNamespace } from '../types'
 import { avatarUrl } from '../utils'
 import { Avatar } from './Avatar'
@@ -28,7 +27,8 @@ export function NamespacePicker({ namespaces, value, onChange, id }: NamespacePi
 
   function setOpen(next: boolean) {
     window.clearTimeout(leaveTimer.current)
-    if (!next && open && !prefersReducedMotion()) {
+    // With reduced motion it fades out in place (styles.css) rather than folding.
+    if (!next && open) {
       setLeaving(true)
       leaveTimer.current = window.setTimeout(() => setLeaving(false), MENU_EXIT_MS)
     }

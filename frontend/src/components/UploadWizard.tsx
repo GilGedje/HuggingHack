@@ -21,7 +21,7 @@ import { useFadeOnChange, useStepDirection } from '../motion'
 import type { ListingOverrides, ModelListing, OwnedRepository, StorageOption, UploadNamespace, User, Visibility } from '../types'
 import { droppedEntries, readDrop } from '../dropFiles'
 import { listingPreviewRequest } from '../listingPreview'
-import { detectPrecision, planUpload } from '../uploadPlan'
+import { detectPrecision, planUpload, uploadCommitMessage } from '../uploadPlan'
 import { relativeUploadPath, useUploads, type UploadItem } from '../uploads'
 import { formatBytes } from '../utils'
 import { VISIBILITIES, visibilityAllowed, visibilityAudience, visibilityLabel } from '../visibility'
@@ -102,6 +102,7 @@ export function UploadWizard({
     : owner.kind === 'organization' ? owner.name : null
   const repoId = resume ? resume.repo_id : `${owner.name}/${slug.trim()}`
   const plan = useMemo(() => planUpload(files), [files])
+  const defaultMessage = uploadCommitMessage(plan.files.map((file) => file.path))
   const slugProblem = !slug.trim()
     ? ''
     : !SLUG_PATTERN.test(slug.trim())
@@ -266,9 +267,7 @@ export function UploadWizard({
         kind: 'new',
         repoId: target,
         items: plan.files.map(({ file, path }) => ({ file, path })),
-        message:
-          message.trim()
-          || `Upload ${plan.files.length} file${plan.files.length === 1 ? '' : 's'}`,
+        message: message.trim() || defaultMessage,
       })
       setStarted(target)
       onCreated()
@@ -568,7 +567,7 @@ export function UploadWizard({
                 value={message}
                 onChange={(event) => setMessage(event.target.value)}
                 maxLength={200}
-                placeholder={`Upload ${plan.files.length} file${plan.files.length === 1 ? '' : 's'}`}
+                placeholder={defaultMessage}
               />
             </label>
             <section className="wizard-listing" aria-labelledby="wizard-listing-title">

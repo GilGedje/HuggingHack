@@ -64,3 +64,52 @@ export function parameterRangeLabel(low: number, high: number): string {
   if (high >= LAST_STOP) return `${stopLabel(low)} and up`
   return `${stopLabel(low)} – ${stopLabel(high)}`
 }
+
+/** The Explore filters as they live in the address. */
+export interface CatalogFilters {
+  tasks: string[]
+  precision: string[]
+  hardware: string[]
+  /** Slider stop indexes into PARAMETER_STOPS. */
+  size: [number, number]
+}
+
+/** The address keys the filters use. */
+export const CATALOG_FILTER_KEYS = ['task', 'precision', 'hardware', 'size'] as const
+
+function stopIndex(label: string, fallback: number): number {
+  if (!label) return fallback
+  const index = PARAMETER_STOPS.findIndex((_, stop) => stopLabel(stop).toLowerCase() === label.toLowerCase())
+  return index >= 0 ? index : fallback
+}
+
+function list(value: string | null): string[] {
+  return [...new Set((value || '').split(',').map((item) => item.trim()).filter(Boolean))]
+}
+
+/** Reads the filters from `task`, `precision`, `hardware` (comma separated) and
+ * `size` (`8B-32B`, `-32B`, or `70B-`); anything unreadable counts as unset. */
+export function readCatalogFilters(params: URLSearchParams): CatalogFilters {
+  const [low = '', high = ''] = (params.get('size') || '').split('-')
+  let size: [number, number] = [stopIndex(low.trim(), 0), stopIndex(high.trim(), LAST_STOP)]
+  if (size[0] > size[1]) size = [0, LAST_STOP]
+  return {
+    tasks: list(params.get('task')),
+    precision: list(params.get('precision')),
+    hardware: list(params.get('hardware')),
+    size,
+  }
+}
+
+/** Writes the filters over any earlier ones in `params`, leaving other keys alone. */
+export function writeCatalogFilters(filters: CatalogFilters, params: URLSearchParams): URLSearchParams {
+  const next = new URLSearchParams(params)
+  for (const key of CATALOG_FILTER_KEYS) next.delete(key)
+  if (filters.tasks.length) next.set('task', filters.tasks.join(','))
+  if (filters.precision.length) next.set('precision', filters.precision.join(','))
+  if (filters.hardware.length) next.set('hardware', filters.hardware.join(','))
+  const [low, high] = filters.size
+  // An open end is left empty: `70B-` is 70B and up.
+  if (!isFullRange(low, high)) next.set('size', `${low > 0 ? stopLabel(low) : ''}-${high < LAST_STOP ? stopLabel(high) : ''}`)
+  return next
+}

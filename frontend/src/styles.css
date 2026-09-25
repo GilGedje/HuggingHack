@@ -844,6 +844,8 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
   width: 34px; height: 34px; display: grid; flex: 0 0 auto; place-items: center;
   border: 0; border-radius: 6px; background: var(--brand-primary); color: #181818; cursor: pointer;
 }
+/* Waits, quietly, until the collection has a name. */
+.collection-sidebar form button:disabled { background: var(--border); color: var(--text-muted); cursor: default; opacity: 1; }
 .saved-library > .catalog-search { margin-bottom: 18px; }
 .saved-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .saved-grid > .empty-state { grid-column: 1 / -1; }
@@ -1018,7 +1020,7 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
 }
 .config-file header code { min-width: 0; flex: 1; overflow-wrap: anywhere; font-size: 12px; font-weight: 600; }
 .config-file header small { color: var(--text-muted); font-size: 11px; }
-.config-file header .snippet-copy { position: static; width: 28px; height: 28px; }
+.config-file header .snippet-copy { position: relative; width: 28px; height: 28px; }
 .config-file pre { max-height: 520px; margin: 0; padding: 12px; overflow: auto; font-size: 12px; line-height: 1.55; }
 .results-editor { display: grid; gap: 16px; }
 .results-editor fieldset { min-width: 0; margin: 0; padding: 0; display: grid; gap: 10px; border: 0; }
@@ -1636,6 +1638,7 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
 @keyframes menu-in { from { transform: translateY(-4px) scale(0.98); opacity: 0; } }
 @keyframes menu-out { to { transform: translateY(-4px) scale(0.98); opacity: 0; } }
 @keyframes fade-in { from { opacity: 0; } }
+@keyframes fade-out { to { opacity: 0; } }
 @keyframes icon-turn { from { transform: rotate(-70deg) scale(0.6); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -1644,6 +1647,23 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+  /* Movement goes, feedback stays: what opens and closes over the page
+     cross-fades in place instead of sliding or scaling, and still leaves within
+     its exit timer in motion.ts. Sliding highlights and tab underlines jump. */
+  .use-model-dialog, .namespace-menu, .toast, .upload-dock {
+    animation-name: fade-in !important; animation-duration: 160ms !important; animation-timing-function: ease-out !important;
+  }
+  .use-model-backdrop { animation-duration: 160ms !important; animation-timing-function: ease-out !important; }
+  .use-model-backdrop.closing .use-model-dialog, .namespace-menu.leaving, .toast.leaving, .upload-dock.leaving {
+    animation-name: fade-out !important; animation-duration: 140ms !important; animation-timing-function: ease-in !important;
+  }
+  .use-model-backdrop.closing { animation-duration: 140ms !important; animation-timing-function: ease-in !important; }
+  /* A spinner says work is under way; it keeps turning. */
+  .spin { animation-duration: 0.9s !important; animation-iteration-count: infinite !important; }
+}
+@media (prefers-reduced-motion: reduce) and (max-width: 780px) {
+  .mobile-panel { transform: none !important; transition: opacity 160ms ease-out !important; }
+  .mobile-panel.closing { transition-duration: 140ms !important; transition-timing-function: ease-in !important; }
 }
 @media (max-width: 1080px) {
   .topbar-inner { padding: 0 16px; }
@@ -1790,12 +1810,15 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
   .auth-story { max-width: 720px; }
   .auth-story h1 { font-size: clamp(46px, 11vw, 72px); }
   .auth-card { justify-self: start; }
-  .library-workspace { grid-template-columns: 1fr; gap: 18px; }
-  .collection-sidebar {
-    position: relative; top: auto; display: flex; gap: 5px; overflow-x: auto;
+  .library-workspace { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  /* Collections wrap into rows rather than scroll sideways, and the new-collection
+     field takes what is left of the last row, or a row of its own. */
+  .collection-sidebar { position: relative; top: auto; display: flex; flex-wrap: wrap; gap: 5px; }
+  .collection-sidebar > button, .collection-row { width: auto; max-width: 100%; flex: 0 0 auto; }
+  .collection-sidebar form {
+    min-width: 0; min-height: 40px; margin: 0; padding: 2px 3px 2px 2px; flex: 1 1 180px; align-items: center;
+    border: 1px solid var(--border); border-radius: 7px; background: var(--canvas);
   }
-  .collection-sidebar > button, .collection-row { width: auto; flex: 0 0 auto; }
-  .collection-sidebar form { min-width: 180px; margin: 0 0 0 auto; padding: 0 0 0 6px; border: 0; border-left: 1px solid var(--border); }
 }
 
 @media (max-width: 780px) {
@@ -1813,7 +1836,6 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
 @media (max-width: 520px) {
   .auth-story h1 { font-size: 43px; }
   .auth-benefits span { width: 100%; }
-  .collection-sidebar form { min-width: 155px; }
   .repository-actions :is(button, a, select) { width: 100%; justify-content: center; }
 }
 
@@ -1880,7 +1902,7 @@ button.quiet-link:disabled { cursor: progress; opacity: 0.7; }
   background: var(--canvas); color: var(--text-muted); cursor: pointer;
 }
 .snippet-copy:hover { color: var(--text); border-color: var(--border-strong); }
-.pull-endpoint .snippet-copy { position: static; flex: none; }
+.pull-endpoint .snippet-copy { position: relative; flex: none; }
 .use-model-note { margin-top: 16px; color: var(--text-muted); font-size: 12px; }
 @media (max-width: 480px) {
   .use-model-header, .use-model-body { padding-inline: 17px; }
@@ -2132,7 +2154,7 @@ button.quiet-link:disabled { cursor: progress; opacity: 0.7; }
 .model-owner:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
 .model-slash { color: var(--text-muted); font-weight: 400; }
 .model-name { font-weight: 700; }
-.model-title-row .snippet-copy { position: static; width: 28px; height: 28px; }
+.model-title-row .snippet-copy { position: relative; width: 28px; height: 28px; }
 .model-like {
   min-height: 28px; padding: 0 10px; display: inline-flex; align-items: center; gap: 6px;
   border: 1px solid var(--border); border-radius: 6px; background: var(--canvas);
@@ -2251,7 +2273,7 @@ button.file-browser-name:hover { text-decoration: underline; text-underline-offs
 .commit-row-main small { color: var(--text-muted); font-size: 11px; }
 .commit-row-id { display: inline-flex; align-items: center; gap: 6px; }
 .commit-row-id code { color: var(--text-secondary); font-size: 11px; }
-.commit-row-id .snippet-copy { position: static; width: 26px; height: 26px; }
+.commit-row-id .snippet-copy { position: relative; width: 26px; height: 26px; }
 .commit-badges { display: inline-flex; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; }
 .commit-badges .added, .commit-file-stats .added { color: var(--success); }
 .commit-badges .modified { color: var(--warning); }
@@ -2406,7 +2428,7 @@ button.file-browser-name:hover { text-decoration: underline; text-underline-offs
 .session-list small, .token-list small { flex-basis: 100%; color: var(--text-muted); font-size: 11px; }
 .token-list code { color: var(--text-muted); font-size: 11px; }
 .token-list .empty-compact { display: block; margin: 0; border: 0; }
-.tokens-tab { display: grid; gap: 20px; }
+.tokens-tab { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
 .token-form { margin-top: 18px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 140px auto; align-items: end; gap: 12px; }
 .new-token {
   margin-top: 18px; padding: 16px; display: grid; gap: 10px;
@@ -2989,3 +3011,136 @@ a.model-tree-name:hover { text-decoration: underline; text-underline-offset: 3px
   color: var(--text); font-size: inherit; text-decoration: underline; text-underline-offset: 2px;
 }
 /* ==== Frontend fixes (end) ==== */
+
+/* Room at the foot of every page for the upload panel while it is shown
+   (uploads.tsx sets --upload-dock-space), so nothing stays stuck under it. */
+main { padding-bottom: var(--upload-dock-space, 0px); }
+html { scroll-padding-bottom: var(--upload-dock-space, 0px); }
+@media (max-width: 900px) {
+  /* The panel spans the foot of the screen here; notes rise above it. */
+  .toast { bottom: max(22px, calc(var(--upload-dock-space, 0px) + 10px)); }
+}
+
+/* Phones: wide tables become stacked rows, so every action is on screen instead
+   of past a sideways scroll. The header row goes, so cells with `data-label`
+   name themselves in the header's style. */
+@media (max-width: 640px) {
+  .admin-user-table, .file-browser, .storage-model-table { overflow-x: visible; }
+  .admin-user-row.header, .storage-model-row.header { display: none; }
+  :is(.admin-user-row, .storage-model-row) [data-label]::before {
+    margin-right: 6px; content: attr(data-label); color: var(--text-muted);
+    font-size: 9px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  }
+
+  .admin-user-row {
+    min-width: 0; padding: 12px 14px; gap: 8px 12px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: 'name status' 'last last' 'access access' 'role actions';
+  }
+  .admin-user-name { grid-area: name; }
+  .admin-user-status { grid-area: status; }
+  .admin-user-last { grid-area: last; }
+  .admin-user-access { grid-area: access; }
+  .admin-user-role { grid-area: role; }
+  .admin-user-role select { max-width: 170px; }
+  .admin-user-actions { grid-area: actions; }
+  .admin-user-row.org-row { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; }
+  .org-row .admin-user-name { flex: 1 0 100%; }
+  .org-row .admin-user-actions { margin-left: auto; }
+
+  .file-browser-row {
+    min-width: 0; padding: 9px 12px; gap: 2px 10px;
+    grid-template-columns: auto auto minmax(0, 1fr) 28px;
+    grid-template-areas: 'name name name action' 'size time commit action';
+  }
+  .file-browser-name { grid-area: name; }
+  .file-browser-size { grid-area: size; }
+  .file-browser-time { grid-area: time; }
+  .file-browser-commit { grid-area: commit; font-size: 11px; }
+  .file-browser-action { grid-area: action; }
+
+  /* Name and Move share the first line; the facts wrap on the lines below. */
+  .storage-model-item, .storage-model-row { min-width: 0; }
+  .storage-model-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 10px 12px; }
+  .storage-model-row::after { flex-basis: 100%; order: 1; content: ''; }
+  .storage-model-name { flex: 1 1 0; }
+  .storage-model-row > [data-label] { order: 2; color: var(--text-secondary); font-size: 11px; }
+
+  .org-add-member { grid-template-columns: minmax(0, 1fr) auto; }
+  .org-add-member > label:first-child { grid-column: 1 / -1; }
+}
+
+/* Sign-in: problems and notices open the form; on phones the form comes into
+   view without scrolling past the introduction. Arriving here fades in where
+   the browser cannot cross-fade the whole page (motion.ts crossfade). */
+.auth-message { margin: 0; padding: 10px 12px; display: flex; align-items: flex-start; gap: 8px; border-radius: 7px; font-size: 12px; }
+.auth-message svg { margin-top: 1px; flex: none; }
+.auth-notice { border: 1px solid var(--border); background: var(--canvas-subtle); color: var(--text-secondary); }
+@supports not (view-transition-name: none) {
+  .auth-layout { animation: fade-in 260ms var(--ease-out) backwards; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .auth-layout { animation: fade-in 160ms ease-out backwards !important; }
+}
+@media (max-width: 780px) {
+  .auth-layout { gap: 24px; }
+  .auth-story > img { width: 48px; height: 48px; margin-bottom: 14px; }
+  .auth-benefits { display: none; }
+}
+
+/* A token shown once wraps inside its box instead of widening the page. */
+.new-token { min-width: 0; grid-template-columns: minmax(0, 1fr); }
+.new-token-value pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Long addresses and device names wrap; the row's button keeps its line. */
+:is(.session-list, .token-list) small { overflow-wrap: anywhere; }
+:is(.session-list, .token-list) li > button { flex: none; white-space: nowrap; }
+
+/* Forms say what is wrong where it is: the field, its hint, and a note above
+   the button for what the server said. */
+.account-form input[aria-invalid='true'] { border-color: var(--danger); }
+.account-form input[aria-invalid='true']:focus { box-shadow: 0 0 0 3px color-mix(in oklch, var(--danger) 16%, transparent); }
+.account-form label:has(input[aria-invalid='true']) > small { color: var(--danger); }
+.form-message { margin: 0; padding: 10px 12px; display: flex; align-items: flex-start; gap: 8px; border-radius: 7px; font-size: 12px; }
+.form-message svg { margin-top: 1px; flex: none; }
+.form-done {
+  border: 1px solid color-mix(in oklch, var(--success) 30%, var(--border));
+  background: var(--success-bg); color: var(--success); outline: 0;
+}
+.form-done:focus-visible { box-shadow: 0 0 0 3px color-mix(in oklch, var(--success) 22%, transparent); }
+.token-form label small { color: var(--text-muted); font-size: 11px; font-weight: 400; }
+.org-last-admin { margin: 10px 0 0; }
+
+/* A copy the browser refused says so beside the button, with the text selected. */
+.snippet-copy.failed { border-color: color-mix(in oklch, var(--danger) 40%, var(--border)); color: var(--danger); }
+.copy-failed {
+  position: absolute; top: 50%; right: calc(100% + 6px); z-index: 2; padding: 5px 9px;
+  border: 1px solid color-mix(in oklch, var(--danger) 30%, var(--border)); border-radius: 6px;
+  background: var(--canvas-raised); box-shadow: 0 6px 18px rgb(17 24 39 / 0.12);
+  width: max-content; max-width: min(240px, 60vw);
+  color: var(--danger); font-size: 11px; font-weight: 500; line-height: 1.4; text-align: left; pointer-events: none;
+  transform: translateY(-50%); animation: fade-in 180ms var(--ease-out) backwards;
+}
+/* Beside a title at the start of the line, the note opens to the right. */
+.model-title-row .copy-failed { right: auto; left: calc(100% + 6px); }
+
+/* Phones: dialog buttons stack full width, the one that goes ahead on top. */
+@media (max-width: 520px) {
+  .add-user-footer { flex-direction: column; align-items: stretch; }
+  .add-user-footer > span { min-width: 0; flex: none; margin: 0; }
+  .add-user-footer > span:empty { display: none; }
+  .use-model-dialog .add-user-footer > button { min-height: 44px; justify-content: center; }
+  .add-user-footer > button:last-child { order: 1; }
+  .add-user-footer > button:not(:last-child) { order: 2; }
+}
+
+/* A tab strip wider than the screen fades at the edges that have more tabs. */
+:is(.model-tabs > div:first-child, .drawer-tabs)[data-overflow='end'] {
+  mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+}
+:is(.model-tabs > div:first-child, .drawer-tabs)[data-overflow='start'] {
+  mask-image: linear-gradient(to left, #000 calc(100% - 36px), transparent);
+}
+:is(.model-tabs > div:first-child, .drawer-tabs)[data-overflow='both'] {
+  mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent);
+}

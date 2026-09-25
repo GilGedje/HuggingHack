@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 
 /** Critically damped feel: fast start, long soft settle, no overshoot. */
 const EASE_OUT = 'cubic-bezier(0.22, 1, 0.36, 1)'
@@ -57,6 +58,7 @@ export function useStepDirection(index: number, distance = 14): number {
  * A dialog that animates out before it unmounts. `close` plays the exit and then
  * calls `onClose`; calling it again while leaving does nothing. The page stays
  * usable while the dialog leaves (the backdrop stops taking clicks at once).
+ * With reduced motion the exit is a short fade (styles.css), so it still waits.
  */
 export function useClosingTransition(onClose: () => void) {
   const [closing, setClosing] = useState(false)
@@ -66,15 +68,14 @@ export function useClosingTransition(onClose: () => void) {
   useEffect(() => () => window.clearTimeout(timer.current), [])
   const close = useCallback(() => {
     if (timer.current) return
-    if (prefersReducedMotion()) {
-      latest.current()
-      return
-    }
     setClosing(true)
     timer.current = window.setTimeout(() => latest.current(), DIALOG_EXIT_MS)
   }, [])
   return { closing, close }
 }
+
+/** How far in from a scrolled tab strip's faded edge the active tab is kept. */
+const TAB_EDGE_ROOM = 28
 
 /**
  * Slides one shared underline to the active tab instead of swapping borders.
@@ -84,9 +85,37 @@ export function useClosingTransition(onClose: () => void) {
  * transition) or `hidden` (no active tab). Without JavaScript the tabs keep
  * their own borders. `key` must change whenever the active tab or the set of
  * tabs does.
+ *
+ * A strip too narrow for its tabs scrolls: it gets `data-overflow` = `start`,
+ * `end` or `both` for the sides with more tabs (the stylesheet fades those
+ * edges), and the active tab is scrolled into view within it.
  */
 export function useTabIndicator<T extends HTMLElement>(key: string) {
   const ref = useRef<T>(null)
+  const revealed = useRef(false)
+
+  const edges = useCallback(() => {
+    const track = ref.current
+    if (!track) return
+    const room = track.scrollWidth - track.clientWidth
+    const start = room > 1 && track.scrollLeft > 1
+    const end = room > 1 && track.scrollLeft < room - 1
+    if (start || end) track.dataset.overflow = start && end ? 'both' : start ? 'start' : 'end'
+    else delete track.dataset.overflow
+  }, [])
+
+  // Only the strip scrolls, never the page, so this works on the offsets.
+  const reveal = useCallback(() => {
+    const track = ref.current
+    const active = track?.querySelector<HTMLElement>(':scope > .active')
+    if (!track || !active || track.scrollWidth <= track.clientWidth) return
+    const left = active.offsetLeft - TAB_EDGE_ROOM
+    const right = active.offsetLeft + active.offsetWidth + TAB_EDGE_ROOM - track.clientWidth
+    const target = Math.min(Math.max(track.scrollLeft, right), left)
+    if (Math.abs(target - track.scrollLeft) < 1) return
+    const smooth = revealed.current && !prefersReducedMotion()
+    track.scrollTo({ left: target, behavior: smooth ? 'smooth' : 'auto' })
+  }, [])
 
   // `follow` keeps whatever motion is under way: a tab growing bold as it becomes
   // active, a web font arriving, or a window resize should not cut a glide short.
@@ -114,9 +143,21 @@ export function useTabIndicator<T extends HTMLElement>(key: string) {
     track.style.setProperty('--indicator-bottom', `${snap(bottom)}px`)
     if (!wasShown || prefersReducedMotion()) track.dataset.indicator = 'still'
     else if (motion === 'glide') track.dataset.indicator = 'glide'
-  }, [])
+    edges()
+  }, [edges])
 
-  useLayoutEffect(() => place('glide'), [key, place])
+  useLayoutEffect(() => {
+    place('glide')
+    reveal()
+    revealed.current = true
+  }, [key, place, reveal])
+
+  useEffect(() => {
+    const track = ref.current
+    if (!track) return
+    track.addEventListener('scroll', edges, { passive: true })
+    return () => track.removeEventListener('scroll', edges)
+  }, [key, edges])
 
   useEffect(() => {
     const track = ref.current
@@ -187,6 +228,16 @@ export function useSlidingHighlight<T extends HTMLElement>(key: string) {
   }, [place])
 
   return ref
+}
+
+/**
+ * Swaps one whole screen for another as a cross-fade, such as signing out onto
+ * the sign-in page. `apply` makes the change; React updates in it are flushed
+ * inside the transition so the new screen is what fades in.
+ */
+export function crossfade(apply: () => void) {
+  if (document.startViewTransition && !prefersReducedMotion()) document.startViewTransition(() => flushSync(apply))
+  else apply()
 }
 
 /**

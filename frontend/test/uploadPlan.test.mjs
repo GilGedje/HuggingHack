@@ -68,3 +68,15 @@ test('precision follows the same rules as the server', () => {
   assert.equal(detectPrecision({}), null)
   assert.equal(detectPrecision(null), null)
 })
+
+test('the default commit message counts only files the commit records', async () => {
+  const { isRecorded, uploadCommitMessage } = await import('../src/uploadPlan.ts')
+  assert.equal(isRecorded('.gitattributes'), false)
+  assert.equal(isRecorded('sub/.env'), false)
+  assert.equal(isRecorded('.github/workflow.yml'), false)
+  assert.equal(isRecorded('src/__pycache__/x.pyc'), false)
+  assert.equal(isRecorded('docs/guide.md'), true)
+  assert.equal(uploadCommitMessage(['config.json', '.gitattributes', 'model.safetensors']), 'Upload 2 files')
+  assert.equal(uploadCommitMessage(['README.md', '.gitignore']), 'Upload 1 file')
+  assert.equal(uploadCommitMessage(['.gitattributes']), 'Upload files')
+})

@@ -398,14 +398,21 @@ function RevisionView({
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
 
+  // Only the latest request may answer, so a slow reply for the revision just
+  // left never shows under the one now open.
+  const latestRequest = useRef(0)
   const load = useCallback(() => {
+    const request = ++latestRequest.current
     api
       .configRevision(model.id, revisionId)
       .then((detail) => {
+        if (request !== latestRequest.current) return
         setRevision(detail)
         setActiveFile((current) => (detail.files.some((file) => file.path === current) ? current : detail.files[0]?.path || ''))
       })
-      .catch((reason) => setError(message(reason, 'Could not load the revision.')))
+      .catch((reason) => {
+        if (request === latestRequest.current) setError(message(reason, 'Could not load the revision.'))
+      })
   }, [model.id, revisionId])
 
   useEffect(() => {

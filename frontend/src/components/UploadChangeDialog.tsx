@@ -3,6 +3,7 @@ import { FilePlus2, FolderUp, GitCommitHorizontal, Trash2, X } from 'lucide-reac
 import { useClosingTransition } from '../motion'
 import type { LibraryModelDetails } from '../types'
 import { relativeUploadPath, useUploads, type UploadItem } from '../uploads'
+import { uploadCommitMessage } from '../uploadPlan'
 import { formatBytes } from '../utils'
 import { DialogFrame } from './Dialog'
 
@@ -50,7 +51,7 @@ export function UploadChangeDialog({ model, directory, onClose, onQueued }: Uplo
     file.path.toLowerCase().includes(filter.trim().toLowerCase()),
   )
   const defaultMessage = items.length
-    ? `Upload ${items.length} file${items.length === 1 ? '' : 's'}`
+    ? uploadCommitMessage(items.map((item) => item.path))
     : deletions.length
       ? `Delete ${deletions.length} file${deletions.length === 1 ? '' : 's'}`
       : 'Update files'

@@ -227,13 +227,32 @@ function HardwareCard({
   const [chosen, setChosen] = useState<string[]>(model.hardware)
   const [saving, setSaving] = useState(false)
   const labels = Object.fromEntries(model.hardware_options)
+  const editButton = useRef<HTMLButtonElement>(null)
+  const options = useRef<HTMLDivElement>(null)
+  const cancelButton = useRef<HTMLButtonElement>(null)
+  // Focus follows the swap: into the list when it opens, back to Edit when it closes.
+  const moveFocus = useRef(false)
+
+  useEffect(() => {
+    if (!moveFocus.current) return
+    moveFocus.current = false
+    const target = editing
+      ? options.current?.querySelector<HTMLInputElement>('input') || cancelButton.current
+      : editButton.current
+    target?.focus({ preventScroll: true })
+  }, [editing])
+
+  function edit(next: boolean) {
+    moveFocus.current = true
+    setEditing(next)
+  }
 
   async function save() {
     setSaving(true)
     try {
       const result = await api.updateModelHardware(model.id, chosen)
       onSaved(result.hardware)
-      setEditing(false)
+      edit(false)
     } catch (reason) {
       onToast(reason instanceof Error ? reason.message : 'Could not save the hardware tags.', 'error')
     } finally {
@@ -247,11 +266,12 @@ function HardwareCard({
         <h2>Hardware</h2>
         {model.can_edit && !editing && (
           <button
+            ref={editButton}
             type="button"
             className="quiet-link"
             onClick={() => {
               setChosen(model.hardware)
-              setEditing(true)
+              edit(true)
             }}
           >
             <Pencil size={13} /> Edit
@@ -260,7 +280,7 @@ function HardwareCard({
       </div>
       {editing ? (
         <>
-          <div className="hardware-options">
+          <div className="hardware-options" ref={options}>
             {model.hardware_options.map(([id, label]) => (
               <label key={id}>
                 <input
@@ -273,7 +293,7 @@ function HardwareCard({
             ))}
           </div>
           <div className="hardware-actions">
-            <button type="button" className="secondary-button compact" onClick={() => setEditing(false)}>Cancel</button>
+            <button ref={cancelButton} type="button" className="secondary-button compact" onClick={() => edit(false)}>Cancel</button>
             <button type="button" className="download-button compact" onClick={save} disabled={saving}>
               {saving && <LoaderCircle size={14} className="spin" />} Save
             </button>
@@ -398,12 +418,20 @@ function CommitSection({ model, commitId }: { model: LibraryModelDetails; commit
   const [error, setError] = useState('')
 
   useEffect(() => {
+    let ignore = false
     setCommit(null)
     setError('')
     api
       .commit(model.id, commitId)
-      .then(setCommit)
-      .catch((reason) => setError(reason.message))
+      .then((detail) => {
+        if (!ignore) setCommit(detail)
+      })
+      .catch((reason) => {
+        if (!ignore) setError(reason.message)
+      })
+    return () => {
+      ignore = true
+    }
   }, [commitId, model.id])
 
   if (error) return <div className="inline-error">{error}</div>
@@ -553,6 +581,7 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
         })
       }
       updateModel((current) => (current.id === model.id ? { ...current, saved } : current))
+      onToast(saved ? `${model.id} was saved for later.` : `${model.id} was removed from your saved library.`)
     } catch (reason) {
       onToast(reason instanceof Error ? reason.message : 'Unable to update saved models', 'error')
     } finally {

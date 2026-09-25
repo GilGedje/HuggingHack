@@ -1,36 +1,61 @@
-import { useCallback, useEffect, useState } from 'react'
-import { AlertCircle, Check, Cloud, LoaderCircle, RefreshCw, Server } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { AlertCircle, Check, Cloud, RefreshCw, Server } from 'lucide-react'
 import { api } from '../api'
 import type { RuntimeJob, RuntimeTarget } from '../types'
 import { formatBytes, relativeTime } from '../utils'
 import { RowSkeletons } from '../components/Skeletons'
 
 const runtimeActiveStatuses = ['queued', 'preparing', 'transferring', 'loading']
+/** The pause between one answer and the next poll. */
+const POLL_MS = 2000
+/** The least time Refresh shows its spinner. */
+const MIN_SPIN_MS = 500
 
 export function RuntimesPage() {
   const [targets, setTargets] = useState<RuntimeTarget[]>([])
   const [jobs, setJobs] = useState<RuntimeJob[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
+  const latest = useRef(0)
+  const timer = useRef(0)
+  const stopped = useRef(false)
 
-  const load = useCallback(() => {
-    setError('')
+  // One chain of polls: each waits for the previous answer, and a newer request
+  // (a Refresh press) makes any older answer still on its way count for nothing.
+  const load = useCallback((manual = false) => {
+    window.clearTimeout(timer.current)
+    const request = ++latest.current
+    const started = performance.now()
+    if (manual) setRefreshing(true)
     Promise.all([api.runtimeTargets(), api.runtimeJobs()])
       .then(([targetPayload, jobPayload]) => {
+        if (request !== latest.current) return
+        setError('')
         setTargets(targetPayload.items)
         setJobs(jobPayload.items)
       })
       .catch((reason) => {
-        const message = reason instanceof Error ? reason.message : 'Unable to read runtime targets.'
-        setError(message)
+        if (request !== latest.current) return
+        setError(reason instanceof Error ? reason.message : 'Unable to read runtime targets.')
       })
-      .finally(() => setLoading(false))
+      .finally(() => {
+        if (request !== latest.current || stopped.current) return
+        setLoading(false)
+        // A quick answer still spins long enough to be seen.
+        if (manual) window.setTimeout(() => setRefreshing(false), Math.max(0, MIN_SPIN_MS - (performance.now() - started)))
+        timer.current = window.setTimeout(() => load(), POLL_MS)
+      })
   }, [])
 
   useEffect(() => {
+    stopped.current = false
     load()
-    const timer = window.setInterval(load, 2000)
-    return () => window.clearInterval(timer)
+    return () => {
+      stopped.current = true
+      latest.current += 1
+      window.clearTimeout(timer.current)
+    }
   }, [load])
 
   return (
@@ -41,8 +66,8 @@ export function RuntimesPage() {
           <h1>Runtimes</h1>
           <p>Send cached models to Ollama over HTTP or switch a vLLM rig through the authenticated runtime agent.</p>
         </div>
-        <button type="button" className="secondary-button" onClick={load} disabled={loading}>
-          {loading ? <LoaderCircle size={16} className="spin" /> : <RefreshCw size={16} />}
+        <button type="button" className="secondary-button" onClick={() => load(true)} disabled={loading || refreshing} aria-busy={refreshing || undefined}>
+          <RefreshCw size={16} className={loading || refreshing ? 'spin' : undefined} />
           Refresh
         </button>
       </div>

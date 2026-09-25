@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Box, Building2, LogOut, Pencil, Plus, Trash2, UploadCloud, Users } from 'lucide-react'
 import { Link, NavLink, useNavigate, useParams } from 'react-router-dom'
 import { useAccess } from '../access'
@@ -11,6 +11,7 @@ import { ModelCardSkeletons, RowSkeletons } from '../components/Skeletons'
 import { useConfirm } from '../components/ConfirmDialog'
 import { MarkdownEditor, MarkdownText } from '../components/Markdown'
 import { markdownSummary } from '../markdownText'
+import { focusAfterRemoval } from '../focus'
 import { Avatar, AvatarEditor } from '../components/Avatar'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
@@ -78,24 +79,47 @@ function MembersTab({ organization, onChanged, onToast }: { organization: Organi
   const [role, setRole] = useState<OrganizationRole>('write')
   const [busy, setBusy] = useState(false)
 
-  async function run(action: () => Promise<OrganizationDetails>, message: string) {
+  // The only admin cannot step down or leave; someone must be able to manage it.
+  const admins = organization.members.filter((member) => member.role === 'admin').length
+  const lastAdmin = organization.my_role === 'admin' && admins <= 1
+
+  /** Resolves true when the change was saved. */
+  async function run(action: () => Promise<OrganizationDetails>, message: string): Promise<boolean> {
     setBusy(true)
     try {
       onChanged(await action())
       onToast(message)
+      return true
     } catch (reason) {
       onToast(errorMessage(reason, 'That change was not saved.'), 'error')
+      return false
     } finally {
       setBusy(false)
     }
   }
 
-  function add(event: FormEvent) {
+  async function add(event: FormEvent) {
     event.preventDefault()
     const name = username.trim().toLowerCase()
     if (!name) return
-    run(() => api.setOrganizationMember(organization.name, name, role), `${name} can now ${role === 'read' ? 'see' : 'upload to'} ${organization.name}.`)
-    setUsername('')
+    // The name stays put if the change fails, so a typo is quick to fix.
+    const saved = await run(
+      () => api.setOrganizationMember(organization.name, name, role),
+      `${name} can now ${role === 'read' ? 'see' : 'upload to'} ${organization.name}.`,
+    )
+    if (saved) setUsername('')
+  }
+
+  async function remove(username: string, trigger: HTMLElement) {
+    const refocus = focusAfterRemoval(trigger)
+    const sure = await confirm({
+      eyebrow: 'Remove member',
+      title: `Remove ${username} from ${organization.display_name}?`,
+      message: `They lose access to every ${organization.display_name} repository that is not public, including uploading to it. An admin can add them again.`,
+      confirmLabel: 'Remove member',
+      danger: true,
+    })
+    if (sure && (await run(() => api.removeOrganizationMember(organization.name, username), `${username} was removed.`))) refocus()
   }
 
   async function leave() {
@@ -124,11 +148,22 @@ function MembersTab({ organization, onChanged, onToast }: { organization: Organi
           <h2>Members</h2>
         </div>
         {organization.my_role && (
-          <button type="button" className="secondary-button compact" onClick={leave}>
+          <button
+            type="button"
+            className="secondary-button compact"
+            onClick={leave}
+            disabled={lastAdmin}
+            aria-describedby={lastAdmin ? 'org-last-admin' : undefined}
+          >
             <LogOut size={14} /> Leave
           </button>
         )}
       </div>
+      {lastAdmin && (
+        <p className="field-hint org-last-admin" id="org-last-admin">
+          You are the only admin. Make another member an admin before you step down or leave.
+        </p>
+      )}
       <ul className="org-role-help">
         {(Object.keys(ORG_ROLE_LABELS) as OrganizationRole[]).map((item) => (
           <li key={item}><strong>{ORG_ROLE_LABELS[item]}</strong> {ORG_ROLE_HELP[item]}</li>
@@ -151,10 +186,13 @@ function MembersTab({ organization, onChanged, onToast }: { organization: Organi
                   value={member.role}
                   disabled={busy}
                   aria-label={`Role for ${member.username}`}
+                  aria-describedby={member.id === user.id && lastAdmin ? 'org-last-admin' : undefined}
                   onChange={(event) => run(() => api.setOrganizationMember(organization.name, member.username, event.target.value), `${member.username} is now ${ORG_ROLE_LABELS[event.target.value as OrganizationRole].toLowerCase()}.`)}
                 >
                   {(Object.keys(ORG_ROLE_LABELS) as OrganizationRole[]).map((item) => (
-                    <option key={item} value={item}>{ORG_ROLE_LABELS[item]}</option>
+                    <option key={item} value={item} disabled={member.id === user.id && lastAdmin && item !== 'admin'}>
+                      {ORG_ROLE_LABELS[item]}
+                    </option>
                   ))}
                 </select>
                 {member.id !== user.id && (
@@ -163,7 +201,7 @@ function MembersTab({ organization, onChanged, onToast }: { organization: Organi
                     className="admin-user-actions-button danger-text"
                     aria-label={`Remove ${member.username}`}
                     title="Remove from organization"
-                    onClick={() => run(() => api.removeOrganizationMember(organization.name, member.username), `${member.username} was removed.`)}
+                    onClick={(event) => remove(member.username, event.currentTarget)}
                   >
                     <Trash2 size={15} />
                   </button>
@@ -189,7 +227,7 @@ function MembersTab({ organization, onChanged, onToast }: { organization: Organi
               ))}
             </select>
           </label>
-          <button className="download-button" disabled={busy}><Plus size={16} /> Add member</button>
+          <button className="download-button" disabled={busy || !username.trim()}><Plus size={16} /> Add member</button>
         </form>
       )}
     </section>
@@ -258,22 +296,48 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
   const indicator = useTabIndicator<HTMLDivElement>(`${tab}:${organization?.name}:${organization?.can_manage}`)
   const body = useFadeOnChange<HTMLDivElement>(tab)
 
+  // Only the latest load may answer: a slow reply for another organization, or
+  // for an earlier load of this one, is dropped.
+  const latest = useRef(0)
   const load = useCallback(() => {
-    api.organization(name).then(setOrganization).catch((reason) => setError(reason.message))
+    const request = ++latest.current
+    const current = () => request === latest.current
+    api
+      .organization(name)
+      .then((value) => {
+        if (!current()) return
+        setOrganization(value)
+        setError('')
+      })
+      .catch((reason) => {
+        if (current()) setError(reason.message)
+      })
     api
       .libraryModels(new URLSearchParams({ owner: name, sort: 'updated' }))
       .then((payload) => {
+        if (!current()) return
         setModels(payload.items)
         setHardwareLabels(Object.fromEntries(payload.facets.hardware.map(([id, label]) => [id, label])))
       })
-      .catch(() => setModels([]))
+      .catch(() => {
+        if (current()) setModels([])
+      })
     api
       .libraryModels(new URLSearchParams({ built_on: name, sort: 'updated' }))
-      .then((payload) => setBuiltOn(payload.items))
-      .catch(() => setBuiltOn([]))
+      .then((payload) => {
+        if (current()) setBuiltOn(payload.items)
+      })
+      .catch(() => {
+        if (current()) setBuiltOn([])
+      })
   }, [name])
 
+  // Another organization starts from nothing, so the last one never shows under its name.
   useEffect(() => {
+    setOrganization(null)
+    setModels(null)
+    setBuiltOn([])
+    setError('')
     load()
   }, [load])
 
@@ -284,6 +348,7 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
       const flip = (item: LibraryModel) => (item.id === model.id ? { ...item, saved: !model.saved } : item)
       setModels((current) => current?.map(flip) || null)
       setBuiltOn((current) => current.map(flip))
+      onToast(model.saved ? `${model.id} was removed from your saved library.` : `${model.id} was saved for later.`)
     } catch (reason) {
       onToast(errorMessage(reason, 'Could not update saved models.'), 'error')
     }

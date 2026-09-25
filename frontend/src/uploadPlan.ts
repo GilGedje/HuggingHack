@@ -42,6 +42,26 @@ export function isSkipped(path: string): boolean {
   )
 }
 
+/** Files the server leaves out of a commit's record and the file count: any
+ * path with a part that starts with a dot, like `.gitattributes`, or a
+ * `__pycache__` folder. They are still stored. Mirrors `indexer.hidden_path`. */
+export function isRecorded(path: string): boolean {
+  const parts = path.split('/').filter(Boolean)
+  const name = parts[parts.length - 1] || ''
+  return !(
+    parts.some((part) => part.startsWith('.') || part === '__pycache__') ||
+    name.endsWith('.hugginghack-part') ||
+    name.endsWith('.hugginghack-s3-part')
+  )
+}
+
+/** The default commit message for uploading these paths, counting only the
+ * files the commit will list. */
+export function uploadCommitMessage(paths: string[]): string {
+  const count = paths.filter(isRecorded).length
+  return count ? `Upload ${count} file${count === 1 ? '' : 's'}` : 'Upload files'
+}
+
 export function planUpload<T extends PlannedEntry>(entries: T[]): UploadPlan<T> {
   const files = entries.filter((entry) => !isSkipped(entry.path))
   const skipped = entries.filter((entry) => isSkipped(entry.path))

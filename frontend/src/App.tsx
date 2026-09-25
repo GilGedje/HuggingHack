@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   Box,
@@ -36,7 +36,9 @@ import { AccountPage } from './pages/AccountPage'
 import { AdminPage } from './pages/AdminPage'
 import { ModelPage } from './pages/ModelPage'
 import { OrganizationPage, OrganizationsIndex } from './pages/OrganizationPage'
-import { TOAST_EXIT_MS, useFadeOnChange } from './motion'
+import { TOAST_EXIT_MS, crossfade, useFadeOnChange } from './motion'
+import { useAppTheme } from './appTheme'
+import type { Theme } from './theme'
 import { UploadProvider } from './uploads'
 import Shell from './components/Shell'
 import type {
@@ -48,6 +50,7 @@ import type {
 import { formatBytes } from './utils'
 import { ConfirmProvider } from './components/ConfirmDialog'
 import { relationGroup } from './modelTree'
+import { CATALOG_FILTER_KEYS, readCatalogFilters, writeCatalogFilters } from './catalog'
 
 type ToastTone = 'success' | 'error'
 
@@ -63,12 +66,37 @@ function readFiltersHidden(): boolean {
 }
 type ToastHandler = (message: string, tone?: ToastTone) => void
 
+const SORTS = ['updated', 'name', 'size', 'parameters']
+
 function ModelsPage({ onToast }: { onToast: ToastHandler }) {
   const [searchParams, setSearchParams] = useSearchParams()
   const [search, setSearch] = useState(searchParams.get('search') || '')
-  const [filters, setFilters] = useState<ModelFilterState>(EMPTY_FILTERS)
   const { user, can } = useAccess()
-  const [sort, setSort] = useState<string>(user.preferences?.catalog_sort || 'updated')
+  // Filters and sort live in the address, so reload, Back, and shared links keep
+  // them. Each change replaces the entry: dragging the size slider is not history.
+  const filterKey = CATALOG_FILTER_KEYS.map((key) => searchParams.get(key) || '').join('\n')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const filters = useMemo<ModelFilterState>(() => readCatalogFilters(searchParams), [filterKey])
+  const defaultSort = user.preferences?.catalog_sort || 'updated'
+  const urlSort = searchParams.get('sort') || ''
+  const sort = SORTS.includes(urlSort) ? urlSort : defaultSort
+  const setFilters = useCallback(
+    (next: ModelFilterState) => setSearchParams((current) => writeCatalogFilters(next, current), { replace: true }),
+    [setSearchParams],
+  )
+  const setSort = useCallback(
+    (value: string) =>
+      setSearchParams(
+        (current) => {
+          const next = new URLSearchParams(current)
+          if (value === defaultSort) next.delete('sort')
+          else next.set('sort', value)
+          return next
+        },
+        { replace: true },
+      ),
+    [setSearchParams, defaultSort],
+  )
   const [models, setModels] = useState<LibraryModel[]>([])
   const [facets, setFacets] = useState<LibraryFacets>({ tasks: {}, precision: {}, hardware: [] })
   const [libraryTotal, setLibraryTotal] = useState(0)
@@ -408,10 +436,14 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
 
 function Application({
   authStatus,
+  theme,
   onAuthChange,
+  onLogout,
 }: {
   authStatus: AuthStatus
+  theme: Theme
   onAuthChange: (status: AuthStatus) => void
+  onLogout: () => void
 }) {
   const [toast, setToast] = useState<{ id: number; message: string; tone: ToastTone } | null>(null)
   const [leavingToast, setLeavingToast] = useState(0)
@@ -444,19 +476,11 @@ function Application({
 
   const user = authStatus.user as User
 
-  async function logout() {
-    try {
-      await api.logout()
-    } finally {
-      onAuthChange({ ...authStatus, user: null, csrf_token: null })
-    }
-  }
-
   return (
     <AccessProvider user={user} capabilities={capabilities} refresh={refreshAccess}>
     <ConfirmProvider>
     <UploadProvider onToast={showToast}>
-    <Shell user={user} onLogout={logout}>
+    <Shell user={user} theme={theme} onLogout={onLogout}>
       <div ref={view}>
       <Routes>
         <Route path="/" element={<Navigate to="/models" replace />} />
@@ -505,20 +529,52 @@ function Application({
 export default function App() {
   const [status, setStatus] = useState<AuthStatus | null>(null)
   const [error, setError] = useState('')
+  // Why the sign-in page is showing, when it is not the obvious reason.
+  const [notice, setNotice] = useState('')
+  // Signed in, an account without a saved theme follows the device, as its
+  // Preferences say; signed out, this browser's last choice applies.
+  const theme = useAppTheme(status?.user ? status.user.preferences?.theme || 'system' : undefined)
+  const signedIn = useRef(false)
+  signedIn.current = Boolean(status?.user)
+  const signingOut = useRef(false)
 
   const refreshAuth = useCallback(() => {
     setError('')
     api
       .authStatus()
-      .then(setStatus)
+      .then((next) => {
+        setStatus(next)
+        if (next.user) setNotice('')
+      })
       .catch((reason) => setError(reason instanceof Error ? reason.message : 'Unable to reach HuggingHack'))
   }, [])
 
   useEffect(() => {
     refreshAuth()
-    window.addEventListener('hugginghack:unauthorized', refreshAuth)
-    return () => window.removeEventListener('hugginghack:unauthorized', refreshAuth)
+    // A request refused mid-visit means the session ended under us.
+    const expired = () => {
+      if (signedIn.current && !signingOut.current) setNotice('Your session expired. Sign in again.')
+      refreshAuth()
+    }
+    window.addEventListener('hugginghack:unauthorized', expired)
+    return () => window.removeEventListener('hugginghack:unauthorized', expired)
   }, [refreshAuth])
+
+  async function logout() {
+    if (!status) return
+    // Signing out of a session that already ended is still a sign-out, not an expiry.
+    signingOut.current = true
+    try {
+      await api.logout()
+    } finally {
+      // The next person to sign in starts from the front page, not this account's last one.
+      crossfade(() => {
+        window.history.replaceState(null, '', '#/')
+        setStatus({ ...status, user: null, csrf_token: null })
+      })
+      signingOut.current = false
+    }
+  }
 
   if (error) {
     return (
@@ -544,12 +600,22 @@ export default function App() {
   }
 
   if (status.setup_required || !status.user) {
-    return <AuthScreen setup={status.setup_required} oidc={status.oidc} onAuthenticated={setStatus} />
+    return (
+      <AuthScreen
+        setup={status.setup_required}
+        oidc={status.oidc}
+        notice={notice}
+        onAuthenticated={(next) => {
+          setNotice('')
+          setStatus(next)
+        }}
+      />
+    )
   }
 
   return (
     <HashRouter>
-      <Application authStatus={status} onAuthChange={setStatus} />
+      <Application authStatus={status} theme={theme} onAuthChange={setStatus} onLogout={logout} />
     </HashRouter>
   )
 }

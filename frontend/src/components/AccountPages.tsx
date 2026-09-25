@@ -1,7 +1,9 @@
 import {
+  AlertCircle,
   Archive,
   BookMarked,
   Check,
+  Clock,
   Eye,
   KeyRound,
   EyeOff,
@@ -33,6 +35,7 @@ import { useNavigate } from 'react-router-dom'
 import { RowSkeletons } from './Skeletons'
 import { useConfirm } from './ConfirmDialog'
 import { prefersReducedMotion, useFadeOnChange, useSlidingHighlight } from '../motion'
+import { ssoErrorMessage } from '../ssoError'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -40,13 +43,14 @@ function takeSsoError(): string {
   // The sign-in callback reports problems as #/?sso_error=...; show it once.
   const [path, query = ''] = window.location.hash.replace(/^#/, '').split('?')
   const params = new URLSearchParams(query)
-  const message = params.get('sso_error') || ''
-  if (message) {
+  const code = params.get('sso_error') || ''
+  if (code) {
     params.delete('sso_error')
     const rest = params.toString()
     window.history.replaceState(null, '', `#${path || '/'}${rest ? `?${rest}` : ''}`)
   }
-  return message
+  // Anyone can put text in a link, so only a fixed message is ever shown.
+  return ssoErrorMessage(code)
 }
 
 function currentPath(): string {
@@ -57,10 +61,13 @@ function currentPath(): string {
 export function AuthScreen({
   setup,
   oidc,
+  notice,
   onAuthenticated,
 }: {
   setup: boolean
   oidc?: { enabled: boolean; name: string }
+  /** Why they are here, such as a session that expired. */
+  notice?: string
   onAuthenticated: (status: AuthStatus) => void
 }) {
   const [username, setUsername] = useState('')
@@ -109,6 +116,16 @@ export function AuthScreen({
           <span className="eyebrow">{setup ? 'One-time setup' : 'HuggingHack account'}</span>
           <h2>{setup ? 'Set up your library' : 'Sign in'}</h2>
         </div>
+        {/* Problems sit at the top, above every way in, where they are read first. */}
+        {error ? (
+          <div className="inline-error auth-message" role="alert">
+            <AlertCircle size={16} /> {error}
+          </div>
+        ) : notice ? (
+          <div className="auth-message auth-notice" role="status">
+            <Clock size={16} /> {notice}
+          </div>
+        ) : null}
         {sso && (
           <>
             <a
@@ -167,7 +184,6 @@ export function AuthScreen({
           </span>
           {setup && <small>Use at least 12 characters. HuggingHack stores a salted scrypt hash.</small>}
         </label>
-        {error && <div className="inline-error">{error}</div>}
         <button className={sso ? 'secondary-button auth-submit' : 'download-button auth-submit'} disabled={submitting}>
           {submitting ? <LoaderCircle size={17} className="spin" /> : <LockKeyhole size={17} />}
           {submitting ? 'Working…' : setup ? 'Create owner account' : 'Sign in'}
@@ -349,9 +365,10 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
                 value={newCollection}
                 onChange={(event) => setNewCollection(event.target.value)}
                 placeholder="New collection"
+                aria-label="New collection name"
                 maxLength={80}
               />
-              <button aria-label="Create collection"><Plus size={15} /></button>
+              <button aria-label="Create collection" disabled={!newCollection.trim()}><Plus size={15} /></button>
             </form>
           </aside>
           <section className="saved-library">

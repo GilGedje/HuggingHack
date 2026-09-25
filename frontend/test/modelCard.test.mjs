@@ -105,3 +105,17 @@ test('resolves local model card images through the library asset endpoint', () =
   )
   assert.equal(resolveLocalModelCardUrl('javascript:alert(1)', 'href', 'acme/model'), null)
 })
+
+test('drops srcset so a picture source cannot load an external address', () => {
+  const source = '<picture><source srcset="http://x/y.png"><img src="chart.png" srcset="http://x/z.png 2x"></picture>'
+  const html = renderToStaticMarkup(
+    React.createElement(
+      ReactMarkdown,
+      { rehypePlugins: [rehypeRaw, [rehypeSanitize, modelCardSanitizeSchema]] },
+      source,
+    ),
+  )
+  assert.match(html, /<source\/?>/)
+  assert.match(html, /<img src="chart.png"/)
+  assert.doesNotMatch(html, /srcset|x\/y\.png|x\/z\.png/i)
+})

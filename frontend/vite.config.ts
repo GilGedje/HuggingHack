@@ -5,7 +5,9 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/api': 'http://127.0.0.1:7860',
+      // xfwd sends X-Forwarded-Host, so the backend's same-origin check on
+      // writes accepts the dev server's Origin.
+      '/api': { target: 'http://127.0.0.1:7860', changeOrigin: true, xfwd: true },
     },
   },
 })

@@ -33,3 +33,32 @@ test('precision filters group by width while labels stay exact', async () => {
   assert.equal(precisionLabel('int8'), 'INT8')
   assert.equal(precisionLabel('mxfp4'), 'MXFP4')
 })
+
+test('Explore filters survive a trip through the address', async () => {
+  const { readCatalogFilters, writeCatalogFilters } = await import('../src/catalog.ts')
+  const trip = (filters) => readCatalogFilters(new URLSearchParams(writeCatalogFilters(filters, new URLSearchParams()).toString()))
+  const full = { tasks: [], precision: [], hardware: [], size: [0, last] }
+  for (const size of [[0, last], [3, 5], [0, 0], [0, 3], [6, last], [last, last], [4, 4]]) {
+    assert.deepEqual(trip({ ...full, size }).size, size)
+  }
+  const chosen = { tasks: ['text-generation', 'any-to-any'], precision: ['fp8'], hardware: ['h100'], size: [3, 5] }
+  assert.deepEqual(trip(chosen), chosen)
+  const written = writeCatalogFilters(chosen, new URLSearchParams('search=qwen&task=old&base_model=a/b'))
+  assert.equal(written.get('search'), 'qwen')
+  assert.equal(written.get('base_model'), 'a/b')
+  assert.equal(written.get('task'), 'text-generation,any-to-any')
+  assert.equal(written.get('size'), '8B-32B')
+  assert.equal(writeCatalogFilters(full, written).toString(), 'search=qwen&base_model=a%2Fb')
+})
+
+test('unreadable filters in the address count as unset', async () => {
+  const { readCatalogFilters } = await import('../src/catalog.ts')
+  assert.deepEqual(readCatalogFilters(new URLSearchParams('size=huge-tiny&task=,,')), {
+    tasks: [],
+    precision: [],
+    hardware: [],
+    size: [0, last],
+  })
+  assert.deepEqual(readCatalogFilters(new URLSearchParams('size=32B-8B')).size, [0, last])
+  assert.deepEqual(readCatalogFilters(new URLSearchParams('size=70b-')).size, [6, last])
+})

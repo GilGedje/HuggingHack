@@ -4,8 +4,9 @@ import { useNavigate } from 'react-router-dom'
 import { useAccess } from '../access'
 import { api } from '../api'
 import type { LibraryModelDetails, ListingOverrides, UploadNamespace, Visibility } from '../types'
-import { VISIBILITIES, visibilityAllowed, visibilityAudience, visibilityLabel } from '../visibility'
+import { VISIBILITIES, visibilityAllowed, visibilityAudience, visibilityConfirmation, visibilityLabel } from '../visibility'
 import { ChoiceCard } from './ChoiceCard'
+import { useConfirm } from './ConfirmDialog'
 import { sameOverrides } from '../listingFields'
 import { ListingEditor } from './ListingEditor'
 import { NamespacePicker } from './NamespacePicker'
@@ -34,6 +35,7 @@ export function RepositorySettings({
   onToast: ToastHandler
 }) {
   const { can } = useAccess()
+  const confirm = useConfirm()
   const navigate = useNavigate()
   const [owner, name] = model.id.split('/')
   const organization = model.organization?.name || null
@@ -133,7 +135,12 @@ export function RepositorySettings({
 
   async function changeVisibility(next: Visibility) {
     const previous = visibility
+    // The choice shows while the question is open and goes back if it is declined.
     setVisibility(next)
+    if (!(await confirm(visibilityConfirmation(model.id, next, organization)))) {
+      setVisibility(previous)
+      return
+    }
     setSavingVisibility(true)
     try {
       await api.updateUploadRepository(model.id, { description: model.description, visibility: next })

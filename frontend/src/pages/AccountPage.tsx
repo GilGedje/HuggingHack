@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import {
+  AlertCircle,
   Check,
   KeyRound,
   LoaderCircle,
@@ -18,6 +19,8 @@ import { PasswordForm } from '../components/PasswordForm'
 import { CopyButton } from '../components/UseModel'
 import type { AccountOverview, AccountSession, ApiToken, StorageOption } from '../types'
 import { resolveServerUrl } from '../useModel'
+import { focusAfterRemoval } from '../focus'
+import { THEME_EVENT, announceThemePreference, readThemePreference } from '../theme'
 import { avatarUrl, describeDevice, relativeTime } from '../utils'
 import { RowSkeletons } from '../components/Skeletons'
 import { useConfirm } from '../components/ConfirmDialog'
@@ -44,14 +47,11 @@ function ProfileTab({ overview, onToast, onSaved }: { overview: AccountOverview;
   const external = (overview.user.auth_provider || 'local') !== 'local'
   const editable = overview.accounts_enabled && !external
 
+  const [revokedTokens, setRevokedTokens] = useState(0)
+
   async function changePassword(next: string, current: string) {
-    try {
-      await api.changePassword({ current_password: current, new_password: next })
-      onToast('Password changed. Your other sessions were signed out.')
-    } catch (reason) {
-      onToast(errorMessage(reason, 'Could not change your password.'), 'error')
-      throw reason
-    }
+    const result = await api.changePassword({ current_password: current, new_password: next })
+    setRevokedTokens(result.api_tokens_revoked || 0)
   }
 
   async function save(event: FormEvent) {
@@ -127,10 +127,19 @@ function ProfileTab({ overview, onToast, onSaved }: { overview: AccountOverview;
               <KeyRound size={20} />
               <div>
                 <h2>Password</h2>
-                <p>Changing it signs out your other sessions.</p>
+                <p>Changing it signs out your other sessions and revokes your API tokens.</p>
               </div>
             </div>
-            <PasswordForm askCurrent submitLabel="Change password" onSubmit={changePassword} />
+            <PasswordForm
+              askCurrent
+              submitLabel="Change password"
+              doneMessage={
+                revokedTokens
+                  ? `Password changed. Your other sessions were signed out and your ${revokedTokens === 1 ? 'API token was' : `${revokedTokens} API tokens were`} revoked; create new tokens where you still need them.`
+                  : 'Password changed. Your other sessions were signed out.'
+              }
+              onSubmit={changePassword}
+            />
           </section>
         )}
       </div>
@@ -139,7 +148,16 @@ function ProfileTab({ overview, onToast, onSaved }: { overview: AccountOverview;
           <ShieldCheck size={20} />
           <div>
             <h2>{ROLE_LABELS[overview.user.role]} access</h2>
-            <p>Your role decides what you can do. Ask an administrator to change it.</p>
+            <p>
+              {overview.user.role === 'admin' ? (
+                <>
+                  Your role decides what you can do. You change roles under{' '}
+                  <Link to="/admin/users">Admin → Users</Link>; another administrator can change yours.
+                </>
+              ) : (
+                'Your role decides what you can do. Ask an administrator to change it.'
+              )}
+            </p>
           </div>
         </div>
         <ul className="capability-list">
@@ -177,22 +195,50 @@ function ProfileTab({ overview, onToast, onSaved }: { overview: AccountOverview;
   )
 }
 
+/** A list that could not be read, in place of looking empty, with a way to try again. */
+function LoadError({ what, message, onRetry }: { what: string; message: string; onRetry: () => void }) {
+  return (
+    <div className="page-error" role="alert">
+      <AlertCircle size={18} />
+      <div>
+        <strong>Could not load {what}</strong>
+        <p>{message}</p>
+      </div>
+      <button type="button" onClick={onRetry}>Retry</button>
+    </div>
+  )
+}
+
 function SecurityTab({ overview, onToast }: { overview: AccountOverview; onToast: ToastHandler }) {
-  const [sessions, setSessions] = useState<AccountSession[]>([])
+  const confirm = useConfirm()
+  const [sessions, setSessions] = useState<AccountSession[] | null>(null)
+  const [loadError, setLoadError] = useState('')
 
   const load = useCallback(() => {
     if (!overview.accounts_enabled) return
-    api.sessions().then((payload) => setSessions(payload.items)).catch(() => undefined)
+    setLoadError('')
+    api
+      .sessions()
+      .then((payload) => setSessions(payload.items))
+      .catch((reason) => setLoadError(errorMessage(reason, 'The server did not answer.')))
   }, [overview.accounts_enabled])
 
   useEffect(() => {
     load()
   }, [load])
 
-  async function revoke(session: AccountSession) {
+  async function revoke(session: AccountSession, trigger: HTMLElement) {
+    const refocus = focusAfterRemoval(trigger)
+    const sure = await confirm({
+      title: `Sign out ${describeDevice(session.user_agent)}?`,
+      message: 'That browser has to sign in again. Your API tokens keep working.',
+      confirmLabel: 'Sign out',
+    })
+    if (!sure) return
     try {
       await api.revokeSession(session.id)
       onToast('That session was signed out.')
+      refocus()
       load()
     } catch (reason) {
       onToast(errorMessage(reason, 'Could not sign out that session.'), 'error')
@@ -200,6 +246,13 @@ function SecurityTab({ overview, onToast }: { overview: AccountOverview; onToast
   }
 
   async function revokeOthers() {
+    const others = (sessions?.length || 1) - 1
+    const sure = await confirm({
+      title: `Sign out ${others === 1 ? 'your other session' : `all ${others} other sessions`}?`,
+      message: 'Every other browser signed in to your account has to sign in again. This one stays signed in, and your API tokens keep working.',
+      confirmLabel: 'Sign out others',
+    })
+    if (!sure) return
     try {
       await api.revokeOtherSessions()
       onToast('Every other session was signed out.')
@@ -223,25 +276,31 @@ function SecurityTab({ overview, onToast }: { overview: AccountOverview; onToast
             <p>Browsers signed in to your account.</p>
           </div>
         </div>
-        <ul className="session-list">
-          {sessions.map((session) => (
-            <li key={session.id}>
-              <div>
-                <strong>{describeDevice(session.user_agent)}</strong>
-                {session.current && <span className="local-badge">This browser</span>}
-                <small>
-                  {session.ip || 'Unknown address'} · signed in {relativeTime(session.created_at)} · active {relativeTime(session.last_seen_at)}
-                </small>
-              </div>
-              {!session.current && (
-                <button type="button" className="secondary-button compact" onClick={() => revoke(session)}>
-                  <LogOut size={14} /> Sign out
-                </button>
-              )}
-            </li>
-          ))}
-        </ul>
-        {sessions.length > 1 && (
+        {loadError ? (
+          <LoadError what="your sessions" message={loadError} onRetry={load} />
+        ) : sessions === null ? (
+          <RowSkeletons rows={2} cells={1} label="Loading your sessions" />
+        ) : (
+          <ul className="session-list">
+            {sessions.map((session) => (
+              <li key={session.id}>
+                <div>
+                  <strong>{describeDevice(session.user_agent)}</strong>
+                  {session.current && <span className="local-badge">This browser</span>}
+                  <small>
+                    {session.ip || 'Unknown address'} · signed in {relativeTime(session.created_at)} · active {relativeTime(session.last_seen_at)}
+                  </small>
+                </div>
+                {!session.current && (
+                  <button type="button" className="secondary-button compact" onClick={(event) => revoke(session, event.currentTarget)}>
+                    <LogOut size={14} /> Sign out
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        {sessions && !loadError && sessions.length > 1 && (
           <button type="button" className="secondary-button" onClick={revokeOthers}>
             <LogOut size={15} /> Sign out all other sessions
           </button>
@@ -261,16 +320,23 @@ const EXPIRY_OPTIONS: Array<[string, number | null]> = [
 function TokensTab({ overview, onToast }: { overview: AccountOverview; onToast: ToastHandler }) {
   const { can } = useAccess()
   const confirm = useConfirm()
-  const [tokens, setTokens] = useState<ApiToken[]>([])
+  const [tokens, setTokens] = useState<ApiToken[] | null>(null)
+  const [loadError, setLoadError] = useState('')
   const [name, setName] = useState('')
   const [scope, setScope] = useState<'read' | 'write'>('read')
+  // A write token can do no more than its owner, and viewers cannot change anything.
+  const canWrite = can('repos.create') || can('repos.edit_own') || can('repos.edit_any')
   const [expiry, setExpiry] = useState('90 days')
   const [created, setCreated] = useState<ApiToken | null>(null)
   const [publicUrl, setPublicUrl] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
   const load = useCallback(() => {
-    api.tokens().then((payload) => setTokens(payload.items)).catch(() => undefined)
+    setLoadError('')
+    api
+      .tokens()
+      .then((payload) => setTokens(payload.items))
+      .catch((reason) => setLoadError(errorMessage(reason, 'The server did not answer.')))
   }, [])
 
   useEffect(() => {
@@ -286,7 +352,7 @@ function TokensTab({ overview, onToast }: { overview: AccountOverview; onToast: 
       // null is a real choice ("Never"); only an unknown label falls back to 90 days.
       const option = EXPIRY_OPTIONS.find(([label]) => label === expiry)
       const expires = option ? option[1] : 90
-      const token = await api.createToken({ name, scope, expires_in_days: expires })
+      const token = await api.createToken({ name, scope: canWrite ? scope : 'read', expires_in_days: expires })
       setCreated(token)
       setName('')
       load()
@@ -297,7 +363,8 @@ function TokensTab({ overview, onToast }: { overview: AccountOverview; onToast: 
     }
   }
 
-  async function revoke(token: ApiToken) {
+  async function revoke(token: ApiToken, trigger: HTMLElement) {
+    const refocus = focusAfterRemoval(trigger)
     const sure = await confirm({
       title: `Revoke “${token.name}”?`,
       message: 'Anything that uses it stops working immediately. This cannot be undone.',
@@ -309,6 +376,7 @@ function TokensTab({ overview, onToast }: { overview: AccountOverview; onToast: 
       await api.deleteToken(token.id)
       onToast(`“${token.name}” was revoked.`)
       if (created?.id === token.id) setCreated(null)
+      refocus()
       load()
     } catch (reason) {
       onToast(errorMessage(reason, 'Could not revoke the token.'), 'error')
@@ -342,10 +410,15 @@ function TokensTab({ overview, onToast }: { overview: AccountOverview; onToast: 
           </label>
           <label>
             Access
-            <select value={scope} onChange={(event) => setScope(event.target.value as 'read' | 'write')}>
+            <select
+              value={canWrite ? scope : 'read'}
+              onChange={(event) => setScope(event.target.value as 'read' | 'write')}
+              aria-describedby={canWrite ? undefined : 'token-read-only'}
+            >
               <option value="read">Read: browse and pull models</option>
-              <option value="write">Write: also upload and change repositories</option>
+              <option value="write" disabled={!canWrite}>Write: also upload and change repositories</option>
             </select>
+            {!canWrite && <small id="token-read-only">Your role can only read, so its tokens are read-only.</small>}
           </label>
           <label>
             Expires
@@ -360,7 +433,7 @@ function TokensTab({ overview, onToast }: { overview: AccountOverview; onToast: 
         {created?.token && (
           <div className="new-token">
             <strong>Copy your new token now. It will not be shown again.</strong>
-            <div className="snippet-code">
+            <div className="snippet-code new-token-value">
               <pre><code>{created.token}</code></pre>
               <CopyButton text={created.token} label="Copy token" />
             </div>
@@ -380,25 +453,31 @@ function TokensTab({ overview, onToast }: { overview: AccountOverview; onToast: 
             <p>Revoke any token you no longer use.</p>
           </div>
         </div>
-        <ul className="token-list">
-          {tokens.map((token) => (
-            <li key={token.id}>
-              <div>
-                <strong>{token.name}</strong>
-                <code>{token.prefix}…</code>
-                <span className={token.scope === 'write' ? 'change-tag modified' : 'change-tag added'}>{token.scope}</span>
-                <small>
-                  Created {relativeTime(token.created_at)} · last used {token.last_used_at ? relativeTime(token.last_used_at) : 'never'} ·{' '}
-                  {token.expires_at ? `expires ${relativeTime(token.expires_at)}` : 'never expires'}
-                </small>
-              </div>
-              <button type="button" className="secondary-button compact danger-text" onClick={() => revoke(token)}>
-                <Trash2 size={14} /> Revoke
-              </button>
-            </li>
-          ))}
-          {tokens.length === 0 && <li className="empty-compact">No tokens yet.</li>}
-        </ul>
+        {loadError ? (
+          <LoadError what="your tokens" message={loadError} onRetry={load} />
+        ) : tokens === null ? (
+          <RowSkeletons rows={2} cells={1} label="Loading your tokens" />
+        ) : (
+          <ul className="token-list">
+            {tokens.map((token) => (
+              <li key={token.id}>
+                <div>
+                  <strong>{token.name}</strong>
+                  <code>{token.prefix}…</code>
+                  <span className={token.scope === 'write' ? 'change-tag modified' : 'change-tag added'}>{token.scope}</span>
+                  <small>
+                    Created {relativeTime(token.created_at)} · last used {token.last_used_at ? relativeTime(token.last_used_at) : 'never'} ·{' '}
+                    {token.expires_at ? `expires ${relativeTime(token.expires_at)}` : 'never expires'}
+                  </small>
+                </div>
+                <button type="button" className="secondary-button compact danger-text" onClick={(event) => revoke(token, event.currentTarget)}>
+                  <Trash2 size={14} /> Revoke
+                </button>
+              </li>
+            ))}
+            {tokens.length === 0 && <li className="empty-compact">No tokens yet.</li>}
+          </ul>
+        )}
       </section>
     </div>
   )
@@ -407,6 +486,16 @@ function TokensTab({ overview, onToast }: { overview: AccountOverview; onToast: 
 function PreferencesTab({ overview, onToast }: { overview: AccountOverview; onToast: ToastHandler }) {
   const { can, refresh } = useAccess()
   const [preferences, setPreferences] = useState(overview.user.preferences || {})
+
+  // The header's theme button changes the same preference; the menu follows it.
+  useEffect(() => {
+    const follow = (event: Event) => {
+      const theme = readThemePreference((event as CustomEvent<unknown>).detail)
+      if (theme) setPreferences((current) => ({ ...current, theme }))
+    }
+    window.addEventListener(THEME_EVENT, follow)
+    return () => window.removeEventListener(THEME_EVENT, follow)
+  }, [])
   const [targets, setTargets] = useState<StorageOption[]>([])
 
   useEffect(() => {
@@ -419,7 +508,7 @@ function PreferencesTab({ overview, onToast }: { overview: AccountOverview; onTo
     try {
       const updated = await api.updatePreferences({ [key]: value || null })
       setPreferences(updated)
-      if (key === 'theme') window.dispatchEvent(new CustomEvent('hugginghack:theme', { detail: value }))
+      if (key === 'theme') announceThemePreference(readThemePreference(value) || 'system')
       refresh()
       onToast('Preference saved.')
     } catch (reason) {

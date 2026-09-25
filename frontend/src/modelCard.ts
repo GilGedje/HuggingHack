@@ -157,13 +157,19 @@ export function modelCardHeadingId(value: string): string {
 
 const attributes = defaultSchema.attributes || {}
 
+/** `srcset` never passes through the URL check that `src` and `href` get, so a
+ * `<picture>` source could load any external address; it is dropped. */
+const withoutSrcSet = (list: NonNullable<typeof attributes.img> = []) =>
+  list.filter((attribute) => (Array.isArray(attribute) ? attribute[0] : attribute) !== 'srcSet')
+
 export const modelCardSanitizeSchema = {
   ...defaultSchema,
   attributes: {
     ...attributes,
     div: [...(attributes.div || []), 'align'],
     p: [...(attributes.p || []), 'align'],
-    img: [...(attributes.img || []), 'align', 'height', 'width'],
+    img: [...withoutSrcSet(attributes.img), 'align', 'height', 'width'],
+    source: withoutSrcSet(attributes.source),
     details: [...(attributes.details || []), 'open'],
   },
 }

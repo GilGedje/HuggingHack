@@ -366,13 +366,13 @@ function TargetSection({
                       )}
                     </small>
                   </span>
-                  <span role="cell">{formatBytes(model.size_bytes)}</span>
-                  <span role="cell">{formatNumber(model.file_count)}</span>
-                  <span role="cell">{model.parameter_count ? formatNumber(model.parameter_count) : '—'}</span>
-                  <span role="cell">
+                  <span role="cell" data-label="Size">{formatBytes(model.size_bytes)}</span>
+                  <span role="cell" data-label="Files">{formatNumber(model.file_count)}</span>
+                  <span role="cell" data-label="Parameters">{model.parameter_count ? formatNumber(model.parameter_count) : '—'}</span>
+                  <span role="cell" data-label="Status">
                     {target.kind === 'filesystem' ? 'On disk' : model.cached ? 'Cached' : 'S3 only'}
                   </span>
-                  <span role="cell">{relativeTime(model.modified_at)}</span>
+                  <span role="cell" data-label="Updated">{relativeTime(model.modified_at)}</span>
                   <span role="cell" className="storage-model-actions">
                     {canManage && canMove && !move && (
                       <button type="button" className="secondary-button compact" onClick={() => onMove(model)}>

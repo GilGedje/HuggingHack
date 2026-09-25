@@ -50,6 +50,28 @@ function applyAuth(status: AuthStatus): AuthStatus {
   return status
 }
 
+/**
+ * Readable text for an error body's `detail`. Validation failures (422) send a
+ * list of `{loc, msg}` objects rather than a sentence, so the first one is
+ * named by its field.
+ */
+export function errorDetail(detail: unknown, fallback: string): string {
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (Array.isArray(detail) && detail.length) {
+    const first = detail[0] as { loc?: unknown; msg?: unknown } | null
+    const text = typeof first?.msg === 'string' ? first.msg.replace(/^Value error,\s*/, '') : ''
+    if (!text) return fallback
+    const loc = Array.isArray(first?.loc) ? first.loc : []
+    const field = [...loc].reverse().find(
+      (part): part is string => typeof part === 'string' && !['body', 'query', 'path', 'header'].includes(part),
+    )
+    const sentence = field ? `${field.replace(/_/g, ' ')}: ${text}` : text
+    const more = detail.length > 1 ? ` (and ${detail.length - 1} more problem${detail.length === 2 ? '' : 's'})` : ''
+    return `${sentence[0].toUpperCase()}${sentence.slice(1)}${more}`
+  }
+  return fallback
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body && typeof init.body === 'string' && !headers.has('Content-Type')) {
@@ -66,7 +88,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) {
     if (response.status === 401) window.dispatchEvent(new Event('hugginghack:unauthorized'))
-    throw new Error(payload.detail || `Request failed with status ${response.status}`)
+    throw new Error(errorDetail(payload.detail, `Request failed with status ${response.status}`))
   }
   return payload as T
 }
@@ -208,7 +230,7 @@ export const api = {
   permissions: () => request<PermissionMatrix>('/api/admin/permissions'),
   serverSettings: () => request<ServerSettings>('/api/admin/server'),
   changePassword: (payload: { current_password: string; new_password: string }) =>
-    request<{ status: string }>('/api/account/password', {
+    request<{ status: string; api_tokens_revoked?: number }>('/api/account/password', {
       method: 'PATCH',
       body: JSON.stringify(payload),
     }),
@@ -500,7 +522,7 @@ async function uploadResumable(
     })
     const result = await response.json().catch(() => ({}))
     if (!response.ok) {
-      throw new Error(result.detail || `Upload failed with status ${response.status}`)
+      throw new Error(errorDetail(result.detail, `Upload failed with status ${response.status}`))
     }
     offset = result.offset
     onProgress(offset)

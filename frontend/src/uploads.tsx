@@ -20,7 +20,8 @@ import {
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { api } from './api'
-import { DOCK_EXIT_MS, prefersReducedMotion, useFadeOnChange } from './motion'
+import { DOCK_EXIT_MS, useFadeOnChange } from './motion'
+import { isRecorded } from './uploadPlan'
 import { LEASE_HEARTBEAT_MS, claimOrphans, parseTabRecord, type TabRecord } from './uploadStore'
 import { formatBytes } from './utils'
 
@@ -418,13 +419,36 @@ export function UploadProvider({
 
   useEffect(() => () => window.clearTimeout(leaveTimer.current), [])
 
+  // The page keeps room at its foot for the panel (see `--upload-dock-space` in
+  // styles.css), so whatever it floats over can still be scrolled clear of it.
+  const dock = useRef<HTMLElement>(null)
+  const docked = jobs.length > 0
+  useEffect(() => {
+    const element = dock.current
+    const root = document.documentElement
+    if (!docked || !element) return
+    const measure = () => {
+      const bottom = parseFloat(getComputedStyle(element).bottom) || 0
+      root.style.setProperty('--upload-dock-space', `${Math.ceil(element.offsetHeight + bottom)}px`)
+    }
+    measure()
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
+    observer?.observe(element)
+    window.addEventListener('resize', measure)
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', measure)
+      root.style.removeProperty('--upload-dock-space')
+    }
+  }, [docked])
+
   function clearFinished() {
     const finished = new Set(
       jobs.filter((job) => !['interrupted', 'error'].includes(job.status)).map((job) => job.id),
     )
     const drop = () => setJobs((all) => all.filter((job) => !finished.has(job.id)))
     // The panel leaves as one piece when nothing would be left in it.
-    if (finished.size < jobs.length || prefersReducedMotion()) {
+    if (finished.size < jobs.length) {
       drop()
       return
     }
@@ -459,6 +483,7 @@ export function UploadProvider({
       {children}
       {visible.length > 0 && (
         <aside
+          ref={dock}
           className={['upload-dock', minimized && 'minimized', active && 'live', leaving && !active && 'leaving']
             .filter(Boolean)
             .join(' ')}
@@ -505,6 +530,8 @@ export function UploadProvider({
                 {visible.map((job) => {
                   const done = uploadedBytes(job)
                   const jobPercent = job.total ? Math.min(100, (done / job.total) * 100) : 0
+                  // Files named with a leading dot are stored but not listed in the commit.
+                  const committed = job.items.filter((item) => isRecorded(item.path)).length
                   return (
                     <li key={job.id} className={`upload-job ${job.status}`}>
                       <div className="upload-job-title">
@@ -532,8 +559,8 @@ export function UploadProvider({
                       )}
                       {job.status === 'done' && (
                         <p className="upload-job-state ok">
-                          <Check size={13} /> Committed {job.items.length} file
-                          {job.items.length === 1 ? '' : 's'}
+                          <Check size={13} /> Committed {committed} file
+                          {committed === 1 ? '' : 's'}
                           {job.deletions.length ? `, deleted ${job.deletions.length}` : ''}
                         </p>
                       )}
@@ -551,7 +578,7 @@ export function UploadProvider({
                       )}
                       {job.status === 'interrupted' && (
                         <p className="upload-job-state">
-                          The page was reloaded. Choose the same folder again to resume where it stopped.
+                          This upload&apos;s tab was closed or reloaded. Choose the same folder again to resume where it stopped.
                         </p>
                       )}
                       <div className="upload-job-actions">

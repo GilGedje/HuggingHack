@@ -74,17 +74,18 @@ export function taskLabel(task?: string | null): string {
 export function describeDevice(agent?: string | null): string {
   if (!agent) return 'Unknown device'
   const browser =
-    /Edg\//.test(agent) ? 'Edge'
-      : /Chrome\//.test(agent) ? 'Chrome'
-        : /Firefox\//.test(agent) ? 'Firefox'
+    /Edg(e|iOS|A)?\//.test(agent) ? 'Edge'
+      : /Chrome\/|CriOS\//.test(agent) ? 'Chrome'
+        : /Firefox\/|FxiOS\//.test(agent) ? 'Firefox'
           : /Safari\//.test(agent) ? 'Safari'
             : /curl|python|httpx|huggingface/i.test(agent) ? 'Command line'
               : 'Browser'
+  // Phones first: iPhones say "like Mac OS X" and Android phones say "Linux".
   const system =
-    /Windows/.test(agent) ? 'Windows'
-      : /Mac OS X|Macintosh/.test(agent) ? 'macOS'
-        : /Android/.test(agent) ? 'Android'
-          : /iPhone|iPad/.test(agent) ? 'iOS'
+    /iPhone|iPad|iPod/.test(agent) ? 'iOS'
+      : /Android/.test(agent) ? 'Android'
+        : /Windows/.test(agent) ? 'Windows'
+          : /Mac OS X|Macintosh/.test(agent) ? 'macOS'
             : /Linux/.test(agent) ? 'Linux'
               : ''
   return system ? `${browser} on ${system}` : browser

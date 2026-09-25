@@ -35,10 +35,9 @@ import { RowSkeletons } from '../components/Skeletons'
 import { useConfirm } from '../components/ConfirmDialog'
 import { MarkdownEditor } from '../components/Markdown'
 import { markdownSummary } from '../markdownText'
+import { ROLE_LABELS, disableConfirmation, roleConfirmation } from '../roles'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
-
-const ROLE_LABELS: Record<Role, string> = { admin: 'Administrator', member: 'Member', viewer: 'Viewer' }
 
 function errorMessage(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback
@@ -266,6 +265,20 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
     }
   }
 
+  async function changeRole(user: AdminUser, role: Role) {
+    if (!(await confirm(roleConfirmation(user.username, user.role, role)))) return
+    act(user, () => api.adminUpdateUser(user.id, { role }), `${user.username} is now ${ROLE_LABELS[role].toLowerCase()}.`)
+  }
+
+  async function toggleDisabled(user: AdminUser) {
+    // Enabling gives nothing away, so only disabling asks first.
+    if (!user.disabled) {
+      const sure = await confirm(disableConfirmation(user.username))
+      if (!sure) return
+    }
+    act(user, () => api.adminUpdateUser(user.id, { disabled: !user.disabled }), `${user.username} was ${user.disabled ? 'enabled' : 'disabled'}.`)
+  }
+
   async function remove(user: AdminUser) {
     const external = (user.auth_provider || 'local') !== 'local'
     const sure = await confirm({
@@ -377,25 +390,23 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
                   </Link>
                   <small>@{user.username}{user.email ? ` · ${user.email}` : ''}{user.auth_provider && user.auth_provider !== 'local' ? ` · ${user.auth_provider}` : ''}</small>
                 </span>
-                <span>
+                <span className="admin-user-role">
                   <select
                     value={user.role}
                     disabled={self || busy === user.id}
                     aria-label={`Role for ${user.username}`}
-                    onChange={(event) =>
-                      act(user, () => api.adminUpdateUser(user.id, { role: event.target.value }), `${user.username} is now ${ROLE_LABELS[event.target.value as Role].toLowerCase()}.`)
-                    }
+                    onChange={(event) => changeRole(user, event.target.value as Role)}
                   >
                     {Object.entries(ROLE_LABELS).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
                   </select>
                 </span>
-                <span>
+                <span className="admin-user-status">
                   <span className={user.disabled ? 'status-pill danger' : 'status-pill ok'}>
                     {user.disabled ? 'Disabled' : 'Active'}
                   </span>
                 </span>
-                <span className="admin-user-muted">{user.last_login_at ? relativeTime(user.last_login_at) : 'Never'}</span>
-                <span className="admin-user-muted">
+                <span className="admin-user-muted admin-user-last" data-label="Last sign-in">{user.last_login_at ? relativeTime(user.last_login_at) : 'Never'}</span>
+                <span className="admin-user-muted admin-user-access">
                   {user.sessions} session{user.sessions === 1 ? '' : 's'} · {user.tokens} token{user.tokens === 1 ? '' : 's'} · {user.repositories} repo{user.repositories === 1 ? '' : 's'}
                 </span>
                 <span className="admin-user-actions">
@@ -405,7 +416,7 @@ function UsersTab({ onToast }: { onToast: ToastHandler }) {
                       type="button"
                       title={user.disabled ? 'Enable account' : 'Disable account'}
                       aria-label={user.disabled ? `Enable ${user.username}` : `Disable ${user.username}`}
-                      onClick={() => act(user, () => api.adminUpdateUser(user.id, { disabled: !user.disabled }), `${user.username} was ${user.disabled ? 'enabled' : 'disabled'}.`)}
+                      onClick={() => toggleDisabled(user)}
                     >
                       {user.disabled ? <UserCheck size={15} /> : <UserX size={15} />}
                     </button>
@@ -520,7 +531,8 @@ function RolesTab() {
       </div>
       <p className="account-note">
         Anonymous pulls (vLLM, git, and the hf CLI without a token) can read models that every
-        account can see; private uploads always need their owner&apos;s token.
+        account can see. A private repository is visible only to its owner (for an organization, its
+        admins and writers) and to server administrators, and pulling one needs a token.
       </p>
     </section>
   )
@@ -904,9 +916,9 @@ function OrganizationsTab({ onToast }: { onToast: ToastHandler }) {
                 <Link to={`/orgs/${organization.name}`}><strong>{organization.display_name}</strong></Link>
                 <small>@{organization.name}{organization.description ? ` · ${markdownSummary(organization.description, 90)}` : ''}</small>
               </span>
-              <span className="admin-user-muted">{organization.repository_count || 0}</span>
-              <span className="admin-user-muted">{organization.member_count || 0}</span>
-              <span className="admin-user-muted">{organization.my_role ? ORG_ROLE_LABELS[organization.my_role] : '—'}</span>
+              <span className="admin-user-muted" data-label="Repositories">{organization.repository_count || 0}</span>
+              <span className="admin-user-muted" data-label="Members">{organization.member_count || 0}</span>
+              <span className="admin-user-muted" data-label="Your role">{organization.my_role ? ORG_ROLE_LABELS[organization.my_role] : '—'}</span>
               <span className="admin-user-actions">
                 <Link to={`/orgs/${organization.name}/members`} className="secondary-button compact">Members</Link>
                 <button type="button" className="danger-text" aria-label={`Delete ${organization.name}`} title="Delete organization" onClick={() => remove(organization)}>

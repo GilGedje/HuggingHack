@@ -20,10 +20,10 @@ import { avatarUrl, describeDevice, relativeTime } from '../utils'
 import { PasswordForm } from './PasswordForm'
 import { useConfirm } from './ConfirmDialog'
 import { Avatar } from './Avatar'
+import { ROLE_LABELS, disableConfirmation, roleConfirmation } from '../roles'
+import { focusAfterRemoval } from '../focus'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
-
-const ROLE_LABELS: Record<Role, string> = { admin: 'Administrator', member: 'Member', viewer: 'Viewer' }
 
 function errorMessage(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback
@@ -48,14 +48,17 @@ export function AdminUserDetail({ userId, onToast }: { userId: string; onToast: 
     load()
   }, [load])
 
-  async function act(action: () => Promise<unknown>, message: string) {
+  /** Resolves true when the change was saved. */
+  async function act(action: () => Promise<unknown>, message: string): Promise<boolean> {
     setBusy(true)
     try {
       await action()
       onToast(message)
       load()
+      return true
     } catch (reason) {
       onToast(errorMessage(reason, 'That change was not saved.'), 'error')
+      return false
     } finally {
       setBusy(false)
     }
@@ -81,18 +84,39 @@ export function AdminUserDetail({ userId, onToast }: { userId: string; onToast: 
   const { user } = detail
   const self = user.id === me.id
 
-  async function setPassword(next: string) {
-    try {
-      await api.adminResetPassword(user.id, next)
-      onToast(`${user.username}'s password was changed. They were signed out everywhere.`)
-      load()
-    } catch (reason) {
-      onToast(errorMessage(reason, 'Could not change the password.'), 'error')
-      throw reason
-    }
+  async function changeRole(role: Role) {
+    if (!(await confirm(roleConfirmation(user.username, user.role, role)))) return
+    act(() => api.adminUpdateUser(user.id, { role }), `${user.username} is now ${ROLE_LABELS[role].toLowerCase()}.`)
   }
 
-  async function revokeToken(token: ApiToken) {
+  async function toggleDisabled() {
+    // Enabling gives nothing away, so only disabling asks first.
+    if (!user.disabled && !(await confirm(disableConfirmation(user.username)))) return
+    act(
+      () => api.adminUpdateUser(user.id, { disabled: !user.disabled }),
+      `${user.username} was ${user.disabled ? 'enabled' : 'disabled'}.`,
+    )
+  }
+
+  async function setPassword(next: string) {
+    const tokens = detail?.tokens.length || 0
+    const sure = await confirm({
+      eyebrow: 'Set a new password',
+      title: `Replace ${user.username}'s password?`,
+      message: tokens
+        ? `They are signed out everywhere, and ${tokens === 1 ? 'their API token is' : `all ${tokens} of their API tokens are`} revoked, so scripts and pulls that use ${tokens === 1 ? 'it' : 'them'} need a new one.`
+        : 'They are signed out everywhere and sign in again with the new password.',
+      confirmLabel: 'Set password',
+      danger: true,
+    })
+    // Declining keeps what was typed.
+    if (!sure) return false
+    await api.adminResetPassword(user.id, next)
+    load()
+  }
+
+  async function revokeToken(token: ApiToken, trigger: HTMLElement) {
+    const refocus = focusAfterRemoval(trigger)
     const sure = await confirm({
       title: `Revoke “${token.name}”?`,
       message: `${token.prefix}… stops working at once for anything that uses it. This cannot be undone.`,
@@ -100,7 +124,7 @@ export function AdminUserDetail({ userId, onToast }: { userId: string; onToast: 
       danger: true,
     })
     if (!sure) return
-    act(() => api.adminRevokeToken(user.id, token.id), `“${token.name}” was revoked.`)
+    if (await act(() => api.adminRevokeToken(user.id, token.id), `“${token.name}” was revoked.`)) refocus()
   }
 
   return (
@@ -147,12 +171,7 @@ export function AdminUserDetail({ userId, onToast }: { userId: string; onToast: 
                       value={user.role}
                       disabled={self || busy}
                       aria-label={`Role for ${user.username}`}
-                      onChange={(event) =>
-                        act(
-                          () => api.adminUpdateUser(user.id, { role: event.target.value }),
-                          `${user.username} is now ${ROLE_LABELS[event.target.value as Role].toLowerCase()}.`,
-                        )
-                      }
+                      onChange={(event) => changeRole(event.target.value as Role)}
                     >
                       {Object.entries(ROLE_LABELS).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
                     </select>
@@ -187,12 +206,7 @@ export function AdminUserDetail({ userId, onToast }: { userId: string; onToast: 
                   type="button"
                   className="secondary-button compact"
                   disabled={busy}
-                  onClick={() =>
-                    act(
-                      () => api.adminUpdateUser(user.id, { disabled: !user.disabled }),
-                      `${user.username} was ${user.disabled ? 'enabled' : 'disabled'}.`,
-                    )
-                  }
+                  onClick={toggleDisabled}
                 >
                   {user.disabled ? <UserCheck size={14} /> : <UserX size={14} />}
                   {user.disabled ? 'Enable account' : 'Disable account'}
@@ -210,7 +224,7 @@ export function AdminUserDetail({ userId, onToast }: { userId: string; onToast: 
                   <p>
                     {detail.external
                       ? 'This account has no HuggingHack password.'
-                      : 'Set a new one when they are locked out. They are signed out everywhere.'}
+                      : 'Set a new one when they are locked out. They are signed out everywhere and their API tokens are revoked.'}
                   </p>
                 </div>
               </div>
@@ -221,7 +235,12 @@ export function AdminUserDetail({ userId, onToast }: { userId: string; onToast: 
                   Change your own password from <Link to="/account">your Profile</Link>, where it asks for the current one.
                 </p>
               ) : (
-                <PasswordForm askCurrent={false} submitLabel="Set new password" onSubmit={setPassword} />
+                <PasswordForm
+                  askCurrent={false}
+                  submitLabel="Set new password"
+                  doneMessage={`${user.username}'s password was changed. They were signed out everywhere and their API tokens were revoked.`}
+                  onSubmit={setPassword}
+                />
               )}
             </section>
           )}
@@ -250,7 +269,7 @@ export function AdminUserDetail({ userId, onToast }: { userId: string; onToast: 
                           {token.expires_at ? `expires ${relativeTime(token.expires_at)}` : 'never expires'}
                         </small>
                       </div>
-                      <button type="button" className="secondary-button compact danger-text" disabled={busy} onClick={() => revokeToken(token)}>
+                      <button type="button" className="secondary-button compact danger-text" disabled={busy} onClick={(event) => revokeToken(token, event.currentTarget)}>
                         <Trash2 size={14} /> Revoke
                       </button>
                     </li>

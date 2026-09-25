@@ -26,10 +26,15 @@ interface UseModelDialogProps {
 
 async function copyText(text: string): Promise<void> {
   // navigator.clipboard only exists in secure contexts, and LAN installs are
-  // usually served over plain http, so fall back to a hidden textarea.
+  // usually served over plain http, so fall back to a hidden textarea; the
+  // fallback also covers a clipboard permission the browser refuses.
   if (navigator.clipboard && window.isSecureContext) {
-    await navigator.clipboard.writeText(text)
-    return
+    try {
+      await navigator.clipboard.writeText(text)
+      return
+    } catch {
+      // Try the older way below.
+    }
   }
   const textarea = document.createElement('textarea')
   textarea.value = text
@@ -45,24 +50,45 @@ async function copyText(text: string): Promise<void> {
   }
 }
 
+/** Selects the text a copy button sits beside, so it is ready for a manual copy. */
+function selectNearby(button: HTMLElement | null) {
+  const scope = button?.closest('.snippet-code, .config-file, .pull-endpoint') || button?.parentElement
+  const text = scope?.querySelector('pre') || scope?.querySelector('code')
+  if (text) window.getSelection()?.selectAllChildren(text)
+}
+
 export function CopyButton({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false)
+  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const button = useRef<HTMLButtonElement>(null)
   useEffect(() => {
-    if (!copied) return
-    const timer = window.setTimeout(() => setCopied(false), 1600)
+    if (state === 'idle') return
+    const timer = window.setTimeout(() => setState('idle'), state === 'failed' ? 5000 : 1600)
     return () => window.clearTimeout(timer)
-  }, [copied])
+  }, [state])
+  const name = state === 'copied' ? 'Copied' : state === 'failed' ? 'Could not copy. Select the text and copy it yourself.' : label
   return (
     <button
+      ref={button}
       type="button"
-      className="snippet-copy"
+      className={state === 'failed' ? 'snippet-copy failed' : 'snippet-copy'}
       onClick={() => {
-        copyText(text).then(() => setCopied(true)).catch(() => setCopied(false))
+        copyText(text)
+          .then(() => setState('copied'))
+          .catch(() => {
+            // Said out loud and on screen, with the text selected for a manual copy.
+            setState('failed')
+            selectNearby(button.current)
+          })
       }}
-      aria-label={copied ? 'Copied' : label}
-      title={copied ? 'Copied' : label}
+      aria-label={name}
+      title={name}
     >
-      {copied ? <Check size={14} /> : <Copy size={14} />}
+      {state === 'copied' ? <Check size={14} /> : state === 'failed' ? <X size={14} /> : <Copy size={14} />}
+      {state === 'failed' && (
+        <span className="copy-failed" role="status">
+          Couldn&apos;t copy. Select and copy it yourself.
+        </span>
+      )}
     </button>
   )
 }
