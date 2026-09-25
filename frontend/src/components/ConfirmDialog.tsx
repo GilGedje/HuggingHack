@@ -3,7 +3,7 @@ import { AlertTriangle, X } from 'lucide-react'
 import { useClosingTransition } from '../motion'
 import { DialogFrame } from './Dialog'
 
-export interface ConfirmOptions {
+interface ConfirmOptions {
   /** A short question, like "Delete Qwen?" */
   title: string
   /** What happens, and whether it can be undone. */
