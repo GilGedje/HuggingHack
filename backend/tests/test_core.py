@@ -10,6 +10,7 @@ from botocore.exceptions import ClientError
 
 from app.auth import AuthService, verify_password
 from app.catalog import (
+    MODEL_CARD_MAX_BYTES,
     LocalCatalog,
     parse_gguf_range,
     parse_parameter_range,
@@ -1245,6 +1246,60 @@ def test_library_api_serves_local_data_and_hides_private_uploads(
         assert client.get(f"/api/library/models/{secret}").json()["model_card"] == "# Secret"
     finally:
         main.app.dependency_overrides.clear()
+
+
+def test_model_page_lists_every_file_of_a_large_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import app.main as main
+
+    storage = (tmp_path / "models").resolve()
+    settings = Settings(model_storage=storage, data_dir=(tmp_path / "data").resolve())
+    settings.ensure_directories()
+    database = Database(settings.database_path)
+    database.initialize()
+    indexer = LocalModelIndexer(settings, database)
+    root = storage / "acme" / "many"
+    for folder in ("a", "b", "c"):
+        (root / folder).mkdir(parents=True)
+        for index in range(200):
+            (root / folder / f"{index}.json").write_text("{}", encoding="utf-8")
+    (root / "config.json").write_text("{}", encoding="utf-8")
+    indexer.scan()
+    monkeypatch.setattr(main, "settings", settings)
+    monkeypatch.setattr(main, "database", database)
+    monkeypatch.setattr(main, "indexer", indexer)
+
+    listing = main.library_listing(database.get_local_model("acme/many"))
+    assert len(listing["files"]) == 601
+    assert listing["truncated"] is False
+    assert {file["path"].split("/")[0] for file in listing["files"]} == {"a", "b", "c", "config.json"}
+
+
+def test_model_card_says_when_it_was_cut(tmp_path: Path):
+    storage = (tmp_path / "models").resolve()
+    settings = Settings(model_storage=storage, data_dir=(tmp_path / "data").resolve())
+    root = storage / "acme" / "long"
+    root.mkdir(parents=True)
+    line = "Lorem ipsum dolor sit amet, consectetur adipiscing elit.\n"
+    readme = root / "README.md"
+    readme.write_text("# Long\n" + line * (MODEL_CARD_MAX_BYTES // len(line) + 50), encoding="utf-8")
+    catalog = LocalCatalog(settings, FilesystemModelStorage(settings))
+    model = {"repo_id": "acme/long", "relative_path": "acme/long", "cached": True}
+    files = [{"path": "README.md", "size": readme.stat().st_size}]
+
+    details = catalog.details(model, {"files": files}, set())
+    assert details["model_card_truncated"] is True
+    assert len(details["model_card"].encode()) < MODEL_CARD_MAX_BYTES
+    # Cut at a line break, never mid-sentence.
+    assert details["model_card"].endswith("elit.")
+
+    readme.write_text("# Short\n", encoding="utf-8")
+    files = [{"path": "README.md", "size": readme.stat().st_size}]
+    details = catalog.details(model, {"files": files}, set())
+    assert details["model_card"] == "# Short\n"
+    assert details["model_card_truncated"] is False
+    assert catalog.details(model, {"files": []}, set())["model_card_truncated"] is False
 
 
 def test_library_reads_s3_only_models_through_bounded_ranges(tmp_path: Path):

@@ -381,17 +381,26 @@ class LocalCatalog:
                 return result
         raise FileNotFoundError("File not found in this model.")
 
-    def model_card(self, model: dict[str, Any], files: list[dict[str, Any]]) -> str | None:
+    def model_card(
+        self, model: dict[str, Any], files: list[dict[str, Any]]
+    ) -> tuple[str | None, bool]:
+        """The README's text, and whether it was cut at MODEL_CARD_MAX_BYTES."""
         readme = next((file for file in files if file["path"].lower() == "readme.md"), None)
         if not readme:
-            return None
+            return None, False
         try:
-            payload, _ = self.read_bytes(
+            payload, total = self.read_bytes(
                 model, readme["path"], 0, MODEL_CARD_MAX_BYTES - 1, MODEL_CARD_MAX_BYTES
             )
         except (FileNotFoundError, ValueError, OSError):
-            return None
-        return payload.decode("utf-8", errors="replace")
+            return None, False
+        truncated = total > len(payload)
+        if truncated:
+            # End on a line break rather than mid-word (or mid-character).
+            cut = payload.rfind(b"\n")
+            if cut > 0:
+                payload = payload[:cut]
+        return payload.decode("utf-8", errors="replace"), truncated
 
     def details(
         self,
@@ -419,9 +428,9 @@ class LocalCatalog:
                 "local_path": f"{self.settings.model_storage.as_posix()}/{model['relative_path']}",
                 "remote_uri": model.get("remote_uri"),
                 "source_url": model.get("source_url"),
-                "model_card": self.model_card(model, files),
             }
         )
+        result["model_card"], result["model_card_truncated"] = self.model_card(model, files)
         return result
 
     def gguf_range(

@@ -103,6 +103,14 @@ export default function Shell({ children, user, theme, onLogout }: ShellProps) {
 
   return (
     <div className="app-shell">
+      {/* A button, not an #anchor: the hash belongs to the router. */}
+      <button
+        type="button"
+        className="skip-link"
+        onClick={() => document.getElementById('main-content')?.focus()}
+      >
+        Skip to content
+      </button>
       <header className="topbar">
         <div className="topbar-inner">
           <NavLink to="/models" className="brand" aria-label="HuggingHack home">
@@ -217,7 +225,7 @@ export default function Shell({ children, user, theme, onLogout }: ShellProps) {
           </div>
         )}
       </header>
-      <main>{children}</main>
+      <main id="main-content" tabIndex={-1}>{children}</main>
     </div>
   )
 }

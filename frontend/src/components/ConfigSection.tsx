@@ -29,6 +29,7 @@ import type {
 import { formatBytes, relativeTime } from '../utils'
 import { DownloadLink } from './DownloadLink'
 import { FileDiff } from './FileDiff'
+import { RowSkeletons } from './Skeletons'
 import { CopyButton } from './UseModel'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
@@ -444,14 +445,19 @@ function RevisionView({
     }
   }
 
-  if (error) return <div className="inline-error">{error}</div>
-  if (!revision) {
+  if (error) {
     return (
-      <div className="drawer-loading">
-        <LoaderCircle size={22} className="spin" /> Loading revision…
-      </div>
+      <LoadFailed
+        title="Could not load this revision"
+        message={error}
+        onRetry={() => {
+          setError('')
+          load()
+        }}
+      />
     )
   }
+  if (!revision) return <RowSkeletons rows={6} cells={1} label="Loading the revision" />
   const file = revision.files.find((item) => item.path === activeFile)
   const parent = listing.items.find((item) => item.id === revision.parent_id)
   const latest = listing.items[0]?.id === revision.id
@@ -706,13 +712,7 @@ function NewRevision({
       </div>
     )
   }
-  if (!files) {
-    return (
-      <div className="drawer-loading">
-        <LoaderCircle size={22} className="spin" /> Loading the latest files…
-      </div>
-    )
-  }
+  if (!files) return <RowSkeletons rows={4} cells={2} label="Loading the latest files" />
   return (
     <form className="config-new" onSubmit={submit}>
       <Link to={`${base}/config`} className="text-link">
@@ -868,6 +868,19 @@ function NewRevision({
   )
 }
 
+function LoadFailed({ title, message, onRetry }: { title: string; message: string; onRetry: () => void }) {
+  return (
+    <div className="page-error">
+      <AlertTriangle size={18} />
+      <div>
+        <strong>{title}</strong>
+        <p>{message}</p>
+      </div>
+      <button type="button" onClick={onRetry}>Retry</button>
+    </div>
+  )
+}
+
 /** The test setup carries over to the next revision; measured numbers do not. */
 function pickContext(results: ConfigResults, metrics: ConfigMetric[]): Record<string, number> {
   const context = new Set(metrics.filter((metric) => metric.group === 'context').map((metric) => metric.id))
@@ -892,6 +905,7 @@ export function ConfigSection({
   const [error, setError] = useState('')
 
   const load = useCallback(() => {
+    setError('')
     api
       .configRevisions(model.id)
       .then(setListing)
@@ -903,14 +917,8 @@ export function ConfigSection({
     load()
   }, [load])
 
-  if (error) return <div className="inline-error">{error}</div>
-  if (!listing) {
-    return (
-      <div className="drawer-loading">
-        <LoaderCircle size={22} className="spin" /> Loading configs…
-      </div>
-    )
-  }
+  if (error) return <LoadFailed title="Could not load the configs" message={error} onRetry={load} />
+  if (!listing) return <RowSkeletons rows={4} cells={3} label="Loading configs" />
   if (path === 'new') {
     if (!listing.can_edit) return <div className="inline-error">You cannot add configs to this model.</div>
     return (

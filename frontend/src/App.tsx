@@ -50,7 +50,7 @@ import type {
 import { formatBytes } from './utils'
 import { ConfirmProvider } from './components/ConfirmDialog'
 import { relationGroup } from './modelTree'
-import { CATALOG_FILTER_KEYS, readCatalogFilters, writeCatalogFilters } from './catalog'
+import { CATALOG_FILTER_KEYS, readCatalogFilters, writeCatalogFilters, writeCatalogSearch } from './catalog'
 
 type ToastTone = 'success' | 'error'
 
@@ -108,6 +108,8 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
   const [filtersHidden, setFiltersHidden] = useState(readFiltersHidden)
   const hideButton = useRef<HTMLButtonElement>(null)
   const showButton = useRef<HTMLButtonElement>(null)
+  const mobileFilterButton = useRef<HTMLButtonElement>(null)
+  const mobileFilterClose = useRef<HTMLButtonElement>(null)
   const focusAfterToggle = useRef(false)
   const [saving, setSaving] = useState<string | null>(null)
   const latestRequest = useRef(0)
@@ -118,9 +120,23 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
   const lineageRelation = searchParams.get('relation') || ''
   const legacyModel = searchParams.get('model')
 
+  // The address follows the box as it is typed, so reload, Back and a shared link
+  // keep the search. A change made elsewhere (Back, a link) replaces the box, but
+  // the address trimming a trailing space must not eat the one being typed.
   useEffect(() => {
-    setSearch(urlSearch)
+    setSearch((current) => (current.trim() === urlSearch ? current : urlSearch))
   }, [urlSearch])
+
+  const writeSearch = useCallback(
+    (value: string) => setSearchParams((current) => writeCatalogSearch(value, current), { replace: true }),
+    [setSearchParams],
+  )
+
+  useEffect(() => {
+    if (search.trim() === urlSearch) return
+    const timer = window.setTimeout(() => writeSearch(search), 250)
+    return () => window.clearTimeout(timer)
+  }, [search, urlSearch, writeSearch])
 
   // Older links opened a drawer: #/models?model=owner/name&local-app=vllm or &clone=true.
   useEffect(() => {
@@ -164,11 +180,9 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
     return () => window.clearTimeout(timer)
   }, [fetchModels])
 
-  function submitSearch() {
-    const next = new URLSearchParams(searchParams)
-    if (search.trim()) next.set('search', search.trim())
-    else next.delete('search')
-    setSearchParams(next)
+  function clearSearch() {
+    setSearch('')
+    writeSearch('')
   }
 
   async function rescan() {
@@ -204,6 +218,18 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
       // Private windows may refuse storage; the choice then lasts until reload.
     }
   }
+  // On phones the filters unfold above the results: focus moves into them, and
+  // closing (the button or Escape) hands it back to the Filters button.
+  function openMobileFilters() {
+    setMobileFiltersOpen(true)
+    window.requestAnimationFrame(() => mobileFilterClose.current?.focus({ preventScroll: true }))
+  }
+
+  function closeMobileFilters() {
+    setMobileFiltersOpen(false)
+    mobileFilterButton.current?.focus({ preventScroll: true })
+  }
+
   const hardwareLabels = Object.fromEntries(facets.hardware.map(([id, label]) => [id, label]))
 
   async function toggleSaved(model: LibraryModel) {
@@ -242,7 +268,17 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
   return (
     <>
       <div className={filtersHidden ? 'catalog-layout filters-hidden' : 'catalog-layout'}>
-        <aside className={mobileFiltersOpen ? 'filters mobile-open' : 'filters'}>
+        <aside
+          id="catalog-filters"
+          className={mobileFiltersOpen ? 'filters mobile-open' : 'filters'}
+          aria-label="Filters"
+          onKeyDown={(event) => {
+            if (event.key === 'Escape' && mobileFiltersOpen) {
+              event.stopPropagation()
+              closeMobileFilters()
+            }
+          }}
+        >
           <div className="filters-inner">
             <div className="filters-heading">
               <Filter size={16} />
@@ -260,9 +296,10 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
                 <PanelLeftClose size={16} />
               </button>
               <button
+                ref={mobileFilterClose}
                 type="button"
                 className="filter-mobile-close"
-                onClick={() => setMobileFiltersOpen(false)}
+                onClick={closeMobileFilters}
                 aria-label="Close filters"
               >
                 <CircleX size={18} />
@@ -313,12 +350,13 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter') submitSearch()
+                  if (event.key === 'Enter') writeSearch(search)
                 }}
+                aria-label="Search models"
                 placeholder="Search model names, owners, tasks, and tags"
               />
               {search && (
-                <button type="button" onClick={() => setSearch('')} aria-label="Clear search">
+                <button type="button" onClick={clearSearch} aria-label="Clear search">
                   <CircleX size={16} />
                 </button>
               )}
@@ -334,9 +372,12 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
               <ChevronDown size={14} />
             </label>
             <button
+              ref={mobileFilterButton}
               type="button"
               className="secondary-button mobile-filter-button"
-              onClick={() => setMobileFiltersOpen(true)}
+              aria-expanded={mobileFiltersOpen}
+              aria-controls="catalog-filters"
+              onClick={() => (mobileFiltersOpen ? closeMobileFilters() : openMobileFilters())}
             >
               <ListFilter size={15} />
               Filters {activeFilters > 0 ? `(${activeFilters})` : ''}

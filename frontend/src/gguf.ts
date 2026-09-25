@@ -102,11 +102,10 @@ async function inspect(
         window.dispatchEvent(new Event('hugginghack:unauthorized'))
       }
       const payload = await response.clone().json().catch(() => ({}))
-      const detail =
-        payload && typeof payload === 'object' && 'detail' in payload
-          ? String(payload.detail)
-          : `GGUF header request failed with status ${response.status}`
-      throw new Error(detail)
+      // The server's detail may be a list (422); GgufInspector turns it into a sentence.
+      throw new Error(`The server could not read this file's header (status ${response.status}).`, {
+        cause: payload && typeof payload === 'object' ? (payload as { detail?: unknown }).detail : undefined,
+      })
     }
     rangeRequests += 1
     bytesRead += Number(response.headers.get('Content-Length') || 0)

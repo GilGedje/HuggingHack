@@ -102,6 +102,14 @@ export function readCatalogFilters(params: URLSearchParams): CatalogFilters {
 }
 
 /** Writes the filters over any earlier ones in `params`, leaving other keys alone. */
+/** The address with the search box's text; blank text removes the parameter. */
+export function writeCatalogSearch(search: string, params: URLSearchParams): URLSearchParams {
+  const next = new URLSearchParams(params)
+  if (search.trim()) next.set('search', search.trim())
+  else next.delete('search')
+  return next
+}
+
 export function writeCatalogFilters(filters: CatalogFilters, params: URLSearchParams): URLSearchParams {
   const next = new URLSearchParams(params)
   for (const key of CATALOG_FILTER_KEYS) next.delete(key)

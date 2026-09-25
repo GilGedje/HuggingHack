@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 import { Building2, Check, ChevronDown, UserRound } from 'lucide-react'
 import type { UploadNamespace } from '../types'
 import { avatarUrl } from '../utils'
@@ -16,6 +16,7 @@ interface NamespacePickerProps {
 
 /** Chooses who owns a new repository: yourself or an organization you can write to. */
 export function NamespacePicker({ namespaces, value, onChange, id }: NamespacePickerProps) {
+  const listId = `namespace-${useId().replace(/:/g, '')}`
   const [open, setOpenState] = useState(false)
   // The list stays on screen while it leaves, so it folds back into the field.
   const [leaving, setLeaving] = useState(false)
@@ -98,6 +99,9 @@ export function NamespacePicker({ namespaces, value, onChange, id }: NamespacePi
         onKeyDown={onKeyDown}
         aria-haspopup={single ? undefined : 'listbox'}
         aria-expanded={single ? undefined : open}
+        // Focus stays on the button, so it names the highlighted option.
+        aria-controls={open ? `${listId}-options` : undefined}
+        aria-activedescendant={open ? `${listId}-option-${active}` : undefined}
         disabled={single}
       >
         <span className={`namespace-avatar ${selected.kind}`}><Avatar name={selected.name} src={avatarUrl(selected.name, selected.avatar_updated_at)} /></span>
@@ -107,14 +111,14 @@ export function NamespacePicker({ namespaces, value, onChange, id }: NamespacePi
       {(open || leaving) && (
         <ul
           className={open ? 'namespace-menu' : 'namespace-menu leaving'}
+          id={`${listId}-options`}
           role="listbox"
-          aria-activedescendant={`namespace-${active}`}
           aria-hidden={open ? undefined : true}
         >
           {namespaces.map((item, index) => (
             <li
               key={item.name}
-              id={`namespace-${index}`}
+              id={`${listId}-option-${index}`}
               role="option"
               aria-selected={item.name === selected.name}
               className={index === active ? 'active' : undefined}
