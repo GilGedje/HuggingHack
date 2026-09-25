@@ -32,7 +32,7 @@ import { relativeTime, taskLabel } from '../utils'
 import { useNavigate } from 'react-router-dom'
 import { RowSkeletons } from './Skeletons'
 import { useConfirm } from './ConfirmDialog'
-import { prefersReducedMotion, useFadeOnChange } from '../motion'
+import { prefersReducedMotion, useFadeOnChange, useSlidingHighlight } from '../motion'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -190,6 +190,7 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
   const [removing, setRemoving] = useState<string | null>(null)
   const latest = useRef(0)
   const grid = useFadeOnChange<HTMLDivElement>(shown ?? '')
+  const sidebar = useSlidingHighlight<HTMLElement>(`${collectionId}:${collections.map((item) => item.id).join(',')}`)
   const confirm = useConfirm()
   const navigate = useNavigate()
   const [editing, setEditing] = useState<string | null>(null)
@@ -314,7 +315,7 @@ export function SavedPage({ onToast }: { onToast: ToastHandler }) {
           </div>
         </div>
         <div className="library-workspace">
-          <aside className="collection-sidebar">
+          <aside className="collection-sidebar" ref={sidebar}>
             <button
               className={collectionId === '' ? 'active' : ''}
               onClick={() => setCollectionId('')}

@@ -8,6 +8,8 @@ const DIALOG_EXIT_MS = 160
 export const TOAST_EXIT_MS = 180
 /** How long the upload panel takes to leave; matches `.upload-dock.leaving`. */
 export const DOCK_EXIT_MS = 180
+/** How long the sliding highlight glides; matches `.collection-sidebar[data-highlight='glide']`. */
+const HIGHLIGHT_GLIDE_MS = 380
 
 export function prefersReducedMotion(): boolean {
   return typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
@@ -122,6 +124,61 @@ export function useTabIndicator<T extends HTMLElement>(key: string) {
     const observer = new ResizeObserver(() => place('follow'))
     observer.observe(track)
     for (const child of track.children) observer.observe(child)
+    return () => observer.disconnect()
+  }, [key, place])
+
+  useEffect(() => {
+    document.fonts?.ready.then(() => place('follow')).catch(() => undefined)
+  }, [place])
+
+  return ref
+}
+
+/**
+ * One highlight box that slides to whichever child of the list has `.active`,
+ * up and down a sidebar or along it once it wraps into a row. Like
+ * useTabIndicator, it writes its place as CSS variables (`--highlight-x/y/w/h`)
+ * and its state as `data-highlight`, and the stylesheet draws it. The list must
+ * be positioned so the children's offsets are measured from it.
+ */
+export function useSlidingHighlight<T extends HTMLElement>(key: string) {
+  const ref = useRef<T>(null)
+  const glidingUntil = useRef(0)
+
+  // `follow` keeps pace with rows that move under it, such as one folding away:
+  // it sticks to its row frame by frame, unless a glide is still under way.
+  const place = useCallback((motion: 'glide' | 'follow') => {
+    const list = ref.current
+    if (!list) return
+    const active = list.querySelector<HTMLElement>(':scope > .active')
+    if (!active || !active.getClientRects().length) {
+      list.dataset.highlight = 'hidden'
+      return
+    }
+    const wasShown = list.dataset.highlight === 'still' || list.dataset.highlight === 'glide'
+    // Layout offsets, so a row's own transform or fade does not move the box.
+    list.style.setProperty('--highlight-x', `${active.offsetLeft}px`)
+    list.style.setProperty('--highlight-y', `${active.offsetTop}px`)
+    list.style.setProperty('--highlight-w', `${active.offsetWidth}px`)
+    list.style.setProperty('--highlight-h', `${active.offsetHeight}px`)
+    if (!wasShown || prefersReducedMotion()) {
+      list.dataset.highlight = 'still'
+    } else if (motion === 'glide') {
+      list.dataset.highlight = 'glide'
+      glidingUntil.current = performance.now() + HIGHLIGHT_GLIDE_MS
+    } else if (performance.now() > glidingUntil.current) {
+      list.dataset.highlight = 'still'
+    }
+  }, [])
+
+  useLayoutEffect(() => place('glide'), [key, place])
+
+  useEffect(() => {
+    const list = ref.current
+    if (!list || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => place('follow'))
+    observer.observe(list)
+    for (const child of list.children) observer.observe(child)
     return () => observer.disconnect()
   }, [key, place])
 

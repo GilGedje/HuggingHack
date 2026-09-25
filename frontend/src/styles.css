@@ -784,6 +784,22 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
 .collection-sidebar > button.active, .collection-row.active {
   background: var(--canvas); color: var(--text); box-shadow: 0 1px 4px rgb(17 24 39 / 0.07);
 }
+/* One box slides to the open collection (motion.ts useSlidingHighlight). Until it
+   is placed, the active row keeps its own background, so nothing depends on it. */
+.collection-sidebar > button, .collection-row { position: relative; }
+.collection-sidebar::before {
+  position: absolute; top: 0; left: 0; width: var(--highlight-w, 0px); height: var(--highlight-h, 0px);
+  border-radius: 6px; background: var(--canvas); box-shadow: 0 1px 4px rgb(17 24 39 / 0.07);
+  transform: translate(var(--highlight-x, 0px), var(--highlight-y, 0px));
+  opacity: 0; pointer-events: none; content: '';
+}
+.collection-sidebar:is([data-highlight='still'], [data-highlight='glide'])::before { opacity: 1; }
+.collection-sidebar[data-highlight='glide']::before {
+  transition: transform 380ms var(--ease-out), width 380ms var(--ease-out), height 380ms var(--ease-out);
+}
+.collection-sidebar:is([data-highlight='still'], [data-highlight='glide']) > .active {
+  background: transparent; box-shadow: none;
+}
 /* The delete button waits beside the count until the row is pointed at or focused. */
 .collection-delete {
   width: 0; height: 28px; margin-right: 0; display: grid; flex: 0 0 auto; place-items: center;
@@ -1749,7 +1765,7 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
   .auth-card { justify-self: start; }
   .library-workspace { grid-template-columns: 1fr; gap: 18px; }
   .collection-sidebar {
-    position: static; display: flex; gap: 5px; overflow-x: auto;
+    position: relative; top: auto; display: flex; gap: 5px; overflow-x: auto;
   }
   .collection-sidebar > button, .collection-row { width: auto; flex: 0 0 auto; }
   .collection-sidebar form { min-width: 180px; margin: 0 0 0 auto; padding: 0 0 0 6px; border: 0; border-left: 1px solid var(--border); }
