@@ -52,7 +52,9 @@ A change is done when the backend suite reports **0 skipped** with `TEST_POSTGRE
 `git` plus `git-lfs` on PATH (without them the PostgreSQL and clone tests skip).
 
 CI (`.github/workflows/ci.yml`) runs the same on every push to `main`: pytest against a
-PostgreSQL 17 service, then `npm ci`, `npm test`, and `npm run build`.
+PostgreSQL 17 service (failing if any test is skipped), then `npm ci`, `npm test`, and
+`npm run build`. Test tools live in `backend/requirements-dev.txt`; `requirements.txt` is what
+the image installs.
 
 For UI changes, also run the built app against a **copy** of the data (never the live `data/` or
 `models/`), for example with `ACCOUNTS_ENABLED=false` on another port, and check the pages you

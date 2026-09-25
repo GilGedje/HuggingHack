@@ -145,7 +145,8 @@ docker compose up --build -d
 On the first visit HuggingHack asks you to create the owner account (a password of at least 12
 characters). Put models in the library by uploading them on **Uploads**, or copy model folders
 into `./models` and choose **Rescan library**. Stop it with `docker compose down` (or
-**Stop HuggingHack.bat**); models and data stay.
+**Stop HuggingHack.bat**); models and data stay. The `.bat` builds the image only the first
+time; after updating the files, run `docker compose up --build -d` once to rebuild.
 
 To use it as a single person on a trusted LAN without sign-in, set `ACCOUNTS_ENABLED=false`.
 

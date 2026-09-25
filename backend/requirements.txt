@@ -1,9 +1,11 @@
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
+# hf_xet is huggingface_hub's faster transfer backend. It only matters for the optional
+# server-side Hugging Face downloads (HF_DOWNLOADS_ENABLED), which are off when air-gapped.
 huggingface-hub[hf_xet]==1.24.0
 pydantic==2.11.7
 httpx==0.28.1
-pytest==8.4.1
-boto3>=1.35,<2
-psycopg[binary,pool]>=3.2,<4
-PyJWT[crypto]>=2.9,<3
+boto3==1.43.103
+psycopg[binary,pool]==3.3.6
+psycopg-pool==3.3.3
+PyJWT[crypto]==2.15.0

@@ -8,6 +8,8 @@ services:
       dockerfile: Dockerfile
     container_name: hugginghack
     restart: unless-stopped
+    # Lets downloads and uploads in flight finish before the container is stopped.
+    stop_grace_period: 60s
     # Passes every .env value into the container, including the credential
     # variables named by each storage target in STORAGE_TARGETS_JSON.
     env_file:
@@ -18,7 +20,6 @@ services:
       - "${HUGGINGHACK_PORT:-7860}:7860"
     environment:
       APP_NAME: HuggingHack
-      APP_VERSION: 1.2.0
       MODEL_STORAGE: /models
       MODEL_STORAGE_BACKEND: "${MODEL_STORAGE_BACKEND:-filesystem}"
       DATA_DIR: /data
