@@ -522,6 +522,7 @@ async function uploadResumable(
     })
     const result = await response.json().catch(() => ({}))
     if (!response.ok) {
+      if (response.status === 401) window.dispatchEvent(new Event('hugginghack:unauthorized'))
       throw new Error(errorDetail(result.detail, `Upload failed with status ${response.status}`))
     }
     offset = result.offset
