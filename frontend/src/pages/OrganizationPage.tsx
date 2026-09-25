@@ -5,22 +5,20 @@ import { useAccess } from '../access'
 import { api } from '../api'
 import { useFadeOnChange, useTabIndicator } from '../motion'
 import { LibraryModelRow } from '../components/RepositoryRows'
-import type { LibraryModel, Organization, OrganizationDetails, OrganizationRole } from '../types'
-import { avatarUrl } from '../utils'
+import type { LibraryModel, Organization, OrganizationDetails, OrganizationMember, OrganizationRole } from '../types'
+import { avatarUrl, countLabel } from '../utils'
 import { ModelCardSkeletons, RowSkeletons } from '../components/Skeletons'
 import { useConfirm } from '../components/ConfirmDialog'
+import { LoadError } from '../components/LoadError'
 import { MarkdownEditor, MarkdownText } from '../components/Markdown'
 import { markdownSummary } from '../markdownText'
 import { focusAfterRemoval } from '../focus'
 import { Avatar, AvatarEditor } from '../components/Avatar'
+import { ORG_ROLE_LABELS, ROLE_LABELS, actingOrgAdmins, effectiveOrgRole, orgRoleConfirmation } from '../roles'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
-export const ORG_ROLE_LABELS: Record<OrganizationRole, string> = {
-  admin: 'Admin',
-  write: 'Write',
-  read: 'Read',
-}
+export { ORG_ROLE_LABELS }
 
 const ORG_ROLE_HELP: Record<OrganizationRole, string> = {
   admin: 'Manage members and settings, change visibility, delete repositories',
@@ -33,42 +31,62 @@ function errorMessage(reason: unknown, fallback: string): string {
 }
 
 export function OrganizationsIndex() {
+  const { user } = useAccess()
   const [items, setItems] = useState<Organization[] | null>(null)
-  useEffect(() => {
-    api.organizations().then((payload) => setItems(payload.items)).catch(() => setItems([]))
+  const [error, setError] = useState('')
+  const load = useCallback(() => {
+    setError('')
+    api
+      .organizations()
+      .then((payload) => setItems(payload.items))
+      .catch((reason) => setError(errorMessage(reason, 'The server did not answer.')))
   }, [])
+  useEffect(() => {
+    load()
+  }, [load])
   return (
-    <div className="standard-page">
-      <div className="page-heading">
-        <div>
-          <span className="eyebrow">Shared namespaces</span>
+    <div className="section-page">
+      <header className="section-hero">
+        <div className="section-hero-inner">
+          <span className="eyebrow"><Building2 size={11} /> Shared namespaces</span>
           <h1>Organizations</h1>
           <p>Teams and companies that publish models together, like nvidia/GLM-5.3-NVFP4.</p>
         </div>
+      </header>
+      <div className="section-body">
+        {error ? (
+          <LoadError what="organizations" message={error} onRetry={load} />
+        ) : !items ? (
+          <RowSkeletons rows={4} cells={2} label="Loading organizations" />
+        ) : (
+          <div className="org-grid">
+            {items.map((organization) => (
+              <Link key={organization.id} to={`/orgs/${organization.name}`} className="org-card">
+                <span className="org-avatar"><Avatar name={organization.name} src={avatarUrl(organization.name, organization.avatar_updated_at)} /></span>
+                <div>
+                  <strong>{organization.display_name}</strong>
+                  <small>@{organization.name}</small>
+                  <p>{markdownSummary(organization.description) || 'No description yet.'}</p>
+                  <span className="org-card-meta">
+                    {countLabel(organization.repository_count || 0, 'repository', 'repositories')} ·{' '}
+                    {countLabel(organization.member_count || 0, 'member', 'members')}
+                    {organization.my_role ? ` · you: ${ORG_ROLE_LABELS[effectiveOrgRole(organization.my_role, user.role)]}` : ''}
+                  </span>
+                </div>
+              </Link>
+            ))}
+            {items.length === 0 && <div className="empty-compact">No organizations yet. Administrators create them under Admin → Organizations.</div>}
+          </div>
+        )}
       </div>
-      {!items ? (
-        <RowSkeletons rows={4} cells={2} label="Loading organizations" />
-      ) : (
-        <div className="org-grid">
-          {items.map((organization) => (
-            <Link key={organization.id} to={`/orgs/${organization.name}`} className="org-card">
-              <span className="org-avatar"><Avatar name={organization.name} src={avatarUrl(organization.name, organization.avatar_updated_at)} /></span>
-              <div>
-                <strong>{organization.display_name}</strong>
-                <small>@{organization.name}</small>
-                <p>{markdownSummary(organization.description) || 'No description yet.'}</p>
-                <span className="org-card-meta">
-                  {organization.repository_count || 0} repositories · {organization.member_count || 0} members
-                  {organization.my_role ? ` · you: ${ORG_ROLE_LABELS[organization.my_role]}` : ''}
-                </span>
-              </div>
-            </Link>
-          ))}
-          {items.length === 0 && <div className="empty-compact">No organizations yet. Administrators create them under Admin → Organizations.</div>}
-        </div>
-      )}
     </div>
   )
+}
+
+/** The role name for someone whose server role narrows their organization role. */
+function RoleLimitNote({ role, serverRole }: { role: OrganizationRole; serverRole?: OrganizationMember['server_role'] }) {
+  if (effectiveOrgRole(role, serverRole) === role) return null
+  return <> · {ORG_ROLE_LABELS[role]} role, but {ROLE_LABELS.viewer} accounts on this server can only read</>
 }
 
 function MembersTab({ organization, onChanged, onToast }: { organization: OrganizationDetails; onChanged: (value: OrganizationDetails | null) => void; onToast: ToastHandler }) {
@@ -78,17 +96,25 @@ function MembersTab({ organization, onChanged, onToast }: { organization: Organi
   const [username, setUsername] = useState('')
   const [role, setRole] = useState<OrganizationRole>('write')
   const [busy, setBusy] = useState(false)
+  // The role a select shows while its question is open; declining puts the old one back.
+  const [pending, setPending] = useState<{ username: string; role: OrganizationRole } | null>(null)
 
   // The only admin cannot step down or leave; someone must be able to manage it.
-  const admins = organization.members.filter((member) => member.role === 'admin').length
-  const lastAdmin = organization.my_role === 'admin' && admins <= 1
+  // Disabled accounts and server Viewers keep an Admin row but cannot act on it.
+  const me = organization.members.find((member) => member.id === user.id)
+  const lastAdmin =
+    !!me && me.role === 'admin' && effectiveOrgRole(me.role, user.role) === 'admin' && actingOrgAdmins(organization.members) <= 1
 
   /** Resolves true when the change was saved. */
-  async function run(action: () => Promise<OrganizationDetails>, message: string): Promise<boolean> {
+  async function run(
+    action: () => Promise<OrganizationDetails>,
+    message: string | ((saved: OrganizationDetails) => string),
+  ): Promise<boolean> {
     setBusy(true)
     try {
-      onChanged(await action())
-      onToast(message)
+      const saved = await action()
+      onChanged(saved)
+      onToast(typeof message === 'string' ? message : message(saved))
       return true
     } catch (reason) {
       onToast(errorMessage(reason, 'That change was not saved.'), 'error')
@@ -98,14 +124,43 @@ function MembersTab({ organization, onChanged, onToast }: { organization: Organi
     }
   }
 
+  /** What an added member can now do, and why they might not yet. */
+  function joined(name: string, saved: OrganizationDetails): string {
+    const member = saved.members.find((item) => item.username === name)
+    const acting = member ? effectiveOrgRole(member.role, member.server_role) : role
+    const can = acting === 'read' ? 'see' : 'upload to'
+    if (member?.disabled) return `${name} was added to ${saved.display_name}; their account is disabled, so they cannot sign in until it is enabled.`
+    return `${name} can now ${can} ${saved.display_name}.`
+  }
+
+  async function changeRole(member: OrganizationMember, next: OrganizationRole) {
+    setPending({ username: member.username, role: next })
+    try {
+      if (!(await confirm(orgRoleConfirmation(member.username, organization.display_name, member.role, next)))) return
+      await run(
+        () => api.setOrganizationMember(organization.name, member.username, next),
+        `${member.username} is now ${ORG_ROLE_LABELS[next]} in ${organization.display_name}.`,
+      )
+    } finally {
+      setPending(null)
+    }
+  }
+
   async function add(event: FormEvent) {
     event.preventDefault()
     const name = username.trim().toLowerCase()
     if (!name) return
+    const existing = organization.members.find((member) => member.username === name)
+    if (existing && existing.role === role) {
+      onToast(`${name} is already a member, as ${ORG_ROLE_LABELS[role]}.`, 'error')
+      return
+    }
+    // Adding someone as an admin, or changing an existing member's role, asks first.
+    if ((existing || role === 'admin') && !(await confirm(orgRoleConfirmation(name, organization.display_name, existing?.role || null, role)))) return
     // The name stays put if the change fails, so a typo is quick to fix.
     const saved = await run(
       () => api.setOrganizationMember(organization.name, name, role),
-      `${name} can now ${role === 'read' ? 'see' : 'upload to'} ${organization.name}.`,
+      existing ? `${name} is now ${ORG_ROLE_LABELS[role]} in ${organization.display_name}.` : (value) => joined(name, value),
     )
     if (saved) setUsername('')
   }
@@ -144,7 +199,7 @@ function MembersTab({ organization, onChanged, onToast }: { organization: Organi
     <section className="settings-section">
       <div className="section-heading-line">
         <div>
-          <span className="eyebrow">{organization.members.length} members</span>
+          <span className="eyebrow">{countLabel(organization.members.length, 'member', 'members')}</span>
           <h2>Members</h2>
         </div>
         {organization.my_role && (
@@ -183,14 +238,19 @@ function MembersTab({ organization, onChanged, onToast }: { organization: Organi
             {organization.can_manage ? (
               <span className="org-member-actions">
                 <select
-                  value={member.role}
-                  disabled={busy}
+                  value={pending?.username === member.username ? pending.role : member.role}
+                  disabled={busy || pending !== null}
                   aria-label={`Role for ${member.username}`}
                   aria-describedby={member.id === user.id && lastAdmin ? 'org-last-admin' : undefined}
-                  onChange={(event) => run(() => api.setOrganizationMember(organization.name, member.username, event.target.value), `${member.username} is now ${ORG_ROLE_LABELS[event.target.value as OrganizationRole].toLowerCase()}.`)}
+                  onChange={(event) => changeRole(member, event.target.value as OrganizationRole)}
                 >
                   {(Object.keys(ORG_ROLE_LABELS) as OrganizationRole[]).map((item) => (
-                    <option key={item} value={item} disabled={member.id === user.id && lastAdmin && item !== 'admin'}>
+                    <option
+                      key={item}
+                      value={item}
+                      // Viewers on the server can only read; the server refuses more.
+                      disabled={(member.id === user.id && lastAdmin && item !== 'admin') || (member.server_role === 'viewer' && item !== 'read' && item !== member.role)}
+                    >
                       {ORG_ROLE_LABELS[item]}
                     </option>
                   ))}
@@ -293,6 +353,8 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
   const [builtOn, setBuiltOn] = useState<LibraryModel[]>([])
   const [hardwareLabels, setHardwareLabels] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
+  const [modelsError, setModelsError] = useState('')
+  const { user } = useAccess()
   const indicator = useTabIndicator<HTMLDivElement>(`${tab}:${organization?.name}:${organization?.can_manage}`)
   const body = useFadeOnChange<HTMLDivElement>(tab)
 
@@ -310,8 +372,9 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
         setError('')
       })
       .catch((reason) => {
-        if (current()) setError(reason.message)
+        if (current()) setError(errorMessage(reason, 'The server did not answer.'))
       })
+    setModelsError('')
     api
       .libraryModels(new URLSearchParams({ owner: name, sort: 'updated' }))
       .then((payload) => {
@@ -319,8 +382,8 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
         setModels(payload.items)
         setHardwareLabels(Object.fromEntries(payload.facets.hardware.map(([id, label]) => [id, label])))
       })
-      .catch(() => {
-        if (current()) setModels([])
+      .catch((reason) => {
+        if (current()) setModelsError(errorMessage(reason, 'The server did not answer.'))
       })
     api
       .libraryModels(new URLSearchParams({ built_on: name, sort: 'updated' }))
@@ -354,10 +417,17 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
     }
   }
 
-  if (error) return <div className="standard-page"><div className="inline-error">{error}</div></div>
+  if (error) {
+    return (
+      <div className="standard-page">
+        <LoadError what="this organization" message={error} onRetry={() => { setError(''); load() }} />
+        <p className="account-note"><Link className="quiet-link" to="/orgs">All organizations</Link></p>
+      </div>
+    )
+  }
   if (!organization) return <div className="standard-page"><RowSkeletons rows={5} cells={2} label="Loading the organization" /></div>
   const tabs = [
-    { id: 'models', label: 'Models', count: models?.length },
+    { id: 'models', label: 'Models', count: modelsError ? undefined : models?.length },
     ...(builtOn.length ? [{ id: 'built-on', label: `Built on ${organization.display_name}`, count: builtOn.length }] : []),
     { id: 'members', label: 'Members', count: organization.members.length },
     ...(organization.can_manage ? [{ id: 'settings', label: 'Settings' }] : []),
@@ -376,7 +446,13 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
               <h1>{organization.display_name}</h1>
               <p>
                 @{organization.name}
-                {organization.my_role && <> · <span className="role-badge member">You: {ORG_ROLE_LABELS[organization.my_role]}</span></>}
+                {organization.my_role && (
+                  <>
+                    {' · '}
+                    <span className="role-badge member">You: {ORG_ROLE_LABELS[effectiveOrgRole(organization.my_role, user.role)]}</span>
+                    <RoleLimitNote role={organization.my_role} serverRole={user.role} />
+                  </>
+                )}
               </p>
               {organization.description.trim() && (
                 <section className="org-about" aria-label={`About ${organization.display_name}`}>
@@ -406,7 +482,9 @@ export function OrganizationPage({ onToast }: { onToast: ToastHandler }) {
       </header>
       <div className="section-body" ref={body}>
         {tab === 'models' && (
-          models === null ? (
+          modelsError ? (
+            <LoadError what="this organization’s models" message={modelsError} onRetry={load} />
+          ) : models === null ? (
             <ModelCardSkeletons count={4} label="Loading the organization's models" />
           ) : models.length ? (
             <div className="model-card-grid">

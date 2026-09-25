@@ -12,6 +12,11 @@ export function formatNumber(value = 0): string {
   }).format(value)
 }
 
+/** "1 repository", "3 repositories". */
+export function countLabel(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`
+}
+
 export function relativeTime(value?: string | null): string {
   if (!value) return 'Unknown'
   const timestamp = new Date(value).getTime()

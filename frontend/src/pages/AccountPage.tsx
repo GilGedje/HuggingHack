@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import {
-  AlertCircle,
   Check,
   KeyRound,
   LoaderCircle,
@@ -23,16 +22,13 @@ import { focusAfterRemoval } from '../focus'
 import { THEME_EVENT, announceThemePreference, readThemePreference } from '../theme'
 import { avatarUrl, describeDevice, relativeTime } from '../utils'
 import { RowSkeletons } from '../components/Skeletons'
+import { LoadError } from '../components/LoadError'
+import { ORG_ROLE_LABELS, ROLE_LABELS, effectiveOrgRole } from '../roles'
 import { useConfirm } from '../components/ConfirmDialog'
 import { Avatar, AvatarEditor } from '../components/Avatar'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
-const ROLE_LABELS: Record<string, string> = {
-  admin: 'Administrator',
-  member: 'Member',
-  viewer: 'Viewer',
-}
 
 function errorMessage(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback
@@ -176,7 +172,7 @@ function ProfileTab({ overview, onToast, onSaved }: { overview: AccountOverview;
             <dd>
               {overview.organizations.length === 0 ? <Link to="/orgs">None</Link> : overview.organizations.map((organization) => (
                 <Link key={organization.id} to={`/orgs/${organization.name}`} className="account-repo-link">
-                  {organization.display_name} · {organization.role}
+                  {organization.display_name} · {ORG_ROLE_LABELS[effectiveOrgRole(organization.role, overview.user.role)]}
                 </Link>
               ))}
             </dd>
@@ -191,20 +187,6 @@ function ProfileTab({ overview, onToast, onSaved }: { overview: AccountOverview;
           </div>
         </dl>
       </section>
-    </div>
-  )
-}
-
-/** A list that could not be read, in place of looking empty, with a way to try again. */
-function LoadError({ what, message, onRetry }: { what: string; message: string; onRetry: () => void }) {
-  return (
-    <div className="page-error" role="alert">
-      <AlertCircle size={18} />
-      <div>
-        <strong>Could not load {what}</strong>
-        <p>{message}</p>
-      </div>
-      <button type="button" onClick={onRetry}>Retry</button>
     </div>
   )
 }
@@ -573,7 +555,8 @@ export function AccountPage({ onToast }: { onToast: ToastHandler }) {
   const body = useFadeOnChange<HTMLDivElement>(tab)
 
   const load = useCallback(() => {
-    api.account().then(setOverview).catch((reason) => setError(reason.message))
+    setError('')
+    api.account().then(setOverview).catch((reason) => setError(errorMessage(reason, 'The server did not answer.')))
   }, [])
 
   useEffect(() => {
@@ -610,7 +593,7 @@ export function AccountPage({ onToast }: { onToast: ToastHandler }) {
         </div>
       </header>
       <div className="section-body" ref={body}>
-        {error && <div className="inline-error">{error}</div>}
+        {error && <LoadError what="your account" message={error} onRetry={load} />}
         {!overview && !error && (
           <RowSkeletons rows={4} cells={1} label="Loading your account" />
         )}

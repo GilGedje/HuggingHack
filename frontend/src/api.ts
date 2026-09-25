@@ -72,6 +72,32 @@ export function errorDetail(detail: unknown, fallback: string): string {
   return fallback
 }
 
+export const UNREACHABLE_MESSAGE = 'HuggingHack could not be reached. Check your connection and try again.'
+
+/**
+ * What to say about a failed response that carries no reason of its own, such
+ * as a proxy's HTML error page or a crash, instead of a bare status code.
+ */
+export function statusMessage(status: number): string {
+  if (status === 502 || status === 503 || status === 504) {
+    return 'HuggingHack is not answering right now. Try again in a moment.'
+  }
+  if (status >= 500) return 'HuggingHack ran into a problem and could not finish. Try again, and tell an administrator if it keeps happening.'
+  if (status === 413) return 'The request was too large for the server or a proxy in front of it.'
+  return `The server refused the request (status ${status}).`
+}
+
+/** fetch() that reports an unreachable server in words; aborts pass through as they are. */
+async function send(path: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(path, init)
+  } catch (reason) {
+    // The browser's own text ("Failed to fetch", "Load failed") says nothing useful.
+    if (reason instanceof TypeError) throw new Error(UNREACHABLE_MESSAGE)
+    throw reason
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (init?.body && typeof init.body === 'string' && !headers.has('Content-Type')) {
@@ -80,7 +106,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (csrfToken && init?.method && !['GET', 'HEAD'].includes(init.method)) {
     headers.set('X-CSRF-Token', csrfToken)
   }
-  const response = await fetch(path, {
+  const response = await send(path, {
     credentials: 'same-origin',
     ...init,
     headers,
@@ -88,7 +114,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) {
     if (response.status === 401) window.dispatchEvent(new Event('hugginghack:unauthorized'))
-    throw new Error(errorDetail(payload.detail, `Request failed with status ${response.status}`))
+    throw new Error(errorDetail(payload.detail, statusMessage(response.status)))
   }
   return payload as T
 }
@@ -513,7 +539,7 @@ async function uploadResumable(
       'Upload-Length': String(file.size),
     })
     if (csrfToken) headers.set('X-CSRF-Token', csrfToken)
-    const response = await fetch(putUrl, {
+    const response = await send(putUrl, {
       method: 'PUT',
       credentials: 'same-origin',
       headers,
@@ -523,7 +549,7 @@ async function uploadResumable(
     const result = await response.json().catch(() => ({}))
     if (!response.ok) {
       if (response.status === 401) window.dispatchEvent(new Event('hugginghack:unauthorized'))
-      throw new Error(errorDetail(result.detail, `Upload failed with status ${response.status}`))
+      throw new Error(errorDetail(result.detail, statusMessage(response.status)))
     }
     offset = result.offset
     onProgress(offset)

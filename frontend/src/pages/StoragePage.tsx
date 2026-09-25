@@ -28,6 +28,7 @@ import type { StorageGrant, StorageModel, StorageMove, StorageOverview, StorageT
 import { formatBytes, formatNumber, relativeTime } from '../utils'
 import { visibilityLabel } from '../visibility'
 import { RowSkeletons, StorageSkeleton } from '../components/Skeletons'
+import { LoadError } from '../components/LoadError'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -417,7 +418,7 @@ export function StoragePage({ onToast }: { onToast: ToastHandler }) {
     api
       .storageTargets()
       .then(setOverview)
-      .catch((reason) => setError(reason.message))
+      .catch((reason) => setError(reason instanceof Error ? reason.message : 'The server did not answer.'))
   }, [])
 
   const loadMoves = useCallback(() => {
@@ -509,7 +510,7 @@ export function StoragePage({ onToast }: { onToast: ToastHandler }) {
         </button>
       </div>
 
-      {error && <div className="inline-error">{error}</div>}
+      {error && <LoadError what="storage locations" message={error} onRetry={load} />}
       {!overview && !error && <StorageSkeleton />}
 
       {overview && (

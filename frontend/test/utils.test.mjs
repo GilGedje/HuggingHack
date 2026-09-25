@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { describeDevice } from '../src/utils.ts'
+import { countLabel, describeDevice } from '../src/utils.ts'
 
 test('phones are named before the desktop systems their agents mention', () => {
   const iphone =
@@ -24,4 +24,10 @@ test('desktop browsers and tools', () => {
   assert.equal(describeDevice('Mozilla/5.0 (X11; Linux x86_64; rv:127.0) Gecko/20100101 Firefox/127.0'), 'Firefox on Linux')
   assert.equal(describeDevice('curl/8.6.0'), 'Command line')
   assert.equal(describeDevice(null), 'Unknown device')
+})
+
+test('counts use the singular for one', () => {
+  assert.equal(countLabel(1, 'repository', 'repositories'), '1 repository')
+  assert.equal(countLabel(0, 'member', 'members'), '0 members')
+  assert.equal(countLabel(3, 'member', 'members'), '3 members')
 })
