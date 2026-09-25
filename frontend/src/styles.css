@@ -680,6 +680,8 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
 }
 .runtime-state-icon.ready { background: var(--success-bg); color: var(--success); }
 .runtime-state-icon.failed { background: var(--danger-bg); color: var(--danger); }
+.runtime-state-icon.cancelled { background: var(--canvas-subtle); color: var(--text-muted); }
+.runtime-job-row .download-stats .secondary-button { margin-left: auto; }
 .runtime-job-main { min-width: 0; }
 .runtime-job-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
 .runtime-job-heading h3 { font-size: 14px; }

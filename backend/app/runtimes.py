@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -23,6 +24,15 @@ ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 MODEL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 OLLAMA_METADATA_SUFFIXES = {".json", ".model", ".tiktoken"}
 TRANSFER_CHUNK_BYTES = 8 * 1024**2
+ACTIVE_STATUSES = ("queued", "preparing", "transferring", "loading")
+# How long a runtime may go without answering before a load fails. Loading a large
+# model into memory takes minutes; the vLLM agent answers once vLLM is up, which it
+# waits for up to two hours (VLLM_AGENT_STARTUP_TIMEOUT_SECONDS at most).
+READ_TIMEOUT_SECONDS = {"ollama": 30 * 60, "vllm": 2 * 60 * 60 + 5 * 60}
+
+
+class JobCancelled(Exception):
+    """Someone cancelled the job; it has already been marked as cancelled."""
 
 
 @dataclass(frozen=True)
@@ -245,6 +255,8 @@ class RuntimeManager:
             thread_name_prefix="runtime",
         )
         self._client_factory = client_factory or self._default_client
+        self._cancelled: dict[str, threading.Event] = {}
+        self._cancel_lock = threading.Lock()
 
     @staticmethod
     def _default_client(target: RuntimeTarget) -> httpx.Client:
@@ -253,8 +265,54 @@ class RuntimeManager:
             token = os.getenv(target.token_env)
             if token:
                 headers["Authorization"] = f"Bearer {token}"
-        timeout = httpx.Timeout(None, connect=10.0)
+        timeout = httpx.Timeout(READ_TIMEOUT_SECONDS[target.kind], connect=10.0)
         return httpx.Client(headers=headers, timeout=timeout, follow_redirects=False)
+
+    def _cancel_event(self, job_id: str) -> threading.Event:
+        with self._cancel_lock:
+            return self._cancelled.setdefault(job_id, threading.Event())
+
+    def cancel(self, job_id: str) -> dict[str, Any]:
+        """Stop an active job at once. A request already sent is abandoned; the
+        runtime may keep what it received so far."""
+        job = self.database.get_runtime_job(job_id)
+        if not job:
+            raise FileNotFoundError("Runtime job not found.")
+        if job["status"] not in ACTIVE_STATUSES:
+            raise ValueError("This runtime job has already finished.")
+        self._cancel_event(job_id).set()
+        timestamp = utc_iso()
+        return self.database.update_runtime_job(
+            job_id,
+            status="cancelled",
+            message="Cancelled",
+            error=None,
+            updated_at=timestamp,
+            completed_at=timestamp,
+        ) or job
+
+    def _call(self, job_id: str, send: Callable[[], httpx.Response]) -> httpx.Response:
+        """Send one request on a helper thread, so Cancel takes effect at once even
+        while a runtime that stopped answering holds the connection open."""
+        cancelled = self._cancel_event(job_id)
+        finished = threading.Event()
+        outcome: dict[str, Any] = {}
+
+        def run() -> None:
+            try:
+                outcome["response"] = send()
+            except BaseException as error:
+                outcome["error"] = error
+            finally:
+                finished.set()
+
+        threading.Thread(target=run, name="runtime-request", daemon=True).start()
+        while not finished.wait(0.25):
+            if cancelled.is_set():
+                raise JobCancelled()
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["response"]
 
     def public_targets(self) -> list[dict[str, Any]]:
         return [target.public() for target in self.targets.values()]
@@ -324,6 +382,9 @@ class RuntimeManager:
         return job
 
     def _update(self, job_id: str, **changes: Any) -> dict[str, Any] | None:
+        if self._cancel_event(job_id).is_set():
+            # Progress from a request still finishing must not undo the cancel.
+            raise JobCancelled()
         changes["updated_at"] = utc_iso()
         return self.database.update_runtime_job(job_id, **changes)
 
@@ -371,7 +432,7 @@ class RuntimeManager:
     ) -> int:
         size = path.stat().st_size
         endpoint = f"{target.base_url}/api/blobs/{digest}"
-        existing = client.head(endpoint)
+        existing = self._call(job["id"], lambda: client.head(endpoint))
         if existing.status_code == 200:
             processed += size
             self._update(
@@ -402,10 +463,9 @@ class RuntimeManager:
                     )
                     yield chunk
 
-        response = client.post(
-            endpoint,
-            headers={"Content-Length": str(size)},
-            content=chunks(),
+        response = self._call(
+            job["id"],
+            lambda: client.post(endpoint, headers={"Content-Length": str(size)}, content=chunks()),
         )
         self._require_response(response, {200, 201})
         return processed + size
@@ -423,6 +483,8 @@ class RuntimeManager:
         manifest: dict[str, str] = {}
         digests: list[tuple[Path, str]] = []
         for path in files:
+            if self._cancel_event(job["id"]).is_set():
+                raise JobCancelled()
             digest = self._digest(path)
             digests.append((path, digest))
             name = (
@@ -451,13 +513,16 @@ class RuntimeManager:
             progress=92,
             message=f"Creating {job['runtime_model_name']} in Ollama",
         )
-        create = client.post(
-            f"{target.base_url}/api/create",
-            json={
-                "model": job["runtime_model_name"],
-                "files": manifest,
-                "stream": False,
-            },
+        create = self._call(
+            job["id"],
+            lambda: client.post(
+                f"{target.base_url}/api/create",
+                json={
+                    "model": job["runtime_model_name"],
+                    "files": manifest,
+                    "stream": False,
+                },
+            ),
         )
         self._require_response(create)
         self._update(
@@ -465,14 +530,17 @@ class RuntimeManager:
             progress=96,
             message=f"Loading {job['runtime_model_name']} into memory",
         )
-        preload = client.post(
-            f"{target.base_url}/api/generate",
-            json={
-                "model": job["runtime_model_name"],
-                "prompt": "",
-                "stream": False,
-                "keep_alive": target.keep_alive,
-            },
+        preload = self._call(
+            job["id"],
+            lambda: client.post(
+                f"{target.base_url}/api/generate",
+                json={
+                    "model": job["runtime_model_name"],
+                    "prompt": "",
+                    "stream": False,
+                    "keep_alive": target.keep_alive,
+                },
+            ),
         )
         self._require_response(preload)
 
@@ -492,19 +560,29 @@ class RuntimeManager:
             progress=10,
             message=f"Starting {job['runtime_model_name']} on {target.name}",
         )
-        response = client.post(
-            f"{target.base_url}/v1/models/load",
-            json={
-                "repo_id": job["repo_id"],
-                "model_path": mapped_path,
-                "served_model_name": job["runtime_model_name"],
-            },
+        response = self._call(
+            job["id"],
+            lambda: client.post(
+                f"{target.base_url}/v1/models/load",
+                json={
+                    "repo_id": job["repo_id"],
+                    "model_path": mapped_path,
+                    "served_model_name": job["runtime_model_name"],
+                },
+            ),
         )
         self._require_response(response)
 
     def _run(self, job_id: str) -> None:
+        try:
+            self._run_job(job_id)
+        finally:
+            with self._cancel_lock:
+                self._cancelled.pop(job_id, None)
+
+    def _run_job(self, job_id: str) -> None:
         job = self.database.get_runtime_job(job_id)
-        if not job:
+        if not job or job["status"] not in ACTIVE_STATUSES:
             return
         target = self.targets.get(job["target_id"])
         if not target:
@@ -532,9 +610,19 @@ class RuntimeManager:
                 error=None,
                 completed_at=completed,
             )
+        except JobCancelled:
+            return
         except Exception as error:
+            if self._cancel_event(job_id).is_set():
+                return
             completed = utc_iso()
-            detail = (str(error).strip() or error.__class__.__name__)[:1000]
+            if isinstance(error, httpx.TimeoutException):
+                detail = (
+                    f"{target.name} stopped answering. Check that it is running and "
+                    "reachable, then load the model again."
+                )
+            else:
+                detail = (str(error).strip() or error.__class__.__name__)[:1000]
             self._update(
                 job_id,
                 status="failed",

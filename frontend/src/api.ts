@@ -331,6 +331,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  cancelRuntimeJob: (jobId: string) =>
+    request<RuntimeJob>(`/api/runtime-jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }),
   collections: () => request<{ items: Collection[] }>('/api/collections'),
   createCollection: (payload: { name: string; description?: string }) =>
     request<Collection>('/api/collections', {

@@ -123,6 +123,9 @@ def test_a_failed_sync_puts_every_file_back_and_the_same_change_commits_later(li
         assert (root / "w.bin").read_bytes() == b"12345"
         assert not (root / "docs").exists()
         assert (root / ".hugginghack.json").read_bytes() == manifest_before
+        # Only a record of the new file it was about to write, so no scan adopts it.
+        pending = json.loads(bucket.objects.pop("models/acme/lake-model/.hugginghack-pending.json"))
+        assert pending["files"] == ["docs/card.md"]
         assert bucket.objects == objects_before
         assert main.hub_repositories.snapshot("acme/lake-model").entry("docs/card.md") is None
         assert uploads.change_file_status(session["id"], admin, "docs/card.md")["complete"] is True
@@ -229,7 +232,69 @@ def test_a_sync_never_unlists_the_repository_first(library):  # noqa: F811
     (root / "w.bin").unlink()
     (root / "new.txt").write_text("new", encoding="utf-8")
     storage.sync_repository("acme/lake-model", root, {"new.txt", "w.bin"})
-    assert calls == [("upload", "new.txt"), ("upload", ".hugginghack.json"), ("delete", "w.bin")]
+    assert calls == [
+        ("upload", "new.txt"),
+        ("upload", ".hugginghack.json"),
+        ("delete", "w.bin"),
+        ("delete", ".hugginghack-pending.json"),
+    ]
+
+
+def test_objects_a_failed_change_left_in_the_bucket_never_become_a_commit(library, monkeypatch):  # noqa: F811
+    """A bucket that fails part-way through a change keeps the files uploaded so far.
+    They stay out of the repository across rescans and restores, and the next change
+    that succeeds removes them."""
+    admin, uploads, bucket = library["admin"], library["uploads"], library["bucket"]
+    main.refresh_model_index()
+    commits = main.database.count_commits("acme/lake-model")
+    before = sorted(entry.path for entry in main.hub_repositories.snapshot("acme/lake-model").entries)
+
+    session = uploads.start_change("acme/lake-model", admin)
+    stage(uploads, session, admin, {"more/a.txt": b"a", "more/b.txt": b"b", "more/c.txt": b"c"})
+    working_upload, sent = bucket.upload_file, []
+
+    def fail_after_two(filename, bucket_name, key, **kwargs):
+        if len(sent) == 2:
+            bucket_failure()
+        sent.append(key)
+        return working_upload(filename, bucket_name, key, **kwargs)
+
+    monkeypatch.setattr(bucket, "upload_file", fail_after_two)
+    with pytest.raises(main.StorageUnavailableError):
+        uploads.commit_change(session["id"], admin, "More")
+    assert len(sent) == 2 and all(key in bucket.objects for key in sent)
+    uploads.abort_change(session["id"], admin)
+
+    # A rescan (as at every start) neither lists the strays nor records a commit.
+    main.refresh_model_index()
+    assert main.database.count_commits("acme/lake-model") == commits
+    assert sorted(entry.path for entry in main.hub_repositories.snapshot("acme/lake-model").entries) == before
+    storage = main.storages.get("lake")
+    assert not any(path.startswith("more/") for path, _ in storage.object_files("acme/lake-model"))
+    assert main.database.get_local_model("acme/lake-model")["file_count"] == len(before)
+
+    # The next change that succeeds publishes its own files and removes the rest.
+    monkeypatch.setattr(bucket, "upload_file", working_upload)
+    session = uploads.start_change("acme/lake-model", admin)
+    stage(uploads, session, admin, {"more/b.txt": b"b2"})
+    result = uploads.commit_change(session["id"], admin, "One more")
+    assert result["commit"]["summary"] == {"added": 1, "modified": 0, "deleted": 0}
+    keys = {key for key in bucket.objects if key.startswith("models/acme/lake-model/")}
+    assert "models/acme/lake-model/more/b.txt" in keys
+    assert "models/acme/lake-model/more/a.txt" not in keys and "models/acme/lake-model/more/c.txt" not in keys
+    assert "models/acme/lake-model/.hugginghack-pending.json" not in keys
+    main.refresh_model_index()
+    assert main.database.count_commits("acme/lake-model") == commits + 1
+
+
+def test_objects_changed_in_the_bucket_by_hand_are_still_detected(library):  # noqa: F811
+    bucket = library["bucket"]
+    main.refresh_model_index()
+    commits = main.database.count_commits("acme/lake-model")
+    bucket.objects["models/acme/lake-model/notes.txt"] = b"added by hand"
+    main.refresh_model_index()
+    assert main.database.count_commits("acme/lake-model") == commits + 1
+    assert main.hub_repositories.snapshot("acme/lake-model").entry("notes.txt") is not None
 
 
 # 4. Sign-in throttling: per account and address, per address across accounts, bounded.

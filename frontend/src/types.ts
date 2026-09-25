@@ -355,7 +355,7 @@ export interface RuntimeJob {
   repo_id: string
   runtime_model_name: string
   source_file?: string | null
-  status: 'queued' | 'preparing' | 'transferring' | 'loading' | 'ready' | 'failed'
+  status: 'queued' | 'preparing' | 'transferring' | 'loading' | 'ready' | 'failed' | 'cancelled'
   total_bytes: number
   processed_bytes: number
   progress: number

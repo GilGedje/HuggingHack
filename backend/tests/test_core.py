@@ -1,5 +1,7 @@
 import json
+import shutil
 import sqlite3
+import threading
 import time
 from io import BytesIO
 from pathlib import Path
@@ -34,7 +36,7 @@ from app.runtimes import (
     parse_runtime_targets,
     remote_model_path,
 )
-from app.storage import FilesystemModelStorage, S3ModelStorage, StorageRegistry
+from app.storage import PENDING_NAME, FilesystemModelStorage, S3ModelStorage, StorageRegistry
 from app.uploads import UploadManager, validate_upload_path
 from app.vllm_agent import AgentSettings, VllmProcessManager
 
@@ -609,9 +611,54 @@ def test_chunked_upload_is_confined_owned_and_indexed(tmp_path: Path):
     )
     assert database.get_owned_repository(repository["repo_id"]) is None
 
-    for value in ("../secret", "/absolute/file", ".git/config", ".hugginghack.json"):
+    for value in (
+        "../secret",
+        "/absolute/file",
+        ".git/config",
+        ".hugginghack.json",
+        # Hidden once stored, or impossible to request by name.
+        "w.bin.hugginghack-part",
+        "w.bin.hugginghack-s3-part",
+        "new\nline.txt",
+        "tab\there/config.json",
+        "bell\x7f.txt",
+    ):
         with pytest.raises(ValueError):
             validate_upload_path(value)
+
+
+def test_repository_names_are_unique_ignoring_case_and_file_lengths_are_fixed(tmp_path: Path):
+    settings = Settings(model_storage=(tmp_path / "models").resolve(), data_dir=(tmp_path / "data").resolve())
+    settings.ensure_directories()
+    database = Database(settings.database_path)
+    database.initialize()
+    owner = AuthService(settings, database).create_user("owner", "Owner", "correct horse battery", "admin")
+    manager = UploadManager(settings, database, LocalModelIndexer(settings, database))
+    first = manager.create_repository(owner, "Tiny", "", "public")
+    # A case-sensitive disk would hold both; people would read them as one name.
+    with pytest.raises(FileExistsError):
+        manager.create_repository(owner, "tiny", "", "public")
+
+    # A file keeps the length its first chunk declared.
+    manager.upload_chunk(first["repo_id"], owner["id"], "w.bin", 0, 10, b"12345")
+    with pytest.raises(RuntimeError, match="started as 10 bytes, not 12"):
+        manager.upload_chunk(first["repo_id"], owner["id"], "w.bin", 5, 12, b"67890")
+    done = manager.upload_chunk(first["repo_id"], owner["id"], "w.bin", 5, 10, b"67890")
+    assert done["complete"] is True
+    # The same path can be uploaded again, with a new length, once it is gone.
+    (settings.model_storage / first["repo_id"] / "w.bin").unlink()
+    manager.upload_chunk(first["repo_id"], owner["id"], "w.bin", 0, 4, b"12")
+    assert manager.upload_chunk(first["repo_id"], owner["id"], "w.bin", 2, 4, b"34")["complete"] is True
+    manager.finalize(first["repo_id"], owner["id"])
+
+    other = manager.create_repository(owner, "other", "", "public")
+    manager.upload_chunk(other["repo_id"], owner["id"], "config.json", 0, 2, b"{}")
+    manager.finalize(other["repo_id"], owner["id"])
+    with pytest.raises(FileExistsError):
+        manager.rename_repository(other["repo_id"], owner, "owner", "TINY", other["repo_id"])
+    # Changing only the case of its own name is still a rename.
+    renamed = manager.rename_repository(first["repo_id"], owner, "owner", "tiny", first["repo_id"])
+    assert renamed["repo_id"] == "owner/tiny"
 
 
 def test_s3_storage_sync_discover_evict_and_restore(tmp_path: Path):
@@ -660,8 +707,11 @@ def test_s3_storage_sync_discover_evict_and_restore(tmp_path: Path):
 
     assert uri == "s3://model-bucket/library/acme/tiny"
     assert "library/acme/tiny/obsolete.bin" not in fake.objects
-    assert fake.uploads[-1] == "library/acme/tiny/.hugginghack.json"
-    remote_manifest = json.loads(fake.objects[fake.uploads[-1]])
+    # The files, then the manifest; the pending record comes and goes around them.
+    published = [key for key in fake.uploads if not key.endswith(PENDING_NAME)]
+    assert published[-1] == "library/acme/tiny/.hugginghack.json"
+    assert f"library/acme/tiny/{PENDING_NAME}" not in fake.objects
+    remote_manifest = json.loads(fake.objects[published[-1]])
     assert remote_manifest["storage_backend"] == "s3"
     assert remote_manifest["config"]["model_type"] == "llama"
     # Syncing measures the files but keeps the Hub's task, license, library, and tags.
@@ -684,6 +734,32 @@ def test_s3_storage_sync_discover_evict_and_restore(tmp_path: Path):
     assert json.loads((root / ".hugginghack.json").read_text(encoding="utf-8"))[
         "status"
     ] == "complete"
+
+
+def test_a_bucket_rescan_lists_the_model_card_facts_the_upload_showed(tmp_path: Path):
+    settings = Settings(
+        model_storage=(tmp_path / "models").resolve(),
+        data_dir=(tmp_path / "data").resolve(),
+        model_storage_backend="s3",
+        s3_bucket="model-bucket",
+    )
+    root = settings.model_storage / "acme" / "carded"
+    root.mkdir(parents=True)
+    (root / "config.json").write_text(json.dumps({"model_type": "llama"}), encoding="utf-8")
+    (root / "README.md").write_text(
+        "---\npipeline_tag: text-generation\nlicense: mit\nlibrary_name: transformers\ntags: [chat]\n---\n# Carded\n",
+        encoding="utf-8",
+    )
+    (root / ".hugginghack.json").write_text(
+        json.dumps({"status": "complete", "repo_id": "acme/carded", "source": "user-upload"}), encoding="utf-8"
+    )
+    storage = S3ModelStorage(settings, client=FakeS3Client(), transfer_config=object())
+    storage.sync_repository("acme/carded", root)
+    shutil.rmtree(root)
+
+    (found,) = storage.discover_repositories()
+    assert (found["pipeline_tag"], found["license"]) == ("text-generation", "mit")
+    assert (found["library_name"], found["tags"]) == ("transformers", ["chat"])
 
 
 def test_s3_restore_rejects_traversal_keys(tmp_path: Path):
@@ -902,6 +978,65 @@ def test_runtime_manager_maps_shared_model_path_for_vllm_agent(tmp_path: Path):
             "served_model_name": "tiny-chat",
         }
     ]
+
+
+def test_a_runtime_that_stops_answering_fails_the_job_and_active_jobs_can_be_cancelled(tmp_path: Path):
+    storage = (tmp_path / "models").resolve()
+    for name in ("slow", "silent"):
+        (storage / "acme" / name).mkdir(parents=True)
+        (storage / "acme" / name / "tiny.gguf").write_bytes(b"tiny-gguf-weights")
+    settings = Settings(
+        model_storage=storage,
+        data_dir=(tmp_path / "data").resolve(),
+        runtime_targets_json=json.dumps(
+            [{"id": "ollama-rig", "name": "Ollama rig", "kind": "ollama", "base_url": "http://ollama.test:11434"}]
+        ),
+    )
+    database = Database(settings.database_path)
+    database.initialize()
+    user = AuthService(settings, database).create_user("owner", "Owner", "correct horse battery", "admin")
+    LocalModelIndexer(settings, database).scan()
+    release = threading.Event()
+
+    def handler(request: httpx.Request):
+        request.read()
+        if request.method == "HEAD":
+            return httpx.Response(404)
+        if request.url.path == "/api/generate":
+            if b"acme-silent" in request.content:
+                raise httpx.ReadTimeout("timed out", request=request)
+            release.wait(10)  # a runtime holding the connection open
+            return httpx.Response(200, json={"done": True})
+        return httpx.Response(200, json={"status": "success"})
+
+    transport = httpx.MockTransport(handler)
+    manager = RuntimeManager(settings, database, client_factory=lambda _: httpx.Client(transport=transport))
+    assert RuntimeManager._default_client(manager.targets["ollama-rig"]).timeout.read == 30 * 60
+    try:
+        silent = manager.queue("ollama-rig", database.get_local_model("acme/silent"), "acme-silent", None, user["id"])
+        failed = _wait_for_runtime_job(database, silent["id"])
+        assert failed["status"] == "failed"
+        assert failed["error"].startswith("Ollama rig stopped answering.")
+
+        slow = manager.queue("ollama-rig", database.get_local_model("acme/slow"), "acme-slow", None, user["id"])
+        deadline = time.monotonic() + 3
+        while database.get_runtime_job(slow["id"])["progress"] < 96 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        started = time.monotonic()
+        cancelled = manager.cancel(slow["id"])
+        assert cancelled["status"] == "cancelled" and time.monotonic() - started < 1
+        with pytest.raises(ValueError):
+            manager.cancel(slow["id"])
+        with pytest.raises(FileNotFoundError):
+            manager.cancel("missing")
+        # The model can be sent again at once, and the abandoned request cannot undo the cancel.
+        assert database.find_active_runtime_job("ollama-rig", "acme/slow") is None
+        release.set()
+        time.sleep(0.5)
+        assert database.get_runtime_job(slow["id"])["status"] == "cancelled"
+    finally:
+        release.set()
+        manager.shutdown()
 
 
 def test_vllm_agent_confines_requested_models_to_shared_root(tmp_path: Path):

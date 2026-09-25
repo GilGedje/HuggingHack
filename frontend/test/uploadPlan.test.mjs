@@ -38,6 +38,14 @@ test('missing essentials are reported, and only top-level files count', () => {
   assert.equal(isSkipped('docs/.git-notes.md'), false)
 })
 
+test('names the server refuses are skipped, as validate_upload_path refuses them', () => {
+  assert.equal(isSkipped('weights.bin.hugginghack-s3-part'), true)
+  assert.equal(isSkipped('new\nline.txt'), true)
+  assert.equal(isSkipped('tab\there/config.json'), true)
+  assert.equal(isSkipped('bell\u007f.txt'), true)
+  assert.equal(isSkipped('spaces and ünïcödé.txt'), false)
+})
+
 test('precision follows the same rules as the server', () => {
   assert.equal(detectPrecision({ torch_dtype: 'bfloat16' }), 'bf16')
   assert.equal(detectPrecision({ text_config: { dtype: 'torch.bfloat16' } }), 'bf16')

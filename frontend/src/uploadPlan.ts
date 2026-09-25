@@ -7,7 +7,10 @@
 const SKIPPED_FOLDERS = new Set(['.git', '.cache', '__pycache__'])
 /** Files the server refuses or that operating systems leave behind. */
 const SKIPPED_FILES = new Set(['.hugginghack.json', '.DS_Store', 'Thumbs.db', 'desktop.ini'])
-const PART_SUFFIX = '.hugginghack-part'
+/** Unfinished-transfer names the server keeps hidden. Mirrors `indexer.PART_SUFFIXES`. */
+const PART_SUFFIXES = ['.hugginghack-part', '.hugginghack-s3-part']
+/** Control characters (a line break, a tab) can be stored but never requested by name. */
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/
 const TOKENIZER_FILES = ['tokenizer.json', 'tokenizer_config.json', 'tokenizer.model']
 
 interface PlannedEntry {
@@ -38,7 +41,8 @@ export function isSkipped(path: string): boolean {
   return (
     parts.slice(0, -1).some((part) => SKIPPED_FOLDERS.has(part)) ||
     SKIPPED_FILES.has(name) ||
-    name.endsWith(PART_SUFFIX)
+    PART_SUFFIXES.some((suffix) => name.endsWith(suffix)) ||
+    CONTROL_CHARACTERS.test(path)
   )
 }
 
