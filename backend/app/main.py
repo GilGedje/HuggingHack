@@ -1662,14 +1662,21 @@ def update_config_results(
         raise HTTPException(status_code=400, detail=str(error)) from error
 
 
+# The model page builds its folder tree from one listing, so a lower ceiling hid
+# whole folders of large repositories; past this many files it says so instead.
+LIBRARY_FILE_LIMIT = 10_000
+
+
 def library_listing(model: dict[str, Any]) -> dict[str, Any]:
     root = settings.model_storage / model["relative_path"]
     if model["storage_backend"] == "s3" and (not model["cached"] or not root.is_dir()):
         database.set_local_model_cached(model["repo_id"], False)
         model["cached"] = False
-        listing = storages.for_model(model).list_repository_files(model["repo_id"])
+        listing = storages.for_model(model).list_repository_files(
+            model["repo_id"], limit=LIBRARY_FILE_LIMIT
+        )
     else:
-        listing = indexer.files_for_model(model["repo_id"])
+        listing = indexer.files_for_model(model["repo_id"], limit=LIBRARY_FILE_LIMIT)
     if not listing:
         raise HTTPException(status_code=404, detail="Model files were not found.")
     return listing

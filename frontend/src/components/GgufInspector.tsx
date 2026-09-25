@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Boxes, Database, FileSearch, LoaderCircle, Search } from 'lucide-react'
+import { errorDetail } from '../api'
 import { inspectGguf, type GgufInspection } from '../gguf'
 import type { HubFile } from '../types'
 import { formatBytes, formatNumber } from '../utils'
+import { RowSkeletons } from './Skeletons'
 
 interface GgufInspectorProps {
   repoId: string
@@ -39,7 +41,9 @@ export function GgufInspector({ repoId, revision, files }: GgufInspectorProps) {
       })
       .catch((reason) => {
         if (!ignore) {
-          setError(reason instanceof Error ? reason.message : 'Unable to inspect this GGUF file.')
+          setError(
+            reason instanceof Error ? errorDetail(reason.cause, reason.message) : 'Could not inspect this GGUF file.',
+          )
         }
       })
       .finally(() => {
@@ -87,13 +91,16 @@ export function GgufInspector({ repoId, revision, files }: GgufInspectorProps) {
       </div>
 
       {loading && (
-        <div className="gguf-loading">
-          <LoaderCircle size={20} className="spin" />
-          <div>
-            <strong>Reading the GGUF header…</strong>
-            <span>Large tokenizer metadata may require several small range requests.</span>
+        <>
+          <div className="gguf-loading">
+            <LoaderCircle size={20} className="spin" />
+            <div>
+              <strong>Reading the GGUF header…</strong>
+              <span>Large tokenizer metadata may require several small range requests.</span>
+            </div>
           </div>
-        </div>
+          <RowSkeletons rows={5} cells={2} label="Reading the GGUF header" />
+        </>
       )}
       {error && (
         <div className="inline-error gguf-error">

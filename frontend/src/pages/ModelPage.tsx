@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  AlertCircle,
   AlertTriangle,
   ArrowLeft,
   Boxes,
@@ -17,6 +18,7 @@ import {
   LoaderCircle,
   LockKeyhole,
   Pencil,
+  RefreshCw,
   Rocket,
   ShieldCheck,
   UploadCloud,
@@ -208,7 +210,10 @@ function FilesSection({
         {rows.length === 0 && <div className="empty-compact">This folder is empty.</div>}
       </div>
       {model.truncated && (
-        <p className="file-browser-note">Only the first {model.files.length} files are listed.</p>
+        <p className="file-browser-note">
+          This repository has more files than the page lists; only the first {formatNumber(model.files.length)} are
+          shown. Clone it to see every file.
+        </p>
       )}
     </section>
   )
@@ -373,9 +378,18 @@ function CommitsSection({ model }: { model: LibraryModelDetails }) {
           <span className="eyebrow">main</span>
           <h2>Commit history</h2>
         </div>
-        <span>{formatNumber(total)} commits</span>
+        <span>{formatNumber(total)} commit{total === 1 ? '' : 's'}</span>
       </div>
-      {error && <div className="inline-error">{error}</div>}
+      {error && (
+        <div className="page-error">
+          <AlertCircle size={18} />
+          <div>
+            <strong>Could not load the commit history</strong>
+            <p>{error}</p>
+          </div>
+          <button type="button" onClick={() => load(commits.length)}>Retry</button>
+        </div>
+      )}
       {groupByDay(commits).map(([day, items]) => (
         <div className="commit-day" key={day}>
           <h3>
@@ -416,6 +430,7 @@ function CommitsSection({ model }: { model: LibraryModelDetails }) {
 function CommitSection({ model, commitId }: { model: LibraryModelDetails; commitId: string }) {
   const [commit, setCommit] = useState<CommitDetail | null>(null)
   const [error, setError] = useState('')
+  const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
     let ignore = false
@@ -432,9 +447,20 @@ function CommitSection({ model, commitId }: { model: LibraryModelDetails; commit
     return () => {
       ignore = true
     }
-  }, [commitId, model.id])
+  }, [commitId, model.id, attempt])
 
-  if (error) return <div className="inline-error">{error}</div>
+  if (error) {
+    return (
+      <div className="page-error">
+        <AlertCircle size={18} />
+        <div>
+          <strong>Could not load this commit</strong>
+          <p>{error}</p>
+        </div>
+        <button type="button" onClick={() => setAttempt((value) => value + 1)}>Retry</button>
+      </div>
+    )
+  }
   if (!commit) {
     return (
       <RowSkeletons rows={6} cells={1} label="Loading the commit" />
@@ -489,6 +515,9 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
   const error = failure?.repoId === repoId ? failure.message : ''
   const [saving, setSaving] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
+  // Each open is a new dialog: reopening one that is still playing its exit
+  // would otherwise be swallowed when that exit finishes and clears the address.
+  const [useOpens, setUseOpens] = useState(0)
 
   const section = rest.startsWith('commit/')
     ? 'commit'
@@ -560,6 +589,11 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
     [setSearchParams],
   )
 
+  function openUse(mode: UseModelMode) {
+    setUseOpens((value) => value + 1)
+    setParam(mode === 'vllm' ? { 'local-app': 'vllm', clone: null } : { clone: 'true', 'local-app': null })
+  }
+
   async function toggleSaved() {
     if (!model) return
     const saved = !model.saved
@@ -596,9 +630,15 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
           <Boxes size={34} />
           <h2>{repoId}</h2>
           <p>{error}</p>
-          <button className="secondary-button" onClick={() => navigate('/models')}>
-            <ArrowLeft size={15} /> Back to models
-          </button>
+          {/* A missing model stays missing; anything else (the server or network) may pass. */}
+          <div className="empty-state-actions">
+            <button className="secondary-button" onClick={() => navigate('/models')}>
+              <ArrowLeft size={15} /> Back to models
+            </button>
+            <button className="secondary-button" onClick={() => setReloadKey((value) => value + 1)}>
+              <RefreshCw size={15} /> Retry
+            </button>
+          </div>
         </div>
       </div>
     )
@@ -695,7 +735,7 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
                   key={tab.id}
                   to={tab.to}
                   className={section === tab.id || (tab.id === 'commits' && section === 'commit') ? 'active' : ''}
-                  aria-current={section === tab.id ? 'page' : undefined}
+                  aria-current={section === tab.id || (tab.id === 'commits' && section === 'commit') ? 'page' : undefined}
                 >
                   {tab.label}
                   {tab.count != null && <span>{formatNumber(tab.count)}</span>}
@@ -711,7 +751,7 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
               <button
                 type="button"
                 className="download-button compact"
-                onClick={() => setParam(vllm ? { 'local-app': 'vllm', clone: null } : { clone: 'true', 'local-app': null })}
+                onClick={() => openUse(vllm ? 'vllm' : 'clone')}
               >
                 <Rocket size={15} /> Use this model
               </button>
@@ -724,12 +764,28 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
         <main className="model-page-main">
           {section === 'card' && (
             model.model_card ? (
-              <ModelCardDocument
-                source={model.model_card}
-                sourceUrl=""
-                revision={model.revision || 'main'}
-                localRepoId={model.id}
-              />
+              <>
+                <ModelCardDocument
+                  source={model.model_card}
+                  sourceUrl=""
+                  revision={model.revision || 'main'}
+                  localRepoId={model.id}
+                />
+                {model.model_card_truncated && (
+                  <p className="model-card-truncated">
+                    <AlertTriangle size={15} />
+                    <span>
+                      This model card is too long to show in full; it stops here.{' '}
+                      <a
+                        className="text-link"
+                        href={api.fileUrl(model.id, model.files.find((file) => file.path.toLowerCase() === 'readme.md')?.path || 'README.md')}
+                      >
+                        Download the whole README.md
+                      </a>
+                    </span>
+                  </p>
+                )}
+              </>
             ) : (
               <div className="empty-state">
                 <File size={28} />
@@ -771,14 +827,14 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
               <p>Pull it from any machine on your network.</p>
               <div className="use-model-actions">
                 {vllm && (
-                  <button type="button" className="download-button" onClick={() => setParam({ 'local-app': 'vllm', clone: null })}>
+                  <button type="button" className="download-button" onClick={() => openUse('vllm')}>
                     <Rocket size={16} /> Deploy with vLLM
                   </button>
                 )}
                 <button
                   type="button"
                   className={vllm ? 'secondary-button' : 'download-button'}
-                  onClick={() => setParam({ clone: 'true', 'local-app': null })}
+                  onClick={() => openUse('clone')}
                 >
                   <GitBranch size={16} /> Clone repository
                 </button>
@@ -856,6 +912,7 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
 
       {useMode && (
         <UseModelDialog
+          key={useOpens}
           repoId={model.id}
           pipelineTag={model.pipeline_tag}
           vllmSupported={vllm}

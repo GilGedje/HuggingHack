@@ -69,6 +69,15 @@ h1, h2, h3, p { margin: 0; }
 h1, h2, h3 { text-wrap: balance; }
 p { text-wrap: pretty; }
 .app-shell { min-height: 100vh; }
+/* Hidden until a keyboard user tabs to it, then it sits over the top bar. */
+.skip-link {
+  position: fixed; top: 8px; left: 8px; z-index: 100; padding: 8px 14px;
+  border: 1px solid var(--border-strong); border-radius: 8px;
+  background: var(--canvas-raised); color: var(--text); font-size: 13px; font-weight: 600;
+  cursor: pointer; transform: translateY(-160%);
+}
+.skip-link:focus-visible { transform: none; }
+main:focus { outline: none; }
 .topbar {
   position: sticky; top: 0; z-index: 40; height: 64px;
   border-bottom: 1px solid var(--border);
@@ -167,7 +176,6 @@ p { text-wrap: pretty; }
   font-size: 11px; font-variant-numeric: tabular-nums;
 }
 .filter-group button.empty:not(.selected) { color: var(--text-muted); }
-.filter-group button.empty .filter-count { opacity: 0.55; }
 
 /* Parameter size: two native range inputs share one track. The track is inset by
    half a thumb so the fill lines up with where the thumbs actually sit. */
@@ -292,6 +300,11 @@ p { text-wrap: pretty; }
   background: transparent; color: var(--text); cursor: pointer; font-size: 13px;
 }
 .sort-control > svg:last-child { position: absolute; right: 9px; pointer-events: none; }
+/* The select has no outline of its own (it would hug the text), so the box shows the ring. */
+.sort-control:has(select:focus-visible) {
+  outline: 3px solid color-mix(in oklch, var(--brand-primary) 65%, transparent);
+  outline-offset: 2px;
+}
 .results-line {
   min-height: 42px; padding: 0 2px; display: flex; align-items: center;
   justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border);
@@ -383,6 +396,7 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
 .empty-state h2 { margin-top: 10px; color: var(--text); font-size: 18px; }
 .empty-state p { margin-top: 5px; max-width: 480px; font-size: 13px; }
 .empty-state.spacious { min-height: 360px; }
+.empty-state-actions { margin-top: 16px; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .empty-compact {
   min-height: 78px; padding: 20px; display: flex; align-items: center;
   justify-content: center; gap: 8px; border: 1px dashed var(--border-strong);
@@ -985,7 +999,9 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
 .config-compare td { font-family: 'IBM Plex Mono', monospace; }
 .config-compare tr.context td, .config-compare tr.context th { background: var(--canvas-subtle); color: var(--text-secondary); }
 .config-compare td.best {
-  background: color-mix(in oklch, var(--success) 12%, transparent); color: var(--success); font-weight: 600;
+  /* Toward the text color so small figures stay readable on the green tint (AA). */
+  background: color-mix(in oklch, var(--success) 12%, transparent);
+  color: color-mix(in oklch, var(--success) 78%, var(--text)); font-weight: 600;
 }
 .config-revision-actions { margin-left: auto; display: inline-flex; flex-wrap: wrap; gap: 8px; }
 .config-panel {
@@ -1020,7 +1036,7 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
 }
 .config-file header code { min-width: 0; flex: 1; overflow-wrap: anywhere; font-size: 12px; font-weight: 600; }
 .config-file header small { color: var(--text-muted); font-size: 11px; }
-.config-file header .snippet-copy { position: relative; width: 28px; height: 28px; }
+.config-file header .snippet-copy { position: relative; inset: auto; width: 28px; height: 28px; }
 .config-file pre { max-height: 520px; margin: 0; padding: 12px; overflow: auto; font-size: 12px; line-height: 1.55; }
 .results-editor { display: grid; gap: 16px; }
 .results-editor fieldset { min-width: 0; margin: 0; padding: 0; display: grid; gap: 10px; border: 0; }
@@ -1381,7 +1397,9 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
   justify-content: space-between; gap: 8px; font-family: 'IBM Plex Mono', monospace;
   font-size: 9px; letter-spacing: 0.05em; text-transform: uppercase;
 }
-.visual-local-badge { display: inline-flex; align-items: center; gap: 3px; color: var(--success); }
+.visual-local-badge { display: inline-flex; align-items: center; gap: 3px; color: color-mix(in oklch, var(--success) 75%, var(--text)); }
+/* 9px capitals on a tinted header: deepen the ink toward the text color to reach AA. */
+.model-visual-topline > span:first-child { color: color-mix(in oklch, var(--visual-ink) 72%, var(--text)); }
 .model-visual-core {
   position: relative; z-index: 1; display: flex; align-items: center;
   justify-content: space-between; gap: 18px;
@@ -2256,6 +2274,12 @@ button.file-browser-name:hover { text-decoration: underline; text-underline-offs
 .file-browser-action a:active { transform: scale(0.9); }
 .file-browser .empty-compact { margin: 0; border: 0; }
 .file-browser-note { margin-top: 8px; color: var(--text-muted); font-size: 11px; }
+.model-card-truncated {
+  margin-top: 20px; padding: 12px 14px; display: flex; align-items: flex-start; gap: 10px;
+  border: 1px solid color-mix(in oklch, var(--warning) 35%, var(--border)); border-radius: 10px;
+  background: var(--warning-bg); color: var(--text-secondary); font-size: 13px;
+}
+.model-card-truncated > svg { flex: none; margin-top: 2px; color: var(--warning); }
 
 /* Commits */
 .model-commits .section-heading-line { margin-bottom: 18px; }
@@ -2273,7 +2297,8 @@ button.file-browser-name:hover { text-decoration: underline; text-underline-offs
 .commit-row-main small { color: var(--text-muted); font-size: 11px; }
 .commit-row-id { display: inline-flex; align-items: center; gap: 6px; }
 .commit-row-id code { color: var(--text-secondary); font-size: 11px; }
-.commit-row-id .snippet-copy { position: relative; width: 26px; height: 26px; }
+/* In the flow, so the corner offsets meant for code blocks would push it below the hash. */
+.commit-row-id .snippet-copy { position: relative; inset: auto; width: 26px; height: 26px; }
 .commit-badges { display: inline-flex; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; }
 .commit-badges .added, .commit-file-stats .added { color: var(--success); }
 .commit-badges .modified { color: var(--warning); }

@@ -97,7 +97,8 @@ export function LibraryModelRow({ model, onOpen, onUse, onSave, saving, hardware
     >
       <div className={`model-visual ${visualClass(model.pipeline_tag)}`} aria-hidden="true">
         <div className="model-visual-topline">
-          <span>{taskLabel(model.pipeline_tag)}</span>
+          {/* No eyebrow when the task is unknown: a generic "Model" reads as data. */}
+          <span>{model.pipeline_tag ? taskLabel(model.pipeline_tag) : ''}</span>
           <span className="visual-local-badge">
             {remoteOnly ? <Cloud size={11} /> : <Check size={11} />}
             {remoteOnly ? ' S3 only' : ' On disk'}
@@ -113,7 +114,11 @@ export function LibraryModelRow({ model, onOpen, onUse, onSave, saving, hardware
         </div>
         <div className="model-visual-caption">
           <Boxes size={13} />
-          <span>{model.parameter_count ? `${formatNumber(model.parameter_count)} parameters` : 'Repository model'}</span>
+          <span>
+            {model.parameter_count
+              ? `${formatNumber(model.parameter_count)} parameters`
+              : `${formatNumber(model.file_count)} file${model.file_count === 1 ? '' : 's'} · ${formatBytes(model.size_bytes)}`}
+          </span>
         </div>
       </div>
       <div className="model-card-body">

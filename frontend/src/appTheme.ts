@@ -40,6 +40,17 @@ export function useAppTheme(accountPreference: unknown): Theme {
     return () => window.removeEventListener(THEME_EVENT, pick)
   }, [])
 
+  // A choice made in another tab of this app reaches this one through storage.
+  useEffect(() => {
+    const follow = (event: StorageEvent) => {
+      if (event.key !== THEME_STORAGE_KEY) return
+      const value = readThemePreference(event.newValue)
+      if (value) setPreference(value)
+    }
+    window.addEventListener('storage', follow)
+    return () => window.removeEventListener('storage', follow)
+  }, [])
+
   useEffect(() => {
     const query = darkQuery()
     if (!query) return

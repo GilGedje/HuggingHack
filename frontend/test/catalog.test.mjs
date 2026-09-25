@@ -51,6 +51,16 @@ test('Explore filters survive a trip through the address', async () => {
   assert.equal(writeCatalogFilters(full, written).toString(), 'search=qwen&base_model=a%2Fb')
 })
 
+test('the search box writes its text to the address, keeping everything else', async () => {
+  const { writeCatalogSearch } = await import('../src/catalog.ts')
+  const current = new URLSearchParams('search=qwen&task=text-generation&sort=name')
+  assert.equal(writeCatalogSearch('  smol lm ', current).toString(), 'search=smol+lm&task=text-generation&sort=name')
+  // Clearing the box (the × button) removes the search, not the filters.
+  assert.equal(writeCatalogSearch('', current).toString(), 'task=text-generation&sort=name')
+  assert.equal(writeCatalogSearch('   ', current).toString(), 'task=text-generation&sort=name')
+  assert.equal(current.get('search'), 'qwen')
+})
+
 test('unreadable filters in the address count as unset', async () => {
   const { readCatalogFilters } = await import('../src/catalog.ts')
   assert.deepEqual(readCatalogFilters(new URLSearchParams('size=huge-tiny&task=,,')), {

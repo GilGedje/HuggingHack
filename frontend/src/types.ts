@@ -290,6 +290,8 @@ export interface LibraryModelDetails extends LibraryModel {
   remote_uri?: string | null
   source_url?: string | null
   model_card?: string | null
+  /** The README was longer than the server shows; the rest is in the file itself. */
+  model_card_truncated?: boolean
 }
 
 export interface LocalModel {
