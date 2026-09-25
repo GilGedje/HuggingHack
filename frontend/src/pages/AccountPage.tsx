@@ -13,6 +13,7 @@ import {
 import { Link, NavLink, Navigate, useParams } from 'react-router-dom'
 import { useAccess } from '../access'
 import { api } from '../api'
+import { useFadeOnChange, useTabIndicator } from '../motion'
 import { CopyButton } from '../components/UseModel'
 import type { AccountOverview, AccountSession, ApiToken, StorageOption } from '../types'
 import { resolveServerUrl } from '../useModel'
@@ -480,6 +481,8 @@ export function AccountPage({ onToast }: { onToast: ToastHandler }) {
   const { user } = useAccess()
   const [overview, setOverview] = useState<AccountOverview | null>(null)
   const [error, setError] = useState('')
+  const indicator = useTabIndicator<HTMLDivElement>(tab)
+  const body = useFadeOnChange<HTMLDivElement>(tab)
 
   const load = useCallback(() => {
     api.account().then(setOverview).catch((reason) => setError(reason.message))
@@ -506,7 +509,7 @@ export function AccountPage({ onToast }: { onToast: ToastHandler }) {
             </div>
           </div>
           <nav className="model-tabs" aria-label="Account sections">
-            <div>
+            <div ref={indicator}>
               {TABS.map((item) => (
                 <NavLink key={item.id} to={item.id === 'profile' ? '/account' : `/account/${item.id}`} end className={({ isActive }) => (isActive ? 'active' : '')}>
                   {item.label}
@@ -516,7 +519,7 @@ export function AccountPage({ onToast }: { onToast: ToastHandler }) {
           </nav>
         </div>
       </header>
-      <div className="section-body">
+      <div className="section-body" ref={body}>
         {error && <div className="inline-error">{error}</div>}
         {!overview && !error && (
           <div className="drawer-loading"><LoaderCircle size={22} className="spin" /> Loading your account…</div>

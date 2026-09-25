@@ -13,9 +13,10 @@ import {
   UserCircle,
   X,
 } from 'lucide-react'
-import { Link, NavLink, useNavigate } from 'react-router-dom'
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { ADMIN_CAPABILITIES, useAccess } from '../access'
 import { api } from '../api'
+import { crossfadeTheme, useTabIndicator } from '../motion'
 import type { User } from '../types'
 
 interface ShellProps {
@@ -53,6 +54,9 @@ export default function Shell({ children, user, onLogout }: ShellProps) {
   const { can } = useAccess()
   const visibleLinks = links.filter((link) => can(link.capability))
   const isAdmin = ADMIN_CAPABILITIES.some((capability) => can(capability))
+  const { pathname } = useLocation()
+  const nav = useTabIndicator<HTMLElement>(`${pathname.split('/')[1]}:${visibleLinks.length}:${isAdmin}`)
+  const themeApplied = useRef(false)
   const preferred = user.preferences?.theme
   const [theme, setTheme] = useState<Theme>(() =>
     preferred === 'light' || preferred === 'dark'
@@ -78,7 +82,13 @@ export default function Shell({ children, user, onLogout }: ShellProps) {
   }, [])
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme
+    const root = document.documentElement
+    const apply = () => {
+      root.dataset.theme = theme
+    }
+    if (themeApplied.current && root.dataset.theme !== theme) crossfadeTheme(apply)
+    else apply()
+    themeApplied.current = true
     try {
       localStorage.setItem('hugginghack-theme', theme)
     } catch {
@@ -127,7 +137,7 @@ export default function Shell({ children, user, onLogout }: ShellProps) {
             <kbd>/</kbd>
           </form>
 
-          <nav className="primary-nav" aria-label="Primary navigation">
+          <nav className="primary-nav" aria-label="Primary navigation" ref={nav}>
             {visibleLinks.map(({ to, label, icon: Icon }) => (
               <NavLink key={to} to={to} className={({ isActive }) => (isActive ? 'active' : '')}>
                 <Icon size={16} aria-hidden="true" />
