@@ -2810,3 +2810,22 @@ a.model-tree-name:hover { text-decoration: underline; text-underline-offset: 3px
 .model-tree-node ul { margin: 4px 0 0; padding: 0; display: grid; gap: 6px; list-style: none; }
 .model-tree-node ul li { display: grid; gap: 1px; }
 .org-built-on-note { margin-bottom: 4px; color: var(--text-secondary); font-size: 13px; }
+.model-tree-group-link { display: inline-flex; align-items: center; gap: 3px; width: fit-content; transition: color 150ms var(--ease-out); }
+.model-tree-group-link svg { opacity: 0; transform: translate(-2px, 2px); transition: opacity 160ms var(--ease-out), transform 200ms var(--ease-out); }
+.model-tree-group-link:hover, .model-tree-group-link:focus-visible { color: var(--text); }
+.model-tree-group-link:is(:hover, :focus-visible) svg { opacity: 1; transform: none; }
+/* The one filter that only a link sets: models made from one model. */
+.lineage-filter {
+  width: fit-content; max-width: 100%; margin-top: 14px; padding: 6px 6px 6px 12px;
+  display: flex; align-items: center; gap: 8px; border: 1px solid color-mix(in oklch, var(--brand-warm) 45%, var(--border));
+  border-radius: 18px; background: color-mix(in oklch, var(--brand-primary) 10%, var(--canvas));
+  color: var(--text-secondary); font-size: 12px; animation: fade-in 240ms var(--ease-out) backwards;
+}
+.lineage-filter span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lineage-filter a { color: var(--text); font-weight: 600; }
+.lineage-filter a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.lineage-filter button {
+  width: 24px; height: 24px; flex: none; display: grid; place-items: center; border: 0; border-radius: 50%;
+  background: transparent; color: var(--text-muted); cursor: pointer; transition: background-color 150ms var(--ease-out), color 150ms var(--ease-out);
+}
+.lineage-filter button:hover { background: var(--canvas-subtle); color: var(--text); }

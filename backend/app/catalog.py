@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .config import Settings
-from .indexer import UNSAFE_EXTENSIONS
+from .indexer import BASE_MODEL_RELATIONS, UNSAFE_EXTENSIONS
 from .reads import reads
 from .storage import FilesystemModelStorage, StorageRegistry
 
@@ -190,7 +190,15 @@ def _matches(
     parameter_range: tuple[int | None, int | None],
     owner: str = "",
     built_on: str = "",
+    base_model: str = "",
+    relation: str = "",
 ) -> bool:
+    if base_model:
+        # Models made from one model, optionally one kind only: its quantizations.
+        if (item.get("base_model") or "").lower() != base_model.lower():
+            return False
+        if relation and item.get("base_model_relation") != relation:
+            return False
     if owner and (item.get("author") or "").lower() != owner.lower():
         return False
     if built_on:
@@ -264,8 +272,12 @@ def search_catalog(
     parameters: str = "",
     owner: str = "",
     built_on: str = "",
+    base_model: str = "",
+    relation: str = "",
     hardware_tags: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
+    if relation and relation not in BASE_MODEL_RELATIONS:
+        raise ValueError(f"Unknown relation: {relation}.")
     parameter_range = parse_parameter_range(parameters)
     tasks = parse_choices(task, TASK_PATTERN.fullmatch, "task")
     precisions = {
@@ -278,7 +290,9 @@ def search_catalog(
     matched = [
         item
         for item in items
-        if _matches(item, search.strip(), tasks, precisions, chosen_hardware, parameter_range, owner, built_on)
+        if _matches(
+            item, search.strip(), tasks, precisions, chosen_hardware, parameter_range, owner, built_on, base_model, relation
+        )
     ]
     matched.sort(key=_sort_key(sort), reverse=sort == "updated")
     return {

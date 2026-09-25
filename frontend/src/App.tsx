@@ -6,6 +6,7 @@ import {
   ChevronDown,
   CircleX,
   Filter,
+  GitFork,
   ListFilter,
   LoaderCircle,
   PanelLeftClose,
@@ -16,6 +17,7 @@ import {
 } from 'lucide-react'
 import {
   HashRouter,
+  Link,
   Navigate,
   Route,
   Routes,
@@ -45,6 +47,7 @@ import type {
 } from './types'
 import { formatBytes } from './utils'
 import { ConfirmProvider } from './components/ConfirmDialog'
+import { relationGroup } from './modelTree'
 
 type ToastTone = 'success' | 'error'
 
@@ -81,6 +84,9 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
   const [saving, setSaving] = useState<string | null>(null)
   const navigate = useNavigate()
   const urlSearch = searchParams.get('search') || ''
+  // Models made from one model, opened from its Model tree; only ever set by a link.
+  const lineageBase = searchParams.get('base_model') || ''
+  const lineageRelation = searchParams.get('relation') || ''
   const legacyModel = searchParams.get('model')
 
   useEffect(() => {
@@ -99,6 +105,10 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
 
   const fetchModels = useCallback(() => {
     const params = applyFilters(filters, new URLSearchParams({ search, sort }))
+    if (lineageBase) {
+      params.set('base_model', lineageBase)
+      if (lineageRelation) params.set('relation', lineageRelation)
+    }
     setLoading(true)
     setError('')
     api
@@ -111,7 +121,7 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
       })
       .catch((reason) => setError(reason.message))
       .finally(() => setLoading(false))
-  }, [filters, search, sort])
+  }, [filters, search, sort, lineageBase, lineageRelation])
 
   useEffect(() => {
     const timer = window.setTimeout(fetchModels, 250)
@@ -297,6 +307,29 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
             </button>
           </div>
 
+          {lineageBase && (
+            <div className="lineage-filter" role="status">
+              <GitFork size={14} />
+              <span>
+                {lineageRelation ? relationGroup(lineageRelation, 2) : 'Models made from'}
+                {lineageRelation ? ' of ' : ' '}
+                <Link to={`/models/${lineageBase}`}>{lineageBase}</Link>
+              </span>
+              <button
+                type="button"
+                aria-label="Show every model"
+                title="Show every model"
+                onClick={() => {
+                  const next = new URLSearchParams(searchParams)
+                  next.delete('base_model')
+                  next.delete('relation')
+                  setSearchParams(next)
+                }}
+              >
+                <CircleX size={15} />
+              </button>
+            </div>
+          )}
           <div className="results-line">
             <span>
               {scanning

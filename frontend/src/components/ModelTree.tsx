@@ -1,4 +1,4 @@
-import { Building2 } from 'lucide-react'
+import { ArrowUpRight, Building2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { precisionLabel } from '../catalog'
 import { RELATIONS, relationGroup, relationName } from '../modelTree'
@@ -49,9 +49,14 @@ export function ModelTreeCard({ model }: { model: LibraryModelDetails }) {
           const items = children[relation] || []
           return (
             <li key={relation} className="model-tree-node group">
-              <span className="model-tree-kind">
+              <Link
+                className="model-tree-kind model-tree-group-link"
+                to={`/models?base_model=${encodeURIComponent(model.id)}&relation=${relation}`}
+                title={`See every ${relationGroup(relation, 1).toLowerCase()} of ${model.id} in Explore`}
+              >
                 {relationGroup(relation, items.length)} <em>{items.length}</em>
-              </span>
+                <ArrowUpRight size={11} aria-hidden="true" />
+              </Link>
               <ul>
                 {items.map((child) => (
                   <li key={child.id}>

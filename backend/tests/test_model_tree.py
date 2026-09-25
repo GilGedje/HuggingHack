@@ -112,3 +112,24 @@ def test_only_storage_viewers_learn_where_a_model_lives(org):  # noqa: F811
     admin, _ = login("admin")
     seen = admin.get("/api/library/models/writer/where").json()
     assert seen["storage_target_name"] == "Local disk" and seen["local_path"].endswith("/writer/where")
+
+
+def test_the_library_lists_the_quantizations_of_one_model(org):  # noqa: F811
+    writer, _ = login("writer")
+    for slug, readme in (
+        ("q-fp8", b"---\nbase_model: Nvidia/big\n---\n"),
+        ("q-tuned", b"---\nbase_model: nvidia/BIG\nbase_model_relation: finetune\n---\n"),
+        ("other", b"---\nbase_model: Nvidia/small\n---\n"),
+    ):
+        assert writer.post("/api/uploads/repositories", json={"slug": slug, "visibility": "public"}).status_code == 201
+        config = json.dumps({"quantization_config": {"quant_method": "fp8"}}).encode()
+        upload(writer, f"writer/{slug}", {"config.json": config, "README.md": readme})
+
+    def ids(**params):
+        response = writer.get("/api/library/models", params=params)
+        assert response.status_code == 200, response.text
+        return sorted(item["id"] for item in response.json()["items"])
+
+    assert ids(base_model="Nvidia/big") == ["writer/q-fp8", "writer/q-tuned"]
+    assert ids(base_model="nvidia/big", relation="quantized") == ["writer/q-fp8"]
+    assert writer.get("/api/library/models", params={"base_model": "Nvidia/big", "relation": "distilled"}).status_code == 400

@@ -1206,6 +1206,8 @@ def search_library_models(
     parameters: Annotated[str, Query(max_length=100)] = "",
     owner: Annotated[str, Query(max_length=64)] = "",
     built_on: Annotated[str, Query(max_length=96)] = "",
+    base_model: Annotated[str, Query(max_length=200)] = "",
+    relation: Annotated[str, Query(max_length=20)] = "",
 ) -> dict:
     models = database.list_visible_local_models(user["id"])
     try:
@@ -1220,6 +1222,8 @@ def search_library_models(
             parameters=parameters,
             owner=owner,
             built_on=built_on,
+            base_model=base_model,
+            relation=relation,
             # Only tags of models this user can see, so counts reveal nothing else.
             hardware_tags=database.model_hardware([model["repo_id"] for model in models]),
         )
