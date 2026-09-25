@@ -15,7 +15,7 @@ CAPABILITIES: dict[str, str] = {
     "repos.edit_any": "Upload changes to any repository",
     "library.scan": "Rescan storage for new or changed models",
     "library.cache": "Restore S3 models to the local cache or remove local copies",
-    "hub.download": "Browse and download models from Hugging Face",
+    "hub.download": "Download models from Hugging Face",
     "runtimes.use": "Send models to Ollama or vLLM runtimes",
     "storage.view": "View every storage location and its models",
     "users.manage": "Manage accounts, roles, and access",

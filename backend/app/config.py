@@ -107,14 +107,9 @@ class Settings:
     def database_target(self) -> Path | str:
         return self.database_url or self.database_path
 
-    @property
-    def hub_cache_path(self) -> Path:
-        return self.data_dir / "hub-cache"
-
     def ensure_directories(self) -> None:
         self.model_storage.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.hub_cache_path.mkdir(parents=True, exist_ok=True)
 
     @property
     def oidc_enabled(self) -> bool:
@@ -123,10 +118,6 @@ class Settings:
     @property
     def oidc_groups(self) -> tuple[str, ...]:
         return tuple(group.strip() for group in self.oidc_allowed_groups.split(",") if group.strip())
-
-    @property
-    def s3_enabled(self) -> bool:
-        return self.model_storage_backend == "s3"
 
 
 settings = Settings()

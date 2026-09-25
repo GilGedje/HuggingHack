@@ -376,7 +376,7 @@ def test_hugging_face_downloads_are_off_unless_enabled(server, monkeypatch):
     admin, status = login("admin")
     assert "hub.download" not in status["capabilities"]
     assert "hub.download" not in [item["id"] for item in admin.get("/api/admin/permissions").json()["capabilities"]]
-    for method, path in (("get", "/api/downloads"), ("get", "/api/hub/models"), ("post", "/api/downloads")):
+    for method, path in (("get", "/api/downloads"), ("post", "/api/downloads")):
         response = getattr(admin, method)(path, **({"json": {"repo_id": "acme/x"}} if method == "post" else {}))
         assert response.status_code == 404, path
         assert "HF_DOWNLOADS_ENABLED" in response.json()["detail"]

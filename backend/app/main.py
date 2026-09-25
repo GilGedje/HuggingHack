@@ -160,7 +160,6 @@ async def lifespan(_: FastAPI):
     yield
     downloads.shutdown()
     runtimes.shutdown()
-    hub.close()
     oidc.close()
 
 
@@ -406,8 +405,6 @@ def personal(*, write: bool = False) -> Any:
     return Annotated[dict[str, Any], Depends(dependency)]
 
 
-CurrentUser = Annotated[dict[str, Any], Depends(require_user)]
-WriteUser = Annotated[dict[str, Any], Depends(require_write_user)]
 Browser = requires("models.browse")
 Saver = requires("models.save", write=True)
 HubReader = requires("hub.download")
@@ -747,8 +744,6 @@ def change_password(
 
 
 EMAIL_PATTERN = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}$")
-THEMES = ("system", "light", "dark")
-CATALOG_SORTS = ("updated", "name", "size", "parameters")
 
 
 def clean_email(value: str | None) -> str | None:
@@ -1111,91 +1106,6 @@ def admin_server(_: SettingsViewer) -> dict:
             "api_token_configured": bool(settings.runtime_api_token),
         },
     }
-
-
-@app.get("/api/hub/models")
-async def search_hub_models(
-    user: HubReader,
-    search: Annotated[str, Query(max_length=200)] = "",
-    sort: Literal["trending", "downloads", "updated", "likes"] = "trending",
-    task: Annotated[str, Query(max_length=100)] = "",
-    library: Annotated[str, Query(max_length=100)] = "",
-    app_filter: Annotated[str, Query(alias="app", max_length=100)] = "",
-    parameters: Annotated[str, Query(max_length=100)] = "",
-    limit: Annotated[int, Query(ge=1, le=50)] = 30,
-) -> dict:
-    try:
-        items = await run_in_threadpool(
-            hub.search_models,
-            search,
-            sort,
-            task,
-            library,
-            app_filter,
-            parameters,
-            limit,
-        )
-    except Exception as error:
-        raise HTTPException(
-            status_code=502, detail=f"Hugging Face Hub request failed: {error}"
-        ) from error
-    local_ids = {model["repo_id"] for model in database.list_local_models()}
-    saved_ids = database.saved_repo_ids(user["id"])
-    for item in items:
-        item["local"] = item["id"] in local_ids
-        item["saved"] = item["id"] in saved_ids
-    return {"items": items, "count": len(items)}
-
-
-@app.get("/api/hub/gguf-range")
-async def hub_gguf_range(
-    request: Request,
-    _: HubReader,
-    repo_id: Annotated[str, Query(max_length=200)],
-    filename: Annotated[str, Query(max_length=500)],
-    revision: Annotated[str, Query(max_length=200)] = "main",
-) -> Response:
-    try:
-        result = await run_in_threadpool(
-            hub.read_gguf_range,
-            repo_id,
-            filename,
-            revision,
-            request.headers.get("Range"),
-        )
-        return Response(
-            content=result["content"],
-            status_code=result["status_code"],
-            media_type="application/octet-stream",
-            headers=result["headers"],
-        )
-    except PermissionError as error:
-        raise HTTPException(status_code=403, detail=str(error)) from error
-    except FileNotFoundError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
-    except ValueError as error:
-        raise HTTPException(status_code=416, detail=str(error)) from error
-    except Exception as error:
-        raise HTTPException(
-            status_code=502, detail=f"Unable to read GGUF metadata: {error}"
-        ) from error
-
-
-@app.get("/api/hub/models/{repo_id:path}")
-async def hub_model(repo_id: str, user: HubReader, revision: str = "main") -> dict:
-    try:
-        validated = validate_repo_id(repo_id)
-        details = await run_in_threadpool(hub.model_details, validated, revision)
-        details["model_card"] = await run_in_threadpool(
-            hub.read_model_card, validated, revision
-        )
-        details["local"] = database.get_local_model(validated) is not None
-        details["saved"] = validated in database.saved_repo_ids(user["id"])
-        return details
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    except Exception as error:
-        raise HTTPException(status_code=502, detail=f"Unable to load model: {error}") from error
 
 
 @app.get("/api/library/models")

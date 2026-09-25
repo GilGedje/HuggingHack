@@ -12,12 +12,14 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .config import Settings
-from .hub_service import parse_gguf_range, validate_gguf_filename
 from .indexer import UNSAFE_EXTENSIONS
 from .storage import FilesystemModelStorage, StorageRegistry
 
 
 MODEL_CARD_MAX_BYTES = 120_000
+GGUF_RANGE_PATTERN = re.compile(r"^bytes=(\d+)-(\d+)$")
+GGUF_MAX_HEADER_BYTES = 50_000_000
+GGUF_MAX_RANGE_BYTES = 2_100_000
 ASSET_MAX_BYTES = 10_000_000
 ASSET_CONTENT_TYPES = {
     ".png": "image/png",
@@ -26,7 +28,6 @@ ASSET_CONTENT_TYPES = {
     ".gif": "image/gif",
     ".webp": "image/webp",
 }
-SORT_OPTIONS = ("updated", "name", "size", "parameters")
 FORMAT_LABELS = {
     "safetensors": "SafeTensors",
     "gguf": "GGUF",
@@ -51,6 +52,34 @@ APP_LABELS = {
 }
 PARAMETER_PATTERN = re.compile(r"^(min|max):(\d+(?:\.\d+)?)([KMBT]?)$", re.IGNORECASE)
 PARAMETER_UNITS = {"": 1, "K": 10**3, "M": 10**6, "B": 10**9, "T": 10**12}
+
+
+def validate_gguf_filename(filename: str) -> str:
+    value = filename.strip().replace("\\", "/")
+    path = PurePosixPath(value)
+    if (
+        not value
+        or len(value) > 500
+        or path.is_absolute()
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or path.suffix.lower() != ".gguf"
+    ):
+        raise ValueError("GGUF filename must be a safe repository-relative .gguf path.")
+    return path.as_posix()
+
+
+def parse_gguf_range(value: str | None) -> tuple[int, int]:
+    match = GGUF_RANGE_PATTERN.fullmatch((value or "").strip())
+    if not match:
+        raise ValueError("A single bounded byte range is required.")
+    start, end = (int(part) for part in match.groups())
+    if end < start:
+        raise ValueError("The GGUF byte range is invalid.")
+    if end - start + 1 > GGUF_MAX_RANGE_BYTES:
+        raise ValueError("GGUF range requests are limited to 2.1 MB.")
+    if end >= GGUF_MAX_HEADER_BYTES:
+        raise ValueError("GGUF inspection is limited to the first 50 MB of a file.")
+    return start, end
 
 
 def _label(value: str) -> str:
