@@ -616,6 +616,32 @@ Administrators can always use every location.
 If the same repository exists in two locations, the earlier target wins and the Storage page
 reports the conflict.
 
+### Moving a model to another location
+
+Each model on the Storage page has a **Move** button (administrators). Choose the new location
+and type the model's name to confirm; the move runs in the background and its row shows each
+step:
+
+1. **Copy**: every file is copied while its SHA-256 is computed. Local destinations are
+   written to a hidden staging folder, S3 destinations without a manifest, so no scan can
+   pick up a half-copied model.
+2. **Verify**: every copied file is read back and must match its hash and size, or the move
+   stops, removes the copy, and leaves the model where it was.
+3. **Switch**: the model points at the new location in one step.
+4. **Clean up**: the old copy is removed once every download that started from it has
+   finished; new downloads already read the new copy.
+
+Pulls keep working throughout. A client that fixed the revision before the switch (as
+`snapshot_download` and `vllm serve` do) keeps getting the same files under that revision,
+commit history records no change, and git mirrors keep their commit. While a model moves it
+cannot be changed, renamed, deleted, re-downloaded, or loaded into a runtime, and one move
+runs at a time. A move can be cancelled until it switches. After a restart, moves that had
+not switched are undone and those that had are finished.
+
+Moving from local disk to a bucket removes the local copy unless **Keep a copy on this
+server's disk** is ticked; runtimes that load from the shared model path need that copy (or a
+cache restore from the model page). A local destination needs free space for the whole model.
+
 ## Pull models with vLLM, git, or the hf CLI
 
 HuggingHack speaks the Hugging Face Hub protocol, so any machine on the network can

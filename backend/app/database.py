@@ -451,6 +451,38 @@ class Database:
                     CHECK ((user_id IS NULL) <> (organization_id IS NULL))
                 );
 
+                CREATE TABLE IF NOT EXISTS storage_moves (
+                    id TEXT PRIMARY KEY,
+                    repo_id TEXT NOT NULL,
+                    source_target TEXT NOT NULL,
+                    destination_target TEXT NOT NULL,
+                    keep_local INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    message TEXT NOT NULL DEFAULT '',
+                    error TEXT,
+                    total_bytes INTEGER NOT NULL DEFAULT 0,
+                    copied_bytes INTEGER NOT NULL DEFAULT 0,
+                    verified_bytes INTEGER NOT NULL DEFAULT 0,
+                    file_count INTEGER NOT NULL DEFAULT 0,
+                    active_reads INTEGER NOT NULL DEFAULT 0,
+                    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    switched_at TEXT,
+                    finished_at TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_storage_moves_repo
+                    ON storage_moves(repo_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS revision_aliases (
+                    repo_id TEXT NOT NULL,
+                    alias TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(repo_id, alias)
+                );
+
                 CREATE TABLE IF NOT EXISTS model_listing (
                     repo_id TEXT PRIMARY KEY,
                     overrides_json TEXT NOT NULL,
@@ -1258,6 +1290,19 @@ class Database:
             ).fetchone()
         return self._decode_row(row)
 
+    def find_active_runtime_job_for_repo(self, repo_id: str) -> dict[str, Any] | None:
+        """Any runtime job still reading this repository's files."""
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM runtime_jobs
+                WHERE repo_id = ? AND status IN ('queued', 'preparing', 'transferring', 'loading')
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (repo_id,),
+            ).fetchone()
+        return self._decode_row(row)
+
     def find_active_runtime_target(
         self, target_id: str
     ) -> dict[str, Any] | None:
@@ -1876,6 +1921,117 @@ class Database:
                 [(repo_id, item) for item in hardware],
             )
 
+    # Storage moves: a job per move, kept as history like downloads.
+    MOVE_FIELDS = (
+        "status", "message", "error", "total_bytes", "copied_bytes", "verified_bytes",
+        "file_count", "active_reads", "updated_at", "switched_at", "finished_at",
+    )
+
+    def create_move(self, record: dict[str, Any]) -> dict[str, Any]:
+        with self._write_lock, self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO storage_moves (
+                    id, repo_id, source_target, destination_target, keep_local, status,
+                    message, created_by, created_at, updated_at
+                ) VALUES (
+                    :id, :repo_id, :source_target, :destination_target, :keep_local, :status,
+                    :message, :created_by, :created_at, :updated_at
+                )
+                """,
+                record,
+            )
+        return self.get_move(record["id"])
+
+    def update_move(self, move_id: str, **changes: Any) -> dict[str, Any] | None:
+        fields = [key for key in changes if key in self.MOVE_FIELDS]
+        if fields:
+            with self._write_lock, self.connect() as connection:
+                connection.execute(
+                    f"UPDATE storage_moves SET {', '.join(f'{key} = ?' for key in fields)} WHERE id = ?",
+                    (*(changes[key] for key in fields), move_id),
+                )
+        return self.get_move(move_id)
+
+    def get_move(self, move_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute("SELECT * FROM storage_moves WHERE id = ?", (move_id,)).fetchone()
+        return self._decode_move(row)
+
+    def list_moves(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM storage_moves ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [self._decode_move(row) for row in rows]
+
+    def unfinished_moves(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM storage_moves WHERE status NOT IN ('done', 'failed', 'cancelled') "
+                "ORDER BY created_at"
+            ).fetchall()
+        return [self._decode_move(row) for row in rows]
+
+    @staticmethod
+    def _decode_move(row: Any) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        move = dict(row)
+        move["keep_local"] = bool(move["keep_local"])
+        return move
+
+    def set_local_model_location(
+        self, repo_id: str, storage_backend: str, storage_target: str, remote_uri: str | None, cached: bool
+    ) -> None:
+        """Point an indexed model at the storage location that now holds it."""
+        with self._write_lock, self.connect() as connection:
+            connection.execute(
+                "UPDATE local_models SET storage_backend = ?, storage_target = ?, remote_uri = ?, "
+                "cached = ? WHERE repo_id = ?",
+                (storage_backend, storage_target, remote_uri, int(cached), repo_id),
+            )
+
+    def relabel_latest_commit(self, repo_id: str, versions: dict[str, tuple[int, str]]) -> None:
+        """Give the latest commit's files the versions they have in a new location.
+        Only files of the same size are relabeled; the content was checked equal."""
+        latest = self.latest_commit(repo_id)
+        if not latest:
+            return
+        snapshot = latest.get("snapshot") or []
+        for item in snapshot:
+            known = versions.get(item.get("path"))
+            if known and known[0] == item.get("size"):
+                item["version"] = known[1]
+        with self._write_lock, self.connect() as connection:
+            connection.execute(
+                "UPDATE repo_commits SET snapshot_json = ? WHERE id = ?",
+                (json.dumps(snapshot), latest["id"]),
+            )
+
+    def revision_alias_target(self, repo_id: str, alias: str) -> str | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT target FROM revision_aliases WHERE repo_id = ? AND alias = ?", (repo_id, alias)
+            ).fetchone()
+        return row["target"] if row else None
+
+    def add_revision_alias(self, repo_id: str, alias: str, target: str, created_at: str) -> None:
+        """Let `alias` name the content now at `target`; older names of the alias's
+        content follow it to the new target."""
+        if alias == target:
+            return
+        with self._write_lock, self.connect() as connection:
+            connection.execute(
+                "UPDATE revision_aliases SET target = ? WHERE repo_id = ? AND target = ?",
+                (target, repo_id, alias),
+            )
+            connection.execute("DELETE FROM revision_aliases WHERE repo_id = ? AND alias = ?", (repo_id, alias))
+            connection.execute(
+                "INSERT INTO revision_aliases (repo_id, alias, target, created_at) VALUES (?, ?, ?, ?)",
+                (repo_id, alias, target, created_at),
+            )
+
     def listing_overrides(self, repo_id: str) -> dict[str, Any]:
         with self.connect() as connection:
             row = connection.execute(
@@ -1904,7 +2060,7 @@ class Database:
     # `downloads` and `runtime_jobs` are history and keep the name they ran under.
     RENAMED_WITH_REPOSITORY = (
         "saved_models", "repo_commits", "file_digests", "model_hardware", "config_revisions",
-        "model_listing",
+        "model_listing", "revision_aliases",
     )
 
     def rename_repository(

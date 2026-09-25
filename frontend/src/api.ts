@@ -7,6 +7,7 @@ import type {
   AdminUserDetail,
   ListingOverrides,
   ModelListing,
+  StorageMove,
   AdminUserPage,
   AdminUserQuery,
   ApiToken,
@@ -233,6 +234,11 @@ export const api = {
       { method: 'DELETE' },
     ),
   storageTargets: () => request<StorageOverview>('/api/storage/targets'),
+  storageMoves: () => request<{ items: StorageMove[] }>('/api/storage/moves'),
+  startStorageMove: (payload: { repo_id: string; destination: string; confirmation: string; keep_local: boolean }) =>
+    request<StorageMove>('/api/storage/moves', { method: 'POST', body: JSON.stringify(payload) }),
+  cancelStorageMove: (moveId: string) =>
+    request<StorageMove>(`/api/storage/moves/${encodeURIComponent(moveId)}/cancel`, { method: 'POST' }),
   storageOptions: (namespace?: string) =>
     request<{ default: string | null; items: StorageOption[] }>(
       `/api/storage/options${namespace ? `?namespace=${encodeURIComponent(namespace)}` : ''}`,

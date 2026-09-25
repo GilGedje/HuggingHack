@@ -537,3 +537,51 @@ def test_postgresql_listing_corrections_merge_into_reads():
         for name in (repo_id, renamed):
             database.set_listing_overrides(name, {}, timestamp, None)
             database.delete_owned_repository(name)
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
+def test_postgresql_storage_moves_and_revision_aliases():
+    database = Database(POSTGRES_URL or "")
+    database.initialize()
+    repo_id = f"pg-{uuid.uuid4().hex}/model"
+    move_id = uuid.uuid4().hex
+    timestamp = "2026-09-25T12:00:00+00:00"
+    try:
+        database.create_move(
+            {
+                "id": move_id, "repo_id": repo_id, "source_target": "local", "destination_target": "bucket-a",
+                "keep_local": 0, "status": "queued", "message": "Waiting", "created_by": None,
+                "created_at": timestamp, "updated_at": timestamp,
+            }
+        )
+        assert [move["id"] for move in database.unfinished_moves() if move["repo_id"] == repo_id] == [move_id]
+        moved = database.update_move(move_id, status="done", copied_bytes=10, ignored="x", finished_at=timestamp)
+        assert (moved["status"], moved["copied_bytes"], moved["keep_local"]) == ("done", 10, False)
+        assert move_id not in {move["id"] for move in database.unfinished_moves()}
+        assert move_id in {move["id"] for move in database.list_moves()}
+
+        # An older name follows its content to each new name.
+        database.add_revision_alias(repo_id, "a" * 40, "b" * 40, timestamp)
+        database.add_revision_alias(repo_id, "b" * 40, "c" * 40, timestamp)
+        assert database.revision_alias_target(repo_id, "a" * 40) == "c" * 40
+        assert database.revision_alias_target(repo_id, "b" * 40) == "c" * 40
+        assert database.revision_alias_target(repo_id, "d" * 40) is None
+
+        database.upsert_local_model(
+            {
+                "repo_id": repo_id, "relative_path": repo_id, "size_bytes": 1, "file_count": 1,
+                "modified_at": timestamp, "downloaded_at": None, "revision": None, "sha": None,
+                "pipeline_tag": None, "library_name": None, "license": None, "tags_json": "[]",
+                "config_json": "{}", "source_url": None, "managed": 1, "storage_backend": "filesystem",
+                "cached": 1, "remote_uri": None,
+            }
+        )
+        database.set_local_model_location(repo_id, "s3", "bucket-a", "s3://bucket-a/model", False)
+        model = database.get_local_model(repo_id)
+        assert (model["storage_backend"], model["storage_target"], model["cached"]) == ("s3", "bucket-a", False)
+        assert database.find_active_runtime_job_for_repo(repo_id) is None
+    finally:
+        with database.connect() as connection:
+            connection.execute("DELETE FROM storage_moves WHERE id = ?", (move_id,))
+            connection.execute("DELETE FROM revision_aliases WHERE repo_id = ?", (repo_id,))
+        database.delete_owned_repository(repo_id)

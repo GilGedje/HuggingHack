@@ -13,6 +13,7 @@ from typing import Any
 
 from .config import Settings
 from .indexer import UNSAFE_EXTENSIONS
+from .reads import reads
 from .storage import FilesystemModelStorage, StorageRegistry
 
 
@@ -300,6 +301,17 @@ class LocalCatalog:
         max_bytes: int = 1_000_000,
     ) -> tuple[bytes, int]:
         """Read a bounded range of a model file from the local cache or S3."""
+        with reads.hold(model["repo_id"]):
+            return self._read_bytes(model, relative_path, start, end, max_bytes)
+
+    def _read_bytes(
+        self,
+        model: dict[str, Any],
+        relative_path: str,
+        start: int,
+        end: int | None,
+        max_bytes: int,
+    ) -> tuple[bytes, int]:
         relative = _safe_relative(relative_path)
         local = self._local_file(model, relative)
         if local is not None:

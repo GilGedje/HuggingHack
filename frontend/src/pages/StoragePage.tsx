@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   AlertTriangle,
+  ArrowRightLeft,
   Building2,
   Check,
   Cloud,
@@ -19,7 +20,10 @@ import { Link } from 'react-router-dom'
 import { useAccess } from '../access'
 import { api } from '../api'
 import { formatLabels } from '../components/RepositoryRows'
-import type { StorageGrant, StorageOverview, StorageTarget } from '../types'
+import { MoveModelDialog } from '../components/MoveModelDialog'
+import { useFadeOnChange } from '../motion'
+import { MOVE_STEPS, moveCancellable, movePercent, moveStep, moveUnfinished } from '../storageMoves'
+import type { StorageGrant, StorageModel, StorageMove, StorageOverview, StorageTarget } from '../types'
 import { formatBytes, formatNumber, relativeTime } from '../utils'
 import { visibilityLabel } from '../visibility'
 import { RowSkeletons, StorageSkeleton } from '../components/Skeletons'
@@ -202,15 +206,78 @@ function UploadAccess({
   )
 }
 
+/** A move under way, folded open under its model's row: the four steps, overall
+ * progress, and what it is doing now. */
+function MoveProgress({
+  move,
+  destination,
+  onCancel,
+}: {
+  move: StorageMove
+  destination: string
+  onCancel: (move: StorageMove) => void
+}) {
+  const step = moveStep(move)
+  const message = useFadeOnChange<HTMLSpanElement>(move.status)
+  const bytes =
+    move.status === 'copying'
+      ? `${formatBytes(move.copied_bytes)} of ${formatBytes(move.total_bytes)}`
+      : move.status === 'verifying'
+        ? `${formatBytes(move.verified_bytes)} of ${formatBytes(move.total_bytes)} checked`
+        : move.status === 'draining' && move.active_reads
+          ? `${move.active_reads} download${move.active_reads === 1 ? '' : 's'} still reading the old copy`
+          : ''
+  return (
+    <div className="move-progress" role="status" aria-label={`Moving ${move.repo_id} to ${destination}`}>
+      <div>
+        <div className="move-progress-head">
+          <ArrowRightLeft size={13} />
+          <strong>Moving to {destination}</strong>
+          <ol className="move-steps" aria-label="Steps">
+            {MOVE_STEPS.map((label, index) => (
+              <li key={label} className={index < step ? 'complete' : index === step ? 'current' : undefined}>
+                <span className="move-step-dot">{index < step && <Check size={9} />}</span>
+                {label}
+              </li>
+            ))}
+          </ol>
+        </div>
+        <div className="job-progress live">
+          <span style={{ width: `${movePercent(move)}%` }} />
+        </div>
+        <div className="move-progress-meta">
+          <span ref={message}>{move.message}</span>
+          <span>{bytes}</span>
+          {moveCancellable(move) && (
+            <button type="button" className="text-link" onClick={() => onCancel(move)}>Cancel</button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function TargetSection({
   target,
   query,
   scanning,
   canManage,
+  canMove,
+  moves,
+  targetNames,
+  onMove,
+  onCancelMove,
   onChanged,
   onToast,
 }: {
   target: StorageTarget
+  /** Another location exists to move to. */
+  canMove: boolean
+  /** The move running for each repository, if any. */
+  moves: Map<string, StorageMove>
+  targetNames: Record<string, string>
+  onMove: (model: StorageModel) => void
+  onCancelMove: (move: StorageMove) => void
   query: string
   /** A scan is re-reading every location, so the table shows what is coming. */
   scanning: boolean
@@ -278,31 +345,51 @@ function TargetSection({
             <span role="columnheader">Parameters</span>
             <span role="columnheader">Status</span>
             <span role="columnheader">Updated</span>
+            <span role="columnheader"><span className="sr-only">Actions</span></span>
           </div>
-          {models.map((model) => (
-            <div className="storage-model-row" role="row" key={model.repo_id}>
-              <span role="cell" className="storage-model-name">
-                <Link to={`/models/${model.repo_id}`}>{model.repo_id}</Link>
-                <small>
-                  {model.formats.map((format) => formatLabels[format] || format).join(' · ') || 'No weights'}
-                  {model.visibility !== 'public' && (
-                    <>
-                      {' · '}
-                      {model.visibility === 'private' ? <LockKeyhole size={10} /> : <Users size={10} />}
-                      {visibilityLabel(model.visibility)}
-                    </>
-                  )}
-                </small>
-              </span>
-              <span role="cell">{formatBytes(model.size_bytes)}</span>
-              <span role="cell">{formatNumber(model.file_count)}</span>
-              <span role="cell">{model.parameter_count ? formatNumber(model.parameter_count) : '—'}</span>
-              <span role="cell">
-                {target.kind === 'filesystem' ? 'On disk' : model.cached ? 'Cached' : 'S3 only'}
-              </span>
-              <span role="cell">{relativeTime(model.modified_at)}</span>
-            </div>
-          ))}
+          {models.map((model) => {
+            const move = moves.get(model.repo_id)
+            return (
+              <div className={move ? 'storage-model-item moving' : 'storage-model-item'} role="rowgroup" key={model.repo_id}>
+                <div className="storage-model-row" role="row">
+                  <span role="cell" className="storage-model-name">
+                    <Link to={`/models/${model.repo_id}`}>{model.repo_id}</Link>
+                    <small>
+                      {model.formats.map((format) => formatLabels[format] || format).join(' · ') || 'No weights'}
+                      {model.visibility !== 'public' && (
+                        <>
+                          {' · '}
+                          {model.visibility === 'private' ? <LockKeyhole size={10} /> : <Users size={10} />}
+                          {visibilityLabel(model.visibility)}
+                        </>
+                      )}
+                    </small>
+                  </span>
+                  <span role="cell">{formatBytes(model.size_bytes)}</span>
+                  <span role="cell">{formatNumber(model.file_count)}</span>
+                  <span role="cell">{model.parameter_count ? formatNumber(model.parameter_count) : '—'}</span>
+                  <span role="cell">
+                    {target.kind === 'filesystem' ? 'On disk' : model.cached ? 'Cached' : 'S3 only'}
+                  </span>
+                  <span role="cell">{relativeTime(model.modified_at)}</span>
+                  <span role="cell" className="storage-model-actions">
+                    {canManage && canMove && !move && (
+                      <button type="button" className="secondary-button compact" onClick={() => onMove(model)}>
+                        <ArrowRightLeft size={13} /> Move
+                      </button>
+                    )}
+                  </span>
+                </div>
+                {move && (
+                  <MoveProgress
+                    move={move}
+                    destination={targetNames[move.destination_target] || move.destination_target}
+                    onCancel={onCancelMove}
+                  />
+                )}
+              </div>
+            )
+          })}
           {models.length === 0 && (
             <div className="empty-compact">
               {target.models.length ? 'No models match your search.' : 'No models in this location yet.'}
@@ -320,6 +407,9 @@ export function StoragePage({ onToast }: { onToast: ToastHandler }) {
   const [error, setError] = useState('')
   const [scanning, setScanning] = useState(false)
   const [query, setQuery] = useState('')
+  const [moves, setMoves] = useState<StorageMove[]>([])
+  const [moving, setMoving] = useState<{ model: StorageModel; source: StorageTarget } | null>(null)
+  const known = useRef<Map<string, string>>(new Map())
 
   const load = useCallback(() => {
     setError('')
@@ -328,6 +418,54 @@ export function StoragePage({ onToast }: { onToast: ToastHandler }) {
       .then(setOverview)
       .catch((reason) => setError(reason.message))
   }, [])
+
+  const loadMoves = useCallback(() => {
+    api
+      .storageMoves()
+      .then((payload) => {
+        // A move that just finished changes which location lists the model.
+        let finished = false
+        for (const move of payload.items) {
+          const before = known.current.get(move.id)
+          if (before && moveUnfinished({ status: before }) && !moveUnfinished(move)) {
+            finished = true
+            if (move.status === 'done') onToast(`${move.repo_id} moved.`)
+            else if (move.status === 'failed') onToast(`${move.repo_id}: ${move.error || 'the move failed'}`, 'error')
+            else onToast(`The move of ${move.repo_id} was cancelled.`)
+          }
+          known.current.set(move.id, move.status)
+        }
+        setMoves(payload.items)
+        if (finished) load()
+      })
+      .catch(() => undefined)
+  }, [load, onToast])
+
+  const running = moves.filter(moveUnfinished)
+  const activeMoves = useMemo(
+    () => new Map(moves.filter(moveUnfinished).map((move) => [move.repo_id, move])),
+    [moves],
+  )
+
+  useEffect(() => {
+    loadMoves()
+  }, [loadMoves])
+
+  // Poll only while something is moving.
+  useEffect(() => {
+    if (!running.length) return
+    const timer = window.setInterval(loadMoves, 1500)
+    return () => window.clearInterval(timer)
+  }, [running.length, loadMoves])
+
+  async function cancelMove(move: StorageMove) {
+    try {
+      await api.cancelStorageMove(move.id)
+      loadMoves()
+    } catch (reason) {
+      onToast(reason instanceof Error ? reason.message : 'Could not cancel the move.', 'error')
+    }
+  }
 
   useEffect(() => {
     load()
@@ -436,11 +574,29 @@ export function StoragePage({ onToast }: { onToast: ToastHandler }) {
               query={query}
               scanning={scanning}
               canManage={can('storage.manage')}
+              canMove={overview.targets.length > 1}
+              moves={activeMoves}
+              targetNames={Object.fromEntries(overview.targets.map((item) => [item.id, item.name]))}
+              onMove={(model) => setMoving({ model, source: target })}
+              onCancelMove={cancelMove}
               onChanged={load}
               onToast={onToast}
             />
           ))}
         </>
+      )}
+      {moving && overview && (
+        <MoveModelDialog
+          model={moving.model}
+          source={moving.source}
+          targets={overview.targets}
+          onClose={() => setMoving(null)}
+          onStarted={(move) => {
+            known.current.set(move.id, move.status)
+            setMoves((current) => [move, ...current])
+            onToast(`Moving ${move.repo_id}. It stays available the whole time.`)
+          }}
+        />
       )}
     </div>
   )

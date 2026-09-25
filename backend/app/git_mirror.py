@@ -138,6 +138,19 @@ class GitMirrors:
                     return mirror
             return self._build(snapshot, root)
 
+    def relabel(self, repo_id: str, old_sha: str, new_sha: str) -> None:
+        """The same files now carry another snapshot id (a storage move changed their
+        timestamps); keep the mirror instead of writing an identical commit."""
+        root = self._path(repo_id)
+        with self._lock(repo_id):
+            try:
+                metadata = json.loads((root / METADATA_NAME).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return
+            if metadata.get("snapshot") == old_sha:
+                metadata["snapshot"] = new_sha
+                _atomic_write(root / METADATA_NAME, json.dumps(metadata).encode("utf-8"))
+
     def _build(self, snapshot: RepoSnapshot, root: Path) -> Mirror:
         """Write a new snapshot commit on top of the previous one.
 

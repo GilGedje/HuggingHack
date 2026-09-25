@@ -14,7 +14,7 @@ import shutil
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Callable, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
@@ -50,6 +50,8 @@ from .hub_api import (
 )
 from .hub_service import HubService
 from .indexer import LocalModelIndexer, upload_is_registered
+from .moves import MoveManager
+from .reads import LeasedResponse, reads
 from .listing import PRECISIONS, preview as preview_listing, validate_overrides
 from .runtimes import RuntimeManager
 from .storage import create_storage_registry
@@ -70,6 +72,19 @@ runtimes = RuntimeManager(settings, database)
 catalog = LocalCatalog(settings, storages)
 oidc = OidcClient(settings)
 git_mirrors = GitMirrors(hub_repositories)
+
+
+def repository_busy(repo_id: str) -> str | None:
+    """Why a repository's files cannot be moved right now."""
+    if database.find_active_runtime_job_for_repo(repo_id):
+        return "A runtime is loading this model. Try again when it finishes."
+    return uploads._busy(repo_id)
+
+
+moves = MoveManager(
+    settings, database, storages, hub_repositories, history, git_mirrors, reads, repository_busy
+)
+uploads.move_guard = moves.moving
 
 
 # Repositories found in more than one storage target during the last scan.
@@ -153,6 +168,8 @@ async def lifespan(_: FastAPI):
     database.initialize()
     database.fail_unfinished_runtime_jobs(utc_iso())
     auth.ensure_local_user()
+    # Before the first scan: undo moves cut short, and finish those that switched.
+    await run_in_threadpool(moves.recover)
     # Index in the background so the server answers immediately, even when a
     # bucket is offline or a large library records its first history.
     startup_scan = asyncio.create_task(run_in_threadpool(refresh_model_index))
@@ -1495,6 +1512,10 @@ def library_file(
     path: Annotated[str, Query(max_length=500)],
 ) -> Response:
     """Download one file with the signed-in user's visibility, including private repos."""
+    return leased(repo_id, lambda: _library_file(request, user, repo_id, path))
+
+
+def _library_file(request: Request, user: dict[str, Any], repo_id: str, path: str) -> Response:
     model = visible_model(repo_id, user["id"])
     snapshot = hub_repositories.snapshot_for_model(model)
     entry = snapshot.entry(path)
@@ -1768,6 +1789,8 @@ def get_download(download_id: str, user: HubReader) -> dict:
 
 @app.post("/api/downloads", status_code=202)
 def start_download(payload: DownloadRequest, user: HubWriter) -> dict:
+    if moving := moves.moving(payload.repo_id):
+        raise HTTPException(status_code=409, detail=moving)
     if database.get_owned_repository(payload.repo_id):
         raise HTTPException(
             status_code=409,
@@ -1845,6 +1868,8 @@ async def restore_local_model(repo_id: str, user: CacheManager) -> dict:
             status_code=409,
             detail="Wait for the active download to finish before restoring this cache.",
         )
+    if moving := moves.moving(model["repo_id"]):
+        raise HTTPException(status_code=409, detail=moving)
     try:
         root = await run_in_threadpool(
             storages.for_model(model).restore_repository, model["repo_id"]
@@ -1870,6 +1895,8 @@ async def evict_local_model_cache(repo_id: str, user: CacheManager) -> dict:
             status_code=409,
             detail="Wait for the active download to finish before removing this cache.",
         )
+    if moving := moves.moving(model["repo_id"]):
+        raise HTTPException(status_code=409, detail=moving)
     try:
         await run_in_threadpool(
             storages.for_model(model).evict_repository_cache, model["repo_id"]
@@ -1975,6 +2002,40 @@ async def storage_targets(_: StorageViewer) -> dict:
         "targets": targets,
         "conflicts": storage_conflicts,
     }
+
+
+class MoveRequest(BaseModel):
+    repo_id: str = Field(min_length=3, max_length=200)
+    destination: str = Field(min_length=1, max_length=40)
+    confirmation: str = Field(max_length=200)
+    keep_local: bool = False
+
+
+@app.get("/api/storage/moves")
+def list_storage_moves(_: StorageViewer) -> dict:
+    return {"items": moves.overview()}
+
+
+@app.post("/api/storage/moves", status_code=202)
+def start_storage_move(payload: MoveRequest, user: StorageManager) -> dict:
+    """Copy a model to another location, check every hash, switch it over, and
+    remove the old copy once nobody is downloading from it."""
+    try:
+        return moves.start(user, payload.repo_id, payload.destination, payload.confirmation, payload.keep_local)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.post("/api/storage/moves/{move_id}/cancel")
+def cancel_storage_move(move_id: str, _: StorageManager) -> dict:
+    try:
+        return moves.cancel(move_id)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @app.put("/api/storage/targets/{target_id}/grants")
@@ -2084,6 +2145,8 @@ def load_runtime_model(
     )
     if not model:
         raise HTTPException(status_code=404, detail="Local model not found")
+    if moving := moves.moving(model["repo_id"]):
+        raise HTTPException(status_code=409, detail=moving)
     try:
         return runtimes.queue(
             target_id,
@@ -2546,6 +2609,19 @@ def pull_user(request: Request) -> dict[str, Any] | None:
     return session["user"] if session and session.get("user") else None
 
 
+def leased(repo_id: str, build: Callable[[], Response]) -> Response:
+    """A file response that holds a read lease on its repository from before its
+    files are looked up until the last byte is sent, so a storage move never
+    removes a copy someone is reading."""
+    lease = reads.acquire(repo_id)
+    try:
+        response = build()
+    except BaseException:
+        reads.release(lease)
+        raise
+    return LeasedResponse(response, reads, lease)
+
+
 def repository_file_response(
     request: Request,
     snapshot: RepoSnapshot,
@@ -2606,15 +2682,18 @@ def hub_api_tree_path(
 
 @app.api_route("/{owner}/{name}/resolve/{revision}/{path:path}", methods=["GET", "HEAD"])
 def hub_resolve(owner: str, name: str, revision: str, path: str, request: Request) -> Response:
-    snapshot, entry = hub_repositories.resolve(
-        f"{owner}/{name}", revision, path, pull_user(request)
-    )
-    return repository_file_response(
-        request,
-        snapshot,
-        entry,
-        {"X-Repo-Commit": snapshot.sha, "ETag": f'"{entry.oid}"'},
-    )
+    def build() -> Response:
+        snapshot, entry = hub_repositories.resolve(
+            f"{owner}/{name}", revision, path, pull_user(request)
+        )
+        return repository_file_response(
+            request,
+            snapshot,
+            entry,
+            {"X-Repo-Commit": snapshot.commit, "ETag": f'"{entry.oid}"'},
+        )
+
+    return leased(f"{owner}/{name}", build)
 
 
 def git_repo_id(owner: str, name: str) -> str:
@@ -2636,7 +2715,8 @@ def git_file(owner: str, name: str, relative: str, request: Request) -> Response
 def git_info_refs(owner: str, name: str, request: Request) -> Response:
     # Answering with text/plain, even for ?service=git-upload-pack, makes git use the
     # dumb HTTP protocol, which only needs these static files.
-    git_mirrors.ensure(git_repo_id(owner, name), pull_user(request))
+    with reads.hold(git_repo_id(owner, name)):
+        git_mirrors.ensure(git_repo_id(owner, name), pull_user(request))
     return git_file(owner, name, "info/refs", request)
 
 
@@ -2653,6 +2733,12 @@ def git_object(owner: str, name: str, path: str, request: Request) -> Response:
 LFS_MEDIA_TYPE = "application/vnd.git-lfs+json"
 
 
+def ensure_mirror(repo_id: str, user: dict[str, Any] | None) -> Any:
+    # Building a mirror reads every file, so it holds a read lease like a pull.
+    with reads.hold(repo_id):
+        return git_mirrors.ensure(repo_id, user)
+
+
 @app.post("/{owner}/{name}/info/lfs/objects/batch")
 async def git_lfs_batch(owner: str, name: str, request: Request) -> Response:
     repo_id = git_repo_id(owner, name)
@@ -2667,7 +2753,7 @@ async def git_lfs_batch(owner: str, name: str, request: Request) -> Response:
             media_type=LFS_MEDIA_TYPE,
         )
     user = await run_in_threadpool(pull_user, request)
-    mirror = await run_in_threadpool(git_mirrors.ensure, repo_id, user)
+    mirror = await run_in_threadpool(ensure_mirror, repo_id, user)
     # Authenticated clones must present the same credentials for the weights.
     download_header = (
         {"Authorization": request.headers["Authorization"]}
@@ -2710,11 +2796,14 @@ async def git_lfs_batch(owner: str, name: str, request: Request) -> Response:
 
 @app.get("/{owner}/{name}/info/lfs/objects/{oid}")
 def git_lfs_download(owner: str, name: str, oid: str, request: Request) -> Response:
-    found = git_mirrors.lfs_entry(git_repo_id(owner, name), oid, pull_user(request))
-    if found is None:
-        raise HubError("EntryNotFound", "LFS object not found.")
-    snapshot, entry = found
-    return repository_file_response(request, snapshot, entry, {"ETag": f'"{oid}"'})
+    def build() -> Response:
+        found = git_mirrors.lfs_entry(git_repo_id(owner, name), oid, pull_user(request))
+        if found is None:
+            raise HubError("EntryNotFound", "LFS object not found.")
+        snapshot, entry = found
+        return repository_file_response(request, snapshot, entry, {"ETag": f'"{oid}"'})
+
+    return leased(git_repo_id(owner, name), build)
 
 
 app_directory = Path(__file__).resolve().parent

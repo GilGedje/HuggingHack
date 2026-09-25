@@ -419,6 +419,31 @@ export interface StorageTarget {
   grants: StorageGrant[]
 }
 
+export type StorageMoveStatus =
+  | 'queued' | 'copying' | 'verifying' | 'switching' | 'draining' | 'cleaning' | 'done' | 'failed' | 'cancelled'
+
+/** A model moving between storage locations: copy, verify, switch, then remove the old copy. */
+export interface StorageMove {
+  id: string
+  repo_id: string
+  source_target: string
+  destination_target: string
+  keep_local: boolean
+  status: StorageMoveStatus
+  message: string
+  error?: string | null
+  total_bytes: number
+  copied_bytes: number
+  verified_bytes: number
+  file_count: number
+  /** Downloads of the old copy still running; it is removed when they end. */
+  active_reads: number
+  created_at: string
+  updated_at: string
+  switched_at?: string | null
+  finished_at?: string | null
+}
+
 export interface StorageGrant {
   kind: 'user' | 'organization'
   id: string

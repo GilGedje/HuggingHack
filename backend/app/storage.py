@@ -167,6 +167,24 @@ def _public_endpoint(value: str | None) -> str | None:
         return "[invalid endpoint]"
 
 
+def repository_files(root: Path) -> list[tuple[Path, str]]:
+    """The files that make up a repository folder, as S3 syncs and moves copy them:
+    no symbolic links, partial downloads, caches, or hidden folders."""
+    files: list[tuple[Path, str]] = []
+    for current, directories, names in os.walk(root):
+        directories[:] = [
+            name
+            for name in directories
+            if name not in {".cache", "__pycache__"} and not name.startswith(".")
+        ]
+        for name in names:
+            path = Path(current) / name
+            if path.is_symlink() or any(name.endswith(suffix) for suffix in PART_SUFFIXES):
+                continue
+            files.append((path, path.relative_to(root).as_posix()))
+    return files
+
+
 class FilesystemModelStorage:
     backend = "filesystem"
     remote = False
@@ -428,22 +446,7 @@ class S3ModelStorage(FilesystemModelStorage):
         }
 
     def _local_files(self, root: Path) -> list[tuple[Path, str]]:
-        files: list[tuple[Path, str]] = []
-        for current, directories, names in os.walk(root):
-            directories[:] = [
-                name
-                for name in directories
-                if name not in {".cache", "__pycache__"} and not name.startswith(".")
-            ]
-            for name in names:
-                path = Path(current) / name
-                if (
-                    path.is_symlink()
-                    or any(name.endswith(suffix) for suffix in PART_SUFFIXES)
-                ):
-                    continue
-                files.append((path, path.relative_to(root).as_posix()))
-        return files
+        return repository_files(root)
 
     def sync_repository(
         self, repo_id: str, root: Path, changed: set[str] | None = None
@@ -835,6 +838,37 @@ class S3ModelStorage(FilesystemModelStorage):
                 return
             yield payload
             position += len(payload)
+
+    # Object-level access for storage moves: the mover writes files one by one and
+    # publishes the manifest last, so a half-copied repository is never discovered.
+    def object_files(self, repo_id: str) -> list[tuple[str, int]]:
+        """Every file of a repository in this bucket, except its manifest."""
+        prefix = self._repo_prefix(repo_id)
+        files = []
+        for item in self._objects(prefix):
+            relative = (item.get("Key") or "")[len(prefix) :]
+            if relative and relative != MANIFEST_NAME:
+                files.append((_safe_relative_key(relative).as_posix(), int(item.get("Size") or 0)))
+        return files
+
+    def has_objects(self, repo_id: str) -> bool:
+        return any(True for _ in self._objects(self._repo_prefix(repo_id)))
+
+    def write_object(self, repo_id: str, relative_path: str, stream: Any) -> None:
+        self.client.upload_fileobj(
+            stream, self.bucket, self._object_key(repo_id, relative_path), **self._upload_options()
+        )
+
+    def publish_manifest(self, repo_id: str, manifest: dict[str, Any]) -> None:
+        self.client.put_object(
+            Bucket=self.bucket,
+            Key=self._manifest_key(repo_id),
+            Body=json.dumps(manifest, indent=2).encode("utf-8"),
+        )
+
+    def delete_manifest(self, repo_id: str) -> None:
+        with self._lock:
+            self._delete_keys([self._manifest_key(repo_id)])
 
     def evict_repository_cache(self, repo_id: str) -> None:
         with self._lock:

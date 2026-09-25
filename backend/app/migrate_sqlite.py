@@ -43,6 +43,8 @@ TABLES = (
     "file_digests",
     "model_hardware",
     "model_listing",
+    "storage_moves",
+    "revision_aliases",
     "storage_grants",
     "config_revisions",
 )

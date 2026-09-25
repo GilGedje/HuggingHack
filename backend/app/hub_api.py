@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterator
@@ -53,6 +53,14 @@ class RepoSnapshot:
     model: dict[str, Any]
     entries: tuple[RepoEntry, ...]
     local_root: Path | None
+    # The revision a client asked for when it is an earlier name of this same
+    # content (see check_revision); answers repeat it back.
+    alias: str | None = None
+
+    @property
+    def commit(self) -> str:
+        """The revision to report: the one asked for when it was an alias."""
+        return self.alias or self.sha
 
     @property
     def repo_id(self) -> str:
@@ -189,9 +197,15 @@ class HubRepositories:
         storage = self.storages.for_model(model)
         return remote_entries(storage.list_repository_entries(model["repo_id"]) or [])
 
-    def check_revision(self, snapshot: RepoSnapshot, revision: str) -> None:
-        if revision not in {"main", "HEAD", "refs/heads/main", snapshot.sha}:
-            raise HubError("RevisionNotFound", f"Revision {revision} was not found.")
+    def check_revision(self, snapshot: RepoSnapshot, revision: str) -> RepoSnapshot:
+        """The snapshot a revision names. Besides the current one, a revision the
+        repository had just before a storage move still names the same files: a
+        client that pinned it mid-download keeps getting them, under that name."""
+        if revision in {"main", "HEAD", "refs/heads/main", snapshot.sha}:
+            return snapshot
+        if self.database.revision_alias_target(snapshot.repo_id, revision) == snapshot.sha:
+            return replace(snapshot, alias=revision)
+        raise HubError("RevisionNotFound", f"Revision {revision} was not found.")
 
     def model_info(
         self,
@@ -200,8 +214,7 @@ class HubRepositories:
         blobs: bool = False,
         user: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        snapshot = self.snapshot(repo_id, user)
-        self.check_revision(snapshot, revision)
+        snapshot = self.check_revision(self.snapshot(repo_id, user), revision)
         model = snapshot.model
         owner = snapshot.repo_id.split("/", 1)[0]
         siblings = []
@@ -216,11 +229,11 @@ class HubRepositories:
         if model.get("pipeline_tag"):
             card_data["pipeline_tag"] = model["pipeline_tag"]
         return {
-            "_id": snapshot.sha[:24],
+            "_id": snapshot.commit[:24],
             "id": snapshot.repo_id,
             "modelId": snapshot.repo_id,
             "author": owner,
-            "sha": snapshot.sha,
+            "sha": snapshot.commit,
             "lastModified": hub_date(model.get("modified_at")),
             "createdAt": hub_date(model.get("downloaded_at") or model.get("modified_at")),
             "private": bool(user) and self.database.get_public_local_model(snapshot.repo_id) is None,
@@ -244,12 +257,11 @@ class HubRepositories:
         recursive: bool = False,
         user: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        snapshot = self.snapshot(repo_id, user)
-        self.check_revision(snapshot, revision)
+        snapshot = self.check_revision(self.snapshot(repo_id, user), revision)
         prefix = path.strip("/")
         if prefix and _hidden(prefix):
             raise HubError(
-                "EntryNotFound", f"{prefix} does not exist on {revision}.", commit=snapshot.sha
+                "EntryNotFound", f"{prefix} does not exist on {revision}.", commit=snapshot.commit
             )
         base = f"{prefix}/" if prefix else ""
         files: list[dict[str, Any]] = []
@@ -268,7 +280,7 @@ class HubRepositories:
                 )
         if prefix and not files and not directories:
             raise HubError(
-                "EntryNotFound", f"{prefix} does not exist on {revision}.", commit=snapshot.sha
+                "EntryNotFound", f"{prefix} does not exist on {revision}.", commit=snapshot.commit
             )
         folders = [
             {
@@ -284,12 +296,11 @@ class HubRepositories:
     def resolve(
         self, repo_id: str, revision: str, path: str, user: dict[str, Any] | None = None
     ) -> tuple[RepoSnapshot, RepoEntry]:
-        snapshot = self.snapshot(repo_id, user)
-        self.check_revision(snapshot, revision)
+        snapshot = self.check_revision(self.snapshot(repo_id, user), revision)
         entry = None if _hidden(path) else snapshot.entry(path)
         if entry is None:
             raise HubError(
-                "EntryNotFound", f"{path} does not exist on {revision}.", commit=snapshot.sha
+                "EntryNotFound", f"{path} does not exist on {revision}.", commit=snapshot.commit
             )
         return snapshot, entry
 

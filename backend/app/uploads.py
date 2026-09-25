@@ -8,7 +8,7 @@ import threading
 import time
 import uuid
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from .config import Settings, validate_repo_id
 from .database import VISIBILITIES, Database
@@ -85,6 +85,8 @@ class UploadManager:
         self.indexer = indexer
         self.storages = StorageRegistry.wrap(model_storage, settings)
         self.history = history
+        # Set by the app: why a repository cannot change while a storage move runs.
+        self.move_guard: Callable[[str], str | None] | None = None
         self._write_lock = threading.RLock()
 
     def _repository_root(self, repo_id: str) -> Path:
@@ -141,6 +143,9 @@ class UploadManager:
 
     def _busy(self, repo_id: str) -> str | None:
         """Why a repository cannot be renamed or deleted right now, if it cannot."""
+        moving = self.move_guard(repo_id) if self.move_guard else None
+        if moving:
+            return moving
         repository = self.database.get_owned_repository(repo_id)
         if repository and repository["status"] != "ready":
             return "Finish or delete the unfinished upload first."
@@ -738,6 +743,9 @@ class UploadManager:
             raise FileNotFoundError("Repository not found.")
         if not self.can_edit(validated, user):
             raise PermissionError("You cannot change this repository.")
+        moving = self.move_guard(validated) if self.move_guard else None
+        if moving:
+            raise ValueError(moving)
         session_id = uuid.uuid4().hex
         staging = self._staging_root()
         (staging / session_id).mkdir(parents=True)
@@ -807,6 +815,9 @@ class UploadManager:
         model = self.database.get_local_model(repo_id)
         if not model:
             raise FileNotFoundError("Repository not found.")
+        moving = self.move_guard(repo_id) if self.move_guard else None
+        if moving:
+            raise ValueError(moving)
         if any(path.name.endswith(PART_SUFFIX) for path in root.rglob("*")):
             raise ValueError("Finish all file uploads before committing the change.")
         staged = {

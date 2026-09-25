@@ -737,11 +737,11 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
 .auth-card > label, .wizard-label {
   display: grid; gap: 7px; color: var(--text-secondary); font-size: 11px; font-weight: 600;
 }
-.auth-card input, :is(.wizard-fields, .repo-settings) :is(input:not([type='radio'], [type='file']), textarea) {
+.auth-card input, :is(.wizard-fields, .repo-settings, .move-model-body) :is(input:not([type='radio'], [type='file'], [type='checkbox']), textarea) {
   width: 100%; min-height: 43px; padding: 9px 11px; border: 1px solid var(--border-strong);
   border-radius: 7px; outline: 0; background: var(--canvas); color: var(--text);
 }
-.auth-card input:focus, :is(.wizard-fields, .repo-settings) :is(input:not([type='radio'], [type='file']), textarea):focus {
+.auth-card input:focus, :is(.wizard-fields, .repo-settings, .move-model-body) :is(input:not([type='radio'], [type='file'], [type='checkbox']), textarea):focus {
   border-color: var(--brand-warm); box-shadow: 0 0 0 3px color-mix(in oklch, var(--brand-primary) 18%, transparent);
 }
 .auth-card label small { color: var(--text-muted); font-size: 9px; font-weight: 400; }
@@ -1868,11 +1868,73 @@ button.quiet-link:disabled { cursor: progress; opacity: 0.7; }
 .upload-access-results small { overflow: hidden; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .upload-access-actions { display: flex; gap: 8px; }
 .storage-model-row {
-  min-width: 720px; min-height: 46px; padding: 8px 12px; display: grid;
-  grid-template-columns: minmax(240px, 1fr) 90px 60px 100px 80px 110px; align-items: center; gap: 12px;
-  border-bottom: 1px solid var(--border); font-size: 12px;
+  min-width: 800px; min-height: 46px; padding: 8px 12px; display: grid;
+  grid-template-columns: minmax(240px, 1fr) 90px 60px 100px 80px 110px 76px; align-items: center; gap: 12px;
+  font-size: 12px;
 }
-.storage-model-row:last-child { border-bottom: 0; }
+.storage-model-row.header { border-bottom: 1px solid var(--border); }
+/* A model and, while it moves, its progress underneath. */
+.storage-model-item {
+  min-width: 800px; border-bottom: 1px solid var(--border);
+  transition: background-color 320ms var(--ease-out);
+  animation: fade-in 260ms var(--ease-out) backwards;
+}
+.storage-model-item:last-child { border-bottom: 0; }
+.storage-model-item.moving { background: color-mix(in oklch, var(--brand-primary) 6%, var(--canvas)); }
+.storage-model-actions { display: flex; justify-content: flex-end; }
+.storage-model-actions .secondary-button { min-height: 28px; padding: 0 9px; gap: 5px; font-size: 11px; }
+/* With a pointer, Move shows on the row being looked at; touch screens always show it. */
+@media (hover: hover) {
+  .storage-model-actions .secondary-button { opacity: 0; transition: opacity 160ms var(--ease-out), background-color 160ms var(--ease-out), transform 120ms var(--ease-out); }
+  .storage-model-item:is(:hover, :focus-within) .storage-model-actions .secondary-button { opacity: 1; }
+}
+.move-progress { display: grid; grid-template-rows: 1fr; animation: move-fold 380ms var(--ease-out) backwards; }
+.move-progress > div { min-height: 0; overflow: hidden; padding: 0 12px 12px; }
+@keyframes move-fold { from { grid-template-rows: 0fr; opacity: 0; } }
+.move-progress-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; color: var(--text-secondary); font-size: 11px; }
+.move-progress-head strong { color: var(--text); font-weight: 600; }
+.move-steps { margin: 0 0 0 auto; padding: 0; display: flex; align-items: center; gap: 8px; list-style: none; }
+.move-steps li { display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); font-size: 10px; }
+.move-steps li:not(:last-child)::after {
+  width: 18px; height: 1px; margin-left: 3px; content: '';
+  background: linear-gradient(var(--brand-warm), var(--brand-warm)) left / 0% 100% no-repeat, var(--border-strong);
+  transition: background-size 420ms var(--ease-out);
+}
+.move-steps li.complete::after { background-size: 100% 100%, auto; }
+.move-steps li:is(.current, .complete) { color: var(--text); }
+.move-step-dot {
+  width: 13px; height: 13px; display: grid; place-items: center; border: 1px solid var(--border-strong);
+  border-radius: 50%; background: var(--canvas); color: #111827;
+  transition: background-color 240ms var(--ease-out), border-color 240ms var(--ease-out);
+}
+.move-steps li.current .move-step-dot { border-color: var(--brand-warm); background: color-mix(in oklch, var(--brand-primary) 45%, var(--canvas)); }
+.move-steps li.complete .move-step-dot { border-color: var(--brand-warm); background: var(--brand-primary); }
+.move-step-dot svg { animation: icon-turn 280ms var(--ease-out) backwards; }
+.move-progress .job-progress { margin: 9px 0 6px; }
+.move-progress-meta {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; color: var(--text-muted);
+  font-family: 'IBM Plex Mono', monospace; font-size: 10px;
+}
+.move-progress-meta span:first-child { flex: 1; min-width: 0; }
+.move-progress-meta .text-link { padding: 0; border: 0; background: none; cursor: pointer; font-family: inherit; font-size: 10px; }
+
+/* Moving a model: pick a location, see how it goes, confirm by name. */
+.move-model-dialog { width: min(600px, 100%); }
+.move-model-body { display: grid; gap: 14px; }
+.move-model-from { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 12px; }
+.move-model-targets { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.move-model-keep { display: flex; align-items: flex-start; gap: 9px; font-size: 12px; cursor: pointer; }
+.move-model-keep input { margin-top: 2px; accent-color: var(--brand-warm); }
+.move-model-keep span { display: grid; gap: 2px; }
+.move-model-keep small { color: var(--text-muted); font-size: 11px; line-height: 1.4; }
+.move-model-how { margin: 0; padding: 12px 14px; display: grid; gap: 7px; list-style: none; border-radius: 8px; background: var(--canvas-subtle); font-size: 12px; color: var(--text-secondary); }
+.move-model-how li { display: flex; align-items: baseline; gap: 9px; }
+.move-model-how span {
+  width: 17px; height: 17px; flex: none; display: grid; place-items: center; border-radius: 50%;
+  background: color-mix(in oklch, var(--brand-primary) 30%, var(--canvas)); color: var(--text); font-size: 10px; font-weight: 700;
+}
+.move-model-safe { display: flex; align-items: center; gap: 6px; margin-top: -6px; color: var(--success); font-size: 11px; }
+.move-model-body .add-user-footer { margin-top: 2px; }
 .storage-model-row.header {
   min-height: 34px; background: var(--canvas-subtle); color: var(--text-muted);
   font-size: 9px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;

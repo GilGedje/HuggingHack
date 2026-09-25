@@ -6,7 +6,7 @@ from test_access import server  # noqa: F401  (fixture)
 from test_organizations import login, org, upload  # noqa: F401  (fixtures)
 
 # History tables keep the name a job ran under; everything else follows a rename.
-HISTORY_TABLES = {"downloads", "runtime_jobs"}
+HISTORY_TABLES = {"downloads", "runtime_jobs", "storage_moves"}
 
 
 def tables_mentioning(repo_id: str) -> set[str]:

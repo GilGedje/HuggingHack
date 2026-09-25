@@ -80,6 +80,11 @@ class FakeS3Client:
         self.uploads.append(key)
         self._touch(key)
 
+    def upload_fileobj(self, fileobj, bucket: str, key: str, **kwargs):
+        self.objects[key] = fileobj.read()
+        self.uploads.append(key)
+        self._touch(key)
+
     def download_file(self, bucket: str, key: str, filename: str, **kwargs):
         Path(filename).write_bytes(self.objects[key])
 
