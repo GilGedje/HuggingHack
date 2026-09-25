@@ -26,21 +26,22 @@
 }
 [data-theme='dark'] {
   color-scheme: dark;
-  --canvas: #111214;
-  --canvas-subtle: #17181b;
-  --canvas-raised: #1d1f23;
-  --border: #2c2f34;
-  --border-strong: #3b3f46;
-  --text: #f3f4f6;
-  --text-secondary: #d1d5db;
-  --text-muted: #9ca3af;
-  --success: #6ee7a0;
+  --brand-primary: #e9c33b;
+  --canvas: #121315;
+  --canvas-subtle: #16171a;
+  --canvas-raised: #1a1b1f;
+  --border: #282a2f;
+  --border-strong: #363941;
+  --text: #e7e8ea;
+  --text-secondary: #c3c6cc;
+  --text-muted: #8f949c;
+  --success: #7fc79c;
   --success-bg: #12261a;
   --danger: #ff8f86;
   --danger-bg: #321817;
   --warning: #ffd76a;
   --warning-bg: #332911;
-  --shadow: 0 18px 60px rgb(0 0 0 / 0.48);
+  --shadow: 0 18px 60px rgb(0 0 0 / 0.42);
 }
 * { box-sizing: border-box; }
 html { background: var(--canvas); scrollbar-color: var(--border-strong) transparent; scrollbar-width: thin; }
@@ -866,6 +867,24 @@ button:disabled { cursor: not-allowed; opacity: 0.6; }
   --visual-ink: #1d4ed8;
   background: color-mix(in oklch, #3b82f6 10%, var(--canvas-subtle));
 }
+/* Dark cards: a faint tint of each task color over the card surface, and
+   softer, lighter inks, instead of the light theme's saturated ones. */
+[data-theme='dark'] .model-visual {
+  --visual-ink: #c9ad6e;
+  background: color-mix(in oklch, var(--visual-ink) 6%, var(--canvas-raised));
+}
+[data-theme='dark'] .model-visual-generation { --visual-ink: #d2a574; }
+[data-theme='dark'] .model-visual-embedding { --visual-ink: #93a9d8; }
+[data-theme='dark'] .model-visual-vision { --visual-ink: #7dbfb4; }
+[data-theme='dark'] .model-visual-audio { --visual-ink: #c7a0d4; }
+[data-theme='dark'] .model-visual::before, [data-theme='dark'] .model-visual::after { opacity: 0.08; }
+[data-theme='dark'] .model-monogram {
+  border-color: color-mix(in oklch, currentColor 24%, transparent);
+  background: color-mix(in oklch, currentColor 10%, transparent);
+}
+[data-theme='dark'] .parameter-viz span { border-color: color-mix(in oklch, currentColor 22%, transparent); background: transparent; }
+[data-theme='dark'] .parameter-viz span.filled { border-color: transparent; background: color-mix(in oklch, currentColor 75%, transparent); }
+[data-theme='dark'] .download-button { border-color: var(--brand-primary); }
 .model-visual-topline, .model-visual-caption {
   position: relative; z-index: 1; display: flex; align-items: center;
   justify-content: space-between; gap: 8px; font-family: 'IBM Plex Mono', monospace;
