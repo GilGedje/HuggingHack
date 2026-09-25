@@ -148,3 +148,31 @@ export function crossfadeTheme(apply: () => void) {
     settle()
   }
 }
+
+/**
+ * A sidebar that scrolls with the page. One that fits the window stays pinned under
+ * the header; a taller one moves with the content until its last card is in view,
+ * then stays there, so nothing in it is ever out of reach and it has no scroll of
+ * its own. Sets `--sticky-top` on the element. `key` changes when the sidebar may
+ * have appeared or changed, such as on switching tabs.
+ */
+export function useStickySidebar<T extends HTMLElement>(key: string, headerOffset = 88, bottomGap = 16) {
+  const ref = useRef<T>(null)
+  useEffect(() => {
+    const element = ref.current
+    if (!element) return
+    const place = () => {
+      const room = window.innerHeight - element.offsetHeight - bottomGap
+      element.style.setProperty('--sticky-top', `${Math.min(headerOffset, room)}px`)
+    }
+    place()
+    window.addEventListener('resize', place)
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(place)
+    observer?.observe(element)
+    return () => {
+      window.removeEventListener('resize', place)
+      observer?.disconnect()
+    }
+  }, [key, headerOffset, bottomGap])
+  return ref
+}

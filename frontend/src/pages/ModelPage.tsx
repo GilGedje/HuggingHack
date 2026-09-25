@@ -26,7 +26,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useAccess } from '../access'
 import { api } from '../api'
 import { precisionLabel } from '../catalog'
-import { useFadeOnChange, useTabIndicator } from '../motion'
+import { useFadeOnChange, useStickySidebar, useTabIndicator } from '../motion'
 import { ModelActions, ModelCardDocument } from '../components/ModelDetails'
 import { ConfigSection } from '../components/ConfigSection'
 import { DownloadLink } from '../components/DownloadLink'
@@ -456,6 +456,7 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
               : 'card'
   const indicator = useTabIndicator<HTMLDivElement>(`${section}:${model?.id}:${model?.files.length}:${model?.commit_count}:${model?.config_count}`)
   const body = useFadeOnChange<HTMLDivElement>(rest)
+  const aside = useStickySidebar<HTMLElement>(`${section}:${model?.id}`)
   const useMode: UseModelMode | null =
     searchParams.get('local-app') === 'vllm'
       ? 'vllm'
@@ -705,7 +706,7 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
         </main>
 
         {section === 'card' && (
-          <aside className="model-page-aside">
+          <aside className="model-page-aside" ref={aside}>
             <section className="aside-card use-card">
               <h2>Use this model</h2>
               <p>Pull it from any machine on your network.</p>
