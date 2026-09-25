@@ -2,7 +2,7 @@ import { Check } from 'lucide-react'
 import {
   PARAMETER_STOPS,
   PRECISIONS,
-  TASK_GROUPS,
+  TASKS,
   isFullRange,
   parameterQuery,
   parameterRangeLabel,
@@ -130,31 +130,24 @@ export function ModelFilters({
   value: ModelFilterState
   onChange: (value: ModelFilterState) => void
 }) {
-  const grouped = new Set(TASK_GROUPS.flatMap((group) => group.tasks))
-  // Tasks outside the groups still need a way in, so list any the library has.
+  // Tasks beyond the usual ones still need a way in, so list any the library has.
   const otherTasks = Object.keys(facets.tasks)
-    .filter((task) => !grouped.has(task))
+    .filter((task) => !TASKS.includes(task))
     .sort((a, b) => taskLabel(a).localeCompare(taskLabel(b)))
-  const taskGroups = otherTasks.length ? [...TASK_GROUPS, { label: 'Other', tasks: otherTasks }] : TASK_GROUPS
 
   return (
     <>
       <ParameterRange value={value.size} onChange={(size) => onChange({ ...value, size })} />
       <section className="filter-group">
         <h3>Tasks</h3>
-        {taskGroups.map((group) => (
-          <div className="filter-subgroup" key={group.label}>
-            <h4>{group.label}</h4>
-            {group.tasks.map((task) => (
-              <Option
-                key={task}
-                label={taskLabel(task)}
-                count={facets.tasks[task] || 0}
-                selected={value.tasks.includes(task)}
-                onToggle={() => onChange({ ...value, tasks: toggle(value.tasks, task) })}
-              />
-            ))}
-          </div>
+        {[...TASKS, ...otherTasks].map((task) => (
+          <Option
+            key={task}
+            label={taskLabel(task)}
+            count={facets.tasks[task] || 0}
+            selected={value.tasks.includes(task)}
+            onToggle={() => onChange({ ...value, tasks: toggle(value.tasks, task) })}
+          />
         ))}
       </section>
       <section className="filter-group">

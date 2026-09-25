@@ -1,12 +1,13 @@
 /** Filter definitions for the model library. Task ids and labels follow the
  * Hugging Face Hub (huggingface.co/api/tasks). */
 
-export const TASK_GROUPS: Array<{ label: string; tasks: string[] }> = [
-  { label: 'Text', tasks: ['text-generation'] },
-  { label: 'Vision', tasks: ['image-text-to-text'] },
-  { label: 'Multimodal', tasks: ['any-to-any'] },
-  { label: 'Embedding', tasks: ['feature-extraction', 'sentence-similarity'] },
-  { label: 'Reranking', tasks: ['text-ranking'] },
+export const TASKS = [
+  'text-generation',
+  'image-text-to-text',
+  'any-to-any',
+  'feature-extraction',
+  'sentence-similarity',
+  'text-ranking',
 ]
 
 export const PRECISIONS: Array<[string, string]> = [
