@@ -1,0 +1,3 @@
+# Test tools; not installed in the Docker image.
+-r requirements.txt
+pytest==8.4.1

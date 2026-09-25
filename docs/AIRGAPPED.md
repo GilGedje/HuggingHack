@@ -14,7 +14,8 @@ PostgreSQL, follow [Serve from S3 and PostgreSQL](SERVE_FROM_S3.md) instead of s
 - [2. Move HuggingHack onto the offline network](#2-move-hugginghack-onto-the-offline-network)
 - [3. Configure](#3-configure)
 - [4. Start, stop, and update](#4-start-stop-and-update)
-- [5. First sign-in](#5-first-sign-in)
+  - [Back up and restore](#back-up-and-restore)
+- [5. First sign-in, roles, and accounts](#5-first-sign-in-roles-and-accounts)
 - [5a. Single sign-on with Authentik](#5a-single-sign-on-with-authentik)
 - [5b. Organizations](#5b-organizations)
 - [6. Add models](#6-add-models)
@@ -88,6 +89,24 @@ Settings that matter for an air-gapped install:
 | `ACCOUNTS_ENABLED` | `true` (default) | Web UI sign-in, roles, and API tokens. `false` skips sign-in on a single-user trusted network. |
 | `ALLOWED_HOSTS` | empty, or your server's names | See [Security settings](#security-settings). |
 | `HF_TOKEN` | leave empty | Only used to download from the real Hugging Face Hub. |
+| `PUID` / `PGID` | `0` / `0` (root) | The user and group the container runs as. See below. |
+
+**Run as an unprivileged user.** Docker Compose runs the container as `PUID:PGID`, which
+default to `0:0` (root). To run it as an ordinary account instead, set `PUID` and `PGID` to that account's ids (`id your-user`) and
+give it the two mounted folders first, or the server cannot write its database, uploads, or
+git mirrors:
+
+```bash
+sudo chown -R 1000:1000 ./data /mnt/tank/ai/models   # your ids, ./data and MODEL_STORAGE_PATH
+```
+
+```dotenv
+PUID=1000
+PGID=1000
+```
+
+Do the same `chown` when switching an existing root installation over. On macOS and Windows,
+Docker Desktop maps file ownership itself, so these settings rarely matter there.
 
 Find the server's LAN IP with `ipconfig getifaddr en0` (macOS), `hostname -I` (Linux), or
 `ipconfig` (Windows). Prefer a fixed IP or a DNS name so commands stay valid.
@@ -106,6 +125,38 @@ in a bucket and PostgreSQL instead, see [Serve from S3 and PostgreSQL](SERVE_FRO
 
 To upgrade, repeat [section 2](#2-move-hugginghack-onto-the-offline-network) with the new
 version, then `docker compose up -d`. Hard-refresh the browser once if the UI looks stale.
+Back up first (below): the database upgrades itself on the first start of a new version.
+
+`Start HuggingHack.bat` builds the image only when `hugginghack:local` is missing, so on an
+offline Windows server it starts the image you loaded.
+
+### Back up and restore
+
+An installation is three things: the model folder (`MODEL_STORAGE_PATH`), `./data` (the
+SQLite database, git mirrors, and profile pictures), and `.env`. While the server runs,
+SQLite keeps the newest changes in `data/hugginghack.sqlite3-wal`, so copying
+`hugginghack.sqlite3` alone from a running server loses them. Stop the server first:
+
+```bash
+docker compose down
+tar -czf hugginghack-data-$(date +%F).tar.gz data .env
+rsync -a models/ /backup/hugginghack-models/   # your MODEL_STORAGE_PATH, or a NAS snapshot
+docker compose up -d
+```
+
+To back up the database without stopping, let SQLite write a consistent copy, then save that
+file with the rest of `./data`:
+
+```bash
+docker compose exec hugginghack python -c "import sqlite3; s = sqlite3.connect('/data/hugginghack.sqlite3'); d = sqlite3.connect('/data/hugginghack-backup.sqlite3'); s.backup(d); d.close()"
+```
+
+**Restore:** `docker compose down`, put back `.env`, `./data`, and the model folder, then
+`docker compose up -d`. If you restore from the online copy, rename
+`hugginghack-backup.sqlite3` to `hugginghack.sqlite3` and delete any
+`hugginghack.sqlite3-wal` and `hugginghack.sqlite3-shm` beside it first. Backups hold password
+and session hashes; store them securely. For PostgreSQL and buckets, see
+[Serve from S3 and PostgreSQL](SERVE_FROM_S3.md#10-back-up-restore-and-upgrade).
 
 ## 5. First sign-in, roles, and accounts
 
@@ -138,22 +189,6 @@ admin of an organization, and an organization's last admin can neither step down
 make another member an admin first. Only admins who can act count here: an admin role held
 by a disabled account or a Viewer does not, and a server administrator can always appoint a
 new admin to an organization left without one.
-
-## 5b. Organizations
-
-To publish models under a company or team name such as `Nvidia/GLM-5.3-NVFP4`:
-
-1. **Admin → Organizations → New organization**: enter the name exactly as it should appear
-   in model names (for example `Nvidia`). You become its first admin. The name is permanent.
-2. Open the organization (`#/orgs/Nvidia`) → **Members** and add people with a role:
-   **Read** (see and pull private models), **Write** (upload and change models), or
-   **Admin** (manage members, visibility, and deletion).
-3. Members with **Write** choose `Nvidia/` as the owner on **Uploads**, or click
-   **Upload a model** on the organization page.
-
-Pull private organization models with a member's API token, exactly like private personal
-models. Folders already in the model directory under the same name (for example copied
-`Nvidia/...` repositories) appear on the organization page but stay administrator-managed.
 
 ## 5a. Single sign-on with Authentik
 
@@ -190,8 +225,8 @@ HuggingHack works with any OpenID Connect provider. With Authentik:
 
 The sign-in page now shows **Sign in with Authentik** above the password form. The first
 sign-in creates an account with the default role; promote people under **Admin → Users**.
-Usernames come from Authentik's `preferred_username`, cleaned to letters, numbers, and
-hyphens, and never change afterwards because repositories live under them.
+Usernames come from Authentik's `preferred_username`, cleaned to lowercase letters, numbers,
+hyphens, and underscores, and never change afterwards because repositories live under them.
 
 Other providers use the same settings with their own issuer, for example
 `https://keycloak.example.internal/realms/<realm>` for Keycloak or
@@ -203,6 +238,22 @@ Notes:
 - To block someone, disable their HuggingHack account or remove them from the Authentik
   application. Deleting the account only lasts until their next sign-in.
 - If Authentik is unreachable, password sign-in keeps working.
+
+## 5b. Organizations
+
+To publish models under a company or team name such as `Nvidia/GLM-5.3-NVFP4`:
+
+1. **Admin → Organizations → New organization**: enter the name exactly as it should appear
+   in model names (for example `Nvidia`). You become its first admin. The name is permanent.
+2. Open the organization (`#/orgs/Nvidia`) → **Members** and add people with a role:
+   **Read** (see and pull private models), **Write** (upload and change models), or
+   **Admin** (manage members, visibility, and deletion).
+3. Members with **Write** choose `Nvidia/` as the owner on **Uploads**, or click
+   **Upload a model** on the organization page.
+
+Pull private organization models with a member's API token, exactly like private personal
+models. Folders already in the model directory under the same name (for example copied
+`Nvidia/...` repositories) appear on the organization page but stay administrator-managed.
 
 ## 6. Add models
 
@@ -218,8 +269,10 @@ hf download bartowski/Qwen2.5-7B-Instruct-GGUF --include "*Q4_K_M.gguf" "*.md" \
   --local-dir transfer/bartowski/Qwen2.5-7B-Instruct-GGUF
 ```
 
-Alternatively run a second HuggingHack on the connected side, download through its UI,
-and copy its `models` folder.
+Alternatively run a second HuggingHack on the connected side with
+`HF_DOWNLOADS_ENABLED=true`, start downloads through its API (`POST /api/downloads`; see
+[Hugging Face downloads](GUIDE.md#hugging-face-downloads-on-a-connected-server)), and copy
+its `models` folder.
 
 Keep each model's `README.md`. HuggingHack reads its header offline to fill in the task,
 license, and tags, and renders it as the model card.
@@ -420,11 +473,26 @@ Set `HF_ENDPOINT` before Python starts; it is read at import time.
 - After repeated wrong passwords, sign-in pauses for a few minutes: 8 failures for one
   account from one address, or 30 across all accounts from one address. No account is
   ever locked for everyone.
+- **Docker Desktop (Windows and macOS, including `Start HuggingHack.bat`) hides client
+  addresses.** Desktop forwards the port through its own virtual machine, so every browser
+  appears to come from one address (such as `192.168.65.1`). The sign-in limits then count
+  all machines together: 30 wrong passwords from anywhere pause sign-in for everyone for a
+  few minutes, and the session list cannot tell machines apart. For a server that several
+  people use, run Docker Engine on Linux, or put a reverse proxy in front (below) and set
+  `FORWARDED_ALLOW_IPS` to its address.
+- The port listens on every network interface. When a TLS reverse proxy on the same host
+  is the only way in, publish it on loopback only, so nobody can bypass the proxy: set
+  `HUGGINGHACK_PORT=127.0.0.1:7860` in `.env`.
 
 ### Security settings
 
 | Setting | Default | What it does |
 | --- | --- | --- |
+| `ACCOUNTS_ENABLED` | `true` | Sign-in, roles, and API tokens. `false` makes everyone who reaches the port an administrator; use it only for one person on a trusted network. |
+| `HUB_API_ENABLED` | `true` | Anonymous pulls (Hub protocol and `git clone`) of models every account can see. `false` requires a personal API token for every pull. |
+| `PUBLIC_URL` | empty | The address people browse to. It is used in copy-paste commands and is accepted as the site's own `Origin` for writes. |
+| `SECURE_COOKIES` | `auto` | Marks session cookies `Secure` when the request arrived over HTTPS (directly or with `X-Forwarded-Proto: https` from a trusted proxy). `true` or `false` forces it. |
+| `SESSION_TTL_HOURS` | `720` (30 days) | How long a sign-in lasts; afterwards the browser must sign in again. |
 | `ALLOWED_HOSTS` | empty (any name) | Comma-separated host names the server answers to, such as `hugginghack.example.internal,192.168.0.10`. Requests for any other `Host` get `400 Invalid host header`, which blocks DNS rebinding. `localhost` and `127.0.0.1` always work, so the container health check keeps passing. List every name and IP that GPU hosts use in `HF_ENDPOINT` and git clone URLs as well, or their pulls fail with 400. Behind a proxy, list the name people browse to; the proxy must pass it on as `Host`. |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` headers are believed. See below. |
 | `API_DOCS_ENABLED` | `false` | `true` serves the interactive API reference at `/api/docs` and the schema at `/openapi.json`. |
@@ -444,6 +512,59 @@ A reverse proxy (nginx, Traefik, Caddy) in front of HuggingHack must pass the or
   could then claim any address.
 - Set `PUBLIC_URL` to the address people browse to, for example
   `https://hugginghack.example.internal`, and `ALLOWED_HOSTS` to its host name.
+- Allow request bodies of at least `UPLOAD_CHUNK_MB` (8 MB by default). nginx allows only
+  1 MB unless told otherwise, so every upload chunk fails with `413`.
+- Stream instead of buffering, and allow long reads: a multi-gigabyte pull or a slow first
+  `git clone` (hashing weights) keeps one request open for many minutes.
+- HuggingHack does not send `Strict-Transport-Security`, because it often runs over plain
+  HTTP. Add it at the TLS proxy once every client reaches the site over HTTPS.
+
+nginx:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name hugginghack.example.internal;
+    ssl_certificate     /etc/nginx/tls/hugginghack.crt;
+    ssl_certificate_key /etc/nginx/tls/hugginghack.key;
+
+    client_max_body_size 64m;        # at least UPLOAD_CHUNK_MB
+    proxy_request_buffering off;     # stream upload chunks
+    proxy_buffering off;             # stream multi-GB pulls
+    proxy_read_timeout 1h;
+    proxy_send_timeout 1h;
+
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    # Optional hardening:
+    # add_header Cross-Origin-Opener-Policy same-origin always;
+    # add_header Cross-Origin-Resource-Policy same-origin always;
+
+    location / {
+        proxy_pass http://127.0.0.1:7860;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Caddy passes `Host`, `X-Forwarded-For`, and `X-Forwarded-Proto` on its own and has no body
+limit by default:
+
+```caddyfile
+hugginghack.example.internal {
+    tls /etc/caddy/tls/hugginghack.crt /etc/caddy/tls/hugginghack.key
+    header Strict-Transport-Security "max-age=31536000"
+    reverse_proxy 127.0.0.1:7860 {
+        flush_interval -1
+    }
+}
+```
+
+With either, set `FORWARDED_ALLOW_IPS` to the address the container sees the proxy connect
+from, `PUBLIC_URL=https://hugginghack.example.internal`, and
+`ALLOWED_HOSTS=hugginghack.example.internal`.
 
 ## 9. Troubleshooting
 
@@ -457,7 +578,7 @@ A reverse proxy (nginx, Traefik, Caddy) in front of HuggingHack must pass the or
 | vLLM tries to reach huggingface.co | `HF_ENDPOINT` was not exported in the shell or container that runs vLLM. |
 | `Repository not found` when pulling | The model is private or missing, or `HUB_API_ENABLED=false`. Pass a personal API token as `HF_TOKEN` or as the git password. |
 | `The API token is invalid, expired, or revoked` | Create a new token under **Account → API tokens**; disabled accounts' tokens stop working. |
-| Uploads or Downloads are missing from the top bar | Your role is **Viewer**. Ask an administrator for the Member role. |
+| **Uploads** is missing from the top bar | Your role is **Viewer**. Ask an administrator for the Member role. |
 | UI still shows an old version after upgrading | Hard-refresh the browser once. |
 | S3-only models | They can be pulled directly (streamed from S3). **Restore to local cache** is only needed for the built-in runtime dispatch. |
 | A bucket shows **Offline** on the Storage page | Check its `endpoint_url`, the credential variables it names, and the bucket permissions. Its models stay listed until it reconnects. |
@@ -465,13 +586,21 @@ A reverse proxy (nginx, Traefik, Caddy) in front of HuggingHack must pass the or
 | Upload panel says "Choose the same folder again" | The page was reloaded mid-upload. Pick the same folder; already-sent bytes are skipped. |
 | `Requests from other sites are not allowed` | The browser's address differs from how the server is reached, typically behind a proxy that rewrites `Host`. Pass the original `Host` or `X-Forwarded-Host`, or set `PUBLIC_URL` to the address in the browser. |
 | `Invalid host header` | The name in the browser's address bar is not in `ALLOWED_HOSTS`. Add it and restart. |
-| Everyone is told there were too many sign-in attempts | Behind a proxy, `FORWARDED_ALLOW_IPS` is not set, so all sign-ins share the proxy's address. Set it to the proxy's IP. |
+| Everyone is told there were too many sign-in attempts | All sign-ins share one address. Behind a proxy, set `FORWARDED_ALLOW_IPS` to the proxy's IP. On Docker Desktop every client shares one address; see [section 8](#8-network-and-security). |
+| Uploads through the proxy fail with `413 Request Entity Too Large` | The proxy's request-body limit is below the upload chunk size. Raise it, for example nginx `client_max_body_size 64m;` (see [Behind a reverse proxy](#behind-a-reverse-proxy)). |
+| Large pulls through the proxy stop after a minute or so | The proxy's read timeout is too short. Raise it, for example nginx `proxy_read_timeout 1h;`. |
+| The container restarts with `Permission denied` under `/data` or `/models` | The folders are not writable by `PUID:PGID`. `chown` them to that user (see [section 3](#3-configure)). |
 | `/api/docs` returns 404 | The API reference is off by default. Set `API_DOCS_ENABLED=true` and restart. |
 
 ## 10. Limitations
 
 - `llama-server -hf …` (llama.cpp) and `ollama run hf.co/…` use different protocols and
   are not supported yet. Clone the GGUF repository and point them at the file instead.
-- The **Downloads** page and **Admin → Server → Hugging Face** refer to the real
-  Hugging Face Hub and do not work offline. Everything else, including **Saved**, works offline.
+- Server-side downloads from the real Hugging Face Hub (`HF_DOWNLOADS_ENABLED`, API only, no
+  page in the web UI) need huggingface.co and stay off offline; **Admin → Server → Hugging
+  Face** only shows that setting. Everything else, including **Saved**, works offline.
+- The Hub API covers what pulling needs (`snapshot_download`, `hf_hub_download`,
+  `model_info`, `list_repo_files`, `list_repo_tree`, the `*_exists` checks, `hf download`).
+  `HfApi.list_models()`, `list_repo_refs()`, and `list_repo_commits()` answer 404; browse and
+  read history in the web UI instead.
 - Commit history keeps text files but not old weights; older versions cannot be downloaded.

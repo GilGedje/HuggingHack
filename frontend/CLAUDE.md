@@ -118,7 +118,7 @@ Paths below are relative to `frontend/` unless marked *(repo root)*.
   - Controls revealed on hover must also be shown under `@media (hover: none)`, as `.collection-delete` is.
   - Below 520px, dialog footer buttons stack full width with `min-height: 44px`, the confirm button on top.
   - `main.tsx` adds a `touchstart` listener so iOS applies `:active`.
-- **Phones.** Breakpoints are 1080, 780 (phone layout and menu), 640, 520 and 480. `body` has `min-width: 320px`. Test at **390px**: no horizontal page scroll. Wide content wraps (`overflow-wrap: anywhere`) or scrolls inside its own box.
+- **Phones.** Breakpoints are 1240, 1080, 900, 780 (phone layout and menu), 640, 520 and 480. `body` has `min-width: 320px`. Test at **390px**: no horizontal page scroll. Wide content wraps (`overflow-wrap: anywhere`) or scrolls inside its own box.
 
 ## Patterns to follow
 
@@ -153,7 +153,7 @@ Paths below are relative to `frontend/` unless marked *(repo root)*.
   - Each tab saves unfinished jobs under its own `hugginghack-uploads:<tab id>` key and heartbeats every 20 s. Another tab adopts them only once the lease (120 s) has lapsed (`uploadStore.ts`). `File` objects can't be stored, so restored jobs come back without their files.
   - **Keep these mirrors of backend rules in sync.** `isSkipped` mirrors `RESERVED_PARTS`, `RESERVED_FILENAMES` and `PART_SUFFIX` in `backend/app/uploads.py`. `isRecorded` mirrors `indexer.hidden_path` and `PART_SUFFIXES` (`.hugginghack-part`, `.hugginghack-s3-part`). Tests: `test/uploadPlan.test.mjs`.
 - **Markdown.** There are two pipelines, and neither may use `dangerouslySetInnerHTML`.
-  - **User-written text** (organization About, via `MarkdownText`) runs `remark-gfm` → `rehype-sanitize` (default schema) → alerts. There is **no `rehype-raw`**, so raw HTML shows as text. Keep it that way.
+  - **User-written text** (organization About, via `MarkdownText`) runs `remark-gfm` → `rehype-sanitize` (default schema) → alerts. There is **no `rehype-raw`**, so raw HTML tags are stripped (`<b>x</b>` renders `x`) and never rendered. Keep it that way.
   - **Model cards** (`ModelCardDocument`) run `prepareModelCardMarkdown` → `remark-gfm` and `remark-math` (no single `$`) → `rehype-raw` → `rehype-sanitize` with `modelCardSanitizeSchema` → `rehypeGithubAlerts` → `rehype-katex`. Sanitize must come right after `rehype-raw`. The schema strips `srcSet` (it bypasses the URL check) and only adds `align`, `width`, `height` and `open`.
   - `urlTransform` uses `resolveLocalModelCardUrl`:
     - relative images load through `/api/library/asset`
@@ -222,7 +222,7 @@ Model-card assets (`/api/library/asset`) and avatars get the stricter `default-s
 ## Verifying UI changes offline
 
 1. Run `npm test`, then `npm run build`. It must pass `tsc -b` and produce no new warnings besides the chunk size.
-2. Run the backend on a **copy** of the data, never the live `data/` and `models/`. From the *repo root*, with the backend requirements installed (`pip install -r backend/requirements.txt`):
+2. Run the backend on a **copy** of the data, never the live `data/` and `models/`. From the *repo root*, with the backend requirements installed (`pip install -r backend/requirements-dev.txt`):
    ```sh
    cp -R data data-test          # models-test/: copy only a few small models; both paths are gitignored
    MODEL_STORAGE=$PWD/models-test DATA_DIR=$PWD/data-test ACCOUNTS_ENABLED=false \

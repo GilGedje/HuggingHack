@@ -48,7 +48,7 @@ matrix is under **Admin → Roles & permissions**.
 - **API tokens**: a token acts as you from scripts and tools. Use it as `HF_TOKEN` for vLLM,
   Transformers, and the `hf` CLI, as the git password, or as `Authorization: Bearer hht_…`
   for the REST API. Read tokens can only browse and pull; write tokens can also upload, and
-  are offered only to roles that can upload. Tokens can never manage accounts or other
+  only roles that can upload may create them. Tokens can never manage accounts or other
   tokens. A new token is shown once.
 - **Preferences** that follow you across browsers: theme (light, dark, or match this device),
   default sort, and default upload location.
@@ -148,7 +148,8 @@ Organizations are shared namespaces for teams and companies, so a model can live
 - Private and organization repositories stay inside the organization, including through API
   tokens and `git clone`.
 - Organization names and usernames share one namespace (case-insensitive), so a user cannot
-  take an organization's name or the reverse.
+  take an organization's name or the reverse. `api`, `assets`, `static`, `admin`, `orgs`,
+  `models`, and `account` are reserved.
 - Repositories stay with the organization when the account that created them leaves or is
   deleted.
 
@@ -202,7 +203,8 @@ The **Models** page filters by:
 - **Tasks:** Hugging Face task names (Text Generation, Image-Text-to-Text, Any-to-Any,
   Feature Extraction, Sentence Similarity, Text Ranking), followed by any other task your
   library has. The task comes from `pipeline_tag` in the model card.
-- **Precision:** BF16, FP8, or NVFP4, read at scan time from `quantization_config` in
+- **Precision:** BF16, FP8 / INT8, or FP4 / INT4 (NVFP4, MXFP4, and INT4 together); formats
+  of the same width share a filter, and each model keeps its exact label. It is read at scan time from `quantization_config` in
   `config.json`, from ModelOpt's `hf_quant_config.json`, and otherwise from the dtype. Packed
   4-bit weights count as two parameters per byte, so NVFP4 models show their real size.
 - **Hardware:** L40, A100, RTX PRO 6000, and B300 tags.
@@ -355,7 +357,10 @@ The overlay stores data in the `postgres-data` named volume. Back it up separate
 **Move an existing SQLite installation.** `python -m app.migrate_sqlite` copies accounts,
 sessions, tokens, saved models, repositories, commit history, and everything else into an
 empty PostgreSQL database. It works on a copy, never changes the SQLite file, and refuses a
-target that already has accounts, so run it before anyone opens the web interface:
+target that already has accounts, so run it before anyone opens the web interface.
+When it finishes it keeps a copy of the source beside it, `hugginghack.sqlite3.migrated`;
+like any backup it holds password and session hashes, so store it securely or delete it once
+PostgreSQL works:
 
 ```bash
 docker compose down
@@ -394,6 +399,10 @@ git clone http://NAS-IP:7860/owner/model-name
 - Pulls are read-only. Without a token they can read every model visible to all accounts; a
   personal API token also reaches the models its owner can see. Set `HUB_API_ENABLED=false` to
   require a token for every pull.
+- The Hub API covers downloading: `snapshot_download`, `hf_hub_download`, `model_info`,
+  `list_repo_files`, `list_repo_tree`, `repo_exists`/`file_exists`/`revision_exists`, and
+  `hf download`. `HfApi.list_models()`, `list_repo_refs()`, and `list_repo_commits()` answer
+  404; browse the library and its history in the web UI.
 - Set `PUBLIC_URL=http://NAS-IP:7860` when the address in your browser (for example
   `localhost`) is not the one other machines use.
 
@@ -519,10 +528,14 @@ MODEL_STORAGE_PATH=/mnt/tank/ai/models
 # QNAP
 MODEL_STORAGE_PATH=/share/Container/models
 
-# If the NAS enforces Unix ownership (find them with `id your-nas-user`):
+# Run as this NAS user instead of root (find the ids with `id your-nas-user`):
 PUID=1026
 PGID=100
 ```
+
+With `PUID`/`PGID` set, that user must own the model folder and `data`
+(`sudo chown -R 1026:100 /volume1/AI/models /volume1/docker/HuggingHack/data`), or the server
+cannot write to them. See [the air-gapped guide](AIRGAPPED.md#3-configure).
 
 Then run `docker compose up --build -d` from the project folder and open `http://NAS-IP:7860`
 from another computer on the LAN.
@@ -581,6 +594,8 @@ The full list of security settings is in the
 - **Site data:** profile pictures and git mirrors in `./data`, or in the bucket with
   `SYSTEM_STORAGE_TARGET`.
 
-Back up models and the metadata database together. The index can be rebuilt from the model
+Back up models and the metadata database together: step by step for folders and SQLite in the
+[air-gapped setup guide](AIRGAPPED.md#back-up-and-restore), and for PostgreSQL and buckets in
+[Serve from S3 and PostgreSQL](SERVE_FROM_S3.md#10-back-up-restore-and-upgrade). The index can be rebuilt from the model
 files, but the database holds accounts, ownership, saved models, configs, and history. Store
 backups securely: they contain password hashes and session hashes.

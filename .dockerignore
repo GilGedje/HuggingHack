@@ -24,3 +24,9 @@ backend/**/__pycache__
 *.pyc
 *.log
 screenshots
+docker-compose.override.yml
+.playwright-mcp
+.claude
+.github
+docs
+*.md

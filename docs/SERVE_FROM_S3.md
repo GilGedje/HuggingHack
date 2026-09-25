@@ -56,7 +56,10 @@ mistaken for a model. Do not edit anything in the bucket by hand.
 You need, on the offline network:
 
 - A Linux host with Docker Engine and Docker Compose v2 for HuggingHack.
-- An S3-compatible service reachable from that host, and an access key for it.
+- An S3-compatible service reachable from that host, and an access key for it. If you run
+  MinIO in a container, carry its image across like the others; the `minio/minio` image is no
+  longer published on Docker Hub, so use the image your registry or MinIO's own distribution
+  provides.
 - PostgreSQL 15 or newer, or permission to run the `postgres:17-alpine` container.
 - Local disk on the HuggingHack host for caches: at least the size of the largest model
   you will upload, plus room for any models you want cached (see
@@ -214,7 +217,8 @@ Then open `PUBLIC_URL` and create the **owner** account (the first visit asks fo
 
 **Checks:**
 
-1. `curl -s http://localhost:7860/api/health` answers with `"status": "ok"`.
+1. `curl -s http://localhost:7860/api/health` answers with `"status": "ok"`. This only says
+   the server is up: anonymous callers never make it touch the bucket. Checks 2 and 3 cover S3.
 2. **Admin → Server** shows **Engine: PostgreSQL** under Database, and **Site data:
    s3://models/models/_system/** under Storage.
 3. **Admin → Storage** shows **MinIO models** as **Connected**, and the **Site data** box
@@ -245,6 +249,9 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d postgr
 docker compose -f docker-compose.yml -f docker-compose.postgres.yml run --rm hugginghack \
   python -m app.migrate_sqlite
 ```
+
+The copy keeps the SQLite file as `data/hugginghack.sqlite3.migrated`. It holds password and
+session hashes: store it like a backup, or delete it once PostgreSQL works.
 
 ### Profile pictures and git history
 
@@ -303,10 +310,12 @@ For a private model, create a read token under **Account → API tokens** and al
 
 ```bash
 pg_dump "postgresql://hugginghack:…@db-host:5432/hugginghack" > hugginghack.sql
-mc mirror hh/models /backup/hugginghack-bucket      # or your bucket replication
+mc mirror hh/models/models /backup/hugginghack-bucket   # or your bucket replication
 ```
 
-Keep `.env` with them: it holds the configuration and the names of the credentials. The
+The HuggingHack key may list only the `models/` prefix, so mirror that prefix (as above),
+or use an administrator key to mirror the whole bucket. Keep `.env` with them: it holds the
+configuration and the names of the credentials. The
 server's volumes do not need backing up.
 
 **Restore** onto a new server: carry the image across ([step 3](#3-carry-the-images-across)),

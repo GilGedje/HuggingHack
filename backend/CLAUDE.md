@@ -10,7 +10,9 @@ the UI.
 ## Commands (run from the repo root)
 
 ```bash
-python3.12 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt   # CI and Docker use Python 3.12
+# requirements-dev.txt adds pytest to the runtime requirements.txt (the only file the image installs).
+python3.12 -m venv .venv && .venv/bin/pip install -r backend/requirements-dev.txt   # CI and Docker use Python 3.12
+# If `python3.12 -m venv` fails on ensurepip, `uv venv -p 3.12 .venv && uv pip install -p .venv/bin/python -r backend/requirements-dev.txt` works.
 
 # Dev server. The defaults /models and /data are absolute paths, so override them locally.
 # The download worker child process finds `app` on its own (downloads.PACKAGE_ROOT); PYTHONPATH=backend is harmless.
@@ -37,8 +39,8 @@ PYTHONPATH=backend DATABASE_URL=postgresql://... .venv/bin/python -m app.migrate
 ```
 
 **Definition of done:** run the suite with `TEST_POSTGRES_URL` set, and with `git` and
-`git-lfs` on PATH, until it reports **0 skipped**. Without Postgres, 17 tests skip. Without
-git-lfs, the clone tests skip. SQLite passing alone is not enough.
+`git-lfs` on PATH, until it reports **0 skipped**. Without Postgres, 18 tests skip. Without
+git-lfs, the clone tests skip. SQLite passing alone is not enough. CI fails when anything is skipped.
 
 ## Module map (`backend/app`)
 
@@ -193,7 +195,8 @@ safetensors/GGUF headers with bounded sizes. Pickle-family files are only flagge
   Clients pulling from HuggingHack must **not** set `HF_HUB_OFFLINE`, because it blocks fetching.
 - The image is built on a connected machine and carried across (`docs/AIRGAPPED.md` §2), so
   every dependency must be installable from PyPI wheels at build time. Add to
-  `requirements.txt` only when essential, pin it, and prefer the stdlib. psycopg and boto3
+  `requirements.txt` only when essential, pin it exactly, and prefer the stdlib. Test-only tools go in
+  `requirements-dev.txt`. psycopg and boto3
   are imported lazily, so SQLite and filesystem installs keep working without them.
 - A dead S3 bucket or IdP must never block startup or password login. The startup scan runs
   in the background, and a failing target is recorded in `storage_errors`. One exception is on purpose:
