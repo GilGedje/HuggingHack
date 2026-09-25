@@ -8,12 +8,11 @@ interface GgufInspectorProps {
   repoId: string
   revision: string
   files: HubFile[]
-  endpoint?: string
 }
 
 const TENSOR_PAGE_SIZE = 200
 
-export function GgufInspector({ repoId, revision, files, endpoint }: GgufInspectorProps) {
+export function GgufInspector({ repoId, revision, files }: GgufInspectorProps) {
   const [selectedPath, setSelectedPath] = useState(files[0]?.path || '')
   const [inspection, setInspection] = useState<GgufInspection | null>(null)
   const [error, setError] = useState('')
@@ -34,7 +33,7 @@ export function GgufInspector({ repoId, revision, files, endpoint }: GgufInspect
     setLoading(true)
     setQuery('')
     setVisibleCount(TENSOR_PAGE_SIZE)
-    inspectGguf(repoId, revision, selectedFile, endpoint)
+    inspectGguf(repoId, revision, selectedFile)
       .then((result) => {
         if (!ignore) setInspection(result)
       })
@@ -49,7 +48,7 @@ export function GgufInspector({ repoId, revision, files, endpoint }: GgufInspect
     return () => {
       ignore = true
     }
-  }, [endpoint, repoId, revision, selectedFile])
+  }, [repoId, revision, selectedFile])
 
   const filteredTensors = useMemo(() => {
     if (!inspection) return []

@@ -3,7 +3,7 @@ import { ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react'
 import { useSearchParams } from 'react-router-dom'
 import { pageList } from '../pagination'
 
-export const PAGE_SIZES = [10, 25, 50, 100]
+const PAGE_SIZES = [10, 25, 50, 100]
 const DEFAULT_PAGE_SIZE = 25
 
 function storedPageSize(key: string): number {
@@ -15,7 +15,7 @@ function storedPageSize(key: string): number {
   }
 }
 
-export type Paged<F> = F & { page: number; per_page: number }
+type Paged<F> = F & { page: number; per_page: number }
 
 /**
  * List filters, page, and page size kept in the address, so reload, Back, and

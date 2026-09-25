@@ -128,7 +128,7 @@ export function RuntimesPage() {
             </article>
           ))}
           {!loading && jobs.length === 0 && (
-            <div className="empty-compact">Load a model from its local-library drawer to create the first runtime job.</div>
+            <div className="empty-compact">Send a model from its model page to create the first runtime job.</div>
           )}
         </div>
       </section>
