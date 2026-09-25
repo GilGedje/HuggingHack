@@ -8,6 +8,7 @@ import json
 import pytest
 from botocore.exceptions import ClientError
 from fastapi.testclient import TestClient
+from uvicorn.middleware.proxy_headers import _TrustedHosts
 
 import app.main as main
 from app.auth import AuthService
@@ -403,10 +404,19 @@ def test_cross_site_writes_are_refused_and_clients_without_origin_are_not(server
         refused = admin.post(scan, headers={"Origin": origin})
         assert refused.status_code == 403, origin
         assert refused.headers.get("x-content-type-options") == "nosniff"
-    # Behind a reverse proxy, and at PUBLIC_URL.
-    assert admin.post(
-        scan, headers={"Origin": "https://models.example.com", "X-Forwarded-Host": "models.example.com"}
-    ).status_code == 200
+    # X-Forwarded-Host names the site only when a proxy in FORWARDED_ALLOW_IPS sends it.
+    forwarded = {"Origin": "https://models.example.com", "X-Forwarded-Host": "models.example.com"}
+    assert admin.post(scan, headers=forwarded).status_code == 403
+    monkeypatch.setattr(main, "TRUSTED_PROXIES", _TrustedHosts("testclient"))
+    assert admin.post(scan, headers=forwarded).status_code == 200
+    monkeypatch.setattr(main, "TRUSTED_PROXIES", _TrustedHosts("127.0.0.1"))
+    # Behind a trusted proxy uvicorn has already replaced the client with the
+    # browser's address and port 0.
+    proxied = TestClient(main.app, client=("192.0.2.7", 0), cookies=admin.cookies)
+    proxied.headers["X-CSRF-Token"] = admin.headers["X-CSRF-Token"]
+    assert proxied.post(scan, headers={**forwarded, "X-Forwarded-For": "192.0.2.7"}).status_code == 200
+    assert proxied.post(scan, headers=forwarded).status_code == 403
+    # At PUBLIC_URL.
     monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, public_url="https://hub.example.com"))
     assert admin.post(scan, headers={"Origin": "https://hub.example.com:443"}).status_code == 200
     assert admin.post(scan, headers={"Origin": "https://hub.example.com:8443"}).status_code == 403

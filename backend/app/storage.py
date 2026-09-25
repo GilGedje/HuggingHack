@@ -29,17 +29,30 @@ logger = logging.getLogger("hugginghack")
 MANIFEST_NAME = ".hugginghack.json"
 TARGET_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 
+try:
+    from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
+except ImportError:  # boto3 is only needed for S3 targets
+    BotoCoreError = ClientError = NoCredentialsError = None  # type: ignore[assignment,misc]
+# Errors a bucket raises when it fails or cannot be reached.
+BOTO_ERRORS: tuple[type[Exception], ...] = tuple(
+    error for error in (BotoCoreError, ClientError) if error is not None
+)
+
 
 class StorageUnavailableError(Exception):
     """Object storage failed or was unreachable. The message is safe to show; the
     underlying error, which may name the bucket or endpoint, is only logged."""
 
 
+def _error_code(error: Exception) -> str:
+    details = (getattr(error, "response", None) or {}).get("Error") or {}
+    return str(details.get("Code") or "")
+
+
 def _missing_object(error: Exception) -> bool:
     """Whether an S3 error says the object does not exist, rather than that the
     request failed."""
-    details = (getattr(error, "response", None) or {}).get("Error") or {}
-    return str(details.get("Code") or "") in {"NoSuchKey", "404", "NotFound"}
+    return _error_code(error) in {"NoSuchKey", "404", "NotFound"}
 
 
 @dataclass(frozen=True)
@@ -276,7 +289,9 @@ class FilesystemModelStorage:
     ) -> tuple[bytes, int] | None:
         return None
 
-    def list_repository_entries(self, repo_id: str) -> list[dict[str, Any]] | None:
+    def list_repository_entries(
+        self, repo_id: str, *, interactive: bool = False
+    ) -> list[dict[str, Any]] | None:
         return None
 
     def stat_repository_file(self, repo_id: str, relative_path: str) -> dict[str, Any] | None:
@@ -368,6 +383,19 @@ class S3ModelStorage(FilesystemModelStorage):
                     ),
                 }
             )
+            # Listings, metadata and small reads that someone is waiting on give up
+            # after one retry, so a bucket outage answers in seconds, not minutes.
+            self.read_client = boto3.client(
+                **{
+                    **client_options,
+                    "config": Config(
+                        connect_timeout=3,
+                        read_timeout=5,
+                        retries={"total_max_attempts": 2, "mode": "standard"},
+                        s3={"addressing_style": target.addressing_style},
+                    ),
+                }
+            )
             chunk_bytes = settings.s3_multipart_chunk_mb * 1024**2
             transfer_config = TransferConfig(
                 multipart_threshold=chunk_bytes,
@@ -378,6 +406,8 @@ class S3ModelStorage(FilesystemModelStorage):
         self.client = client
         if not hasattr(self, "health_client"):
             self.health_client = client
+        if not hasattr(self, "read_client"):
+            self.read_client = client
         self.transfer_config = transfer_config
 
     def _prefix(self, value: str = "") -> str:
@@ -390,11 +420,14 @@ class S3ModelStorage(FilesystemModelStorage):
     def _manifest_key(self, repo_id: str) -> str:
         return f"{self._repo_prefix(repo_id)}{MANIFEST_NAME}"
 
+    def unreachable_message(self) -> str:
+        return f"The storage location {self.name} is not reachable. Try again in a moment."
+
     def remote_uri(self, repo_id: str) -> str:
         return f"s3://{self.bucket}/{self._prefix(validate_repo_id(repo_id))}"
 
-    def _objects(self, prefix: str) -> Iterable[dict[str, Any]]:
-        paginator = self.client.get_paginator("list_objects_v2")
+    def _objects(self, prefix: str, client: Any | None = None) -> Iterable[dict[str, Any]]:
+        paginator = (client or self.client).get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
             yield from page.get("Contents") or []
 
@@ -444,6 +477,26 @@ class S3ModelStorage(FilesystemModelStorage):
             text = text.replace(secret, "[redacted]")
         return text
 
+    def describe_error(self, error: Exception) -> str:
+        """A sentence for people about a failed bucket request. botocore's own text
+        carries request URLs with query strings, so it only goes to the log."""
+        where = f"s3://{self.bucket}"
+        endpoint = _public_endpoint(self.endpoint)
+        if endpoint:
+            where = f"{where} at {endpoint}"
+        code = _error_code(error)
+        if code == "NoSuchBucket":
+            return f"The bucket {self.bucket} does not exist. Check the bucket name."
+        if code in {"AccessDenied", "InvalidAccessKeyId", "SignatureDoesNotMatch", "403"}:
+            return f"{where} refused the request ({code}). Check the credentials and the bucket policy."
+        if code:
+            return f"{where} answered with an error ({code})."
+        if NoCredentialsError is not None and isinstance(error, NoCredentialsError):
+            return f"No credentials are configured for {where}."
+        if BotoCoreError is not None and isinstance(error, BotoCoreError):
+            return f"Cannot reach {where}. Check the endpoint and that the storage server is running."
+        return self.redact(str(error).strip() or f"Could not read {where} ({error.__class__.__name__}).")
+
     def health(self) -> dict[str, Any]:
         error = None
         connected = False
@@ -455,7 +508,8 @@ class S3ModelStorage(FilesystemModelStorage):
             )
             connected = True
         except Exception as exception:
-            error = self.redact(str(exception).strip() or exception.__class__.__name__)[:300]
+            logger.info("Storage %s health check failed: %s", self.id, self.redact(str(exception)))
+            error = self.describe_error(exception)[:300]
         return {
             "backend": self.backend,
             "enabled": True,
@@ -720,7 +774,7 @@ class S3ModelStorage(FilesystemModelStorage):
         prefix = self._repo_prefix(repo_id)
         files: list[dict[str, Any]] = []
         unsafe_count = 0
-        for item in self._objects(prefix):
+        for item in self._objects(prefix, self.read_client):
             key = item.get("Key") or ""
             relative = key[len(prefix) :]
             if not relative:
@@ -812,16 +866,18 @@ class S3ModelStorage(FilesystemModelStorage):
             return None
         key = f"{self._repo_prefix(repo_id)}{relative.as_posix()}"
         try:
-            head = self.client.head_object(Bucket=self.bucket, Key=key)
-        except Exception:
-            return None
+            head = self.read_client.head_object(Bucket=self.bucket, Key=key)
+        except Exception as error:
+            if _missing_object(error):
+                return None
+            raise StorageUnavailableError(self.unreachable_message()) from error
         total = int(head.get("ContentLength") or 0)
         if start >= total:
             return b"", total
         last = min(total - 1, end if end is not None else total - 1)
         if last - start + 1 > max_bytes:
             raise ValueError("The requested file is too large to read.")
-        response = self.client.get_object(
+        response = self.read_client.get_object(
             Bucket=self.bucket,
             Key=key,
             Range=f"bytes={start}-{last}",
@@ -837,11 +893,14 @@ class S3ModelStorage(FilesystemModelStorage):
             raise ValueError("The requested file is too large to read.")
         return payload, total
 
-    def list_repository_entries(self, repo_id: str) -> list[dict[str, Any]] | None:
-        """List every object of a repository, without the browsing limit."""
+    def list_repository_entries(
+        self, repo_id: str, *, interactive: bool = False
+    ) -> list[dict[str, Any]] | None:
+        """List every object of a repository, without the browsing limit. An
+        interactive listing, for someone waiting on it, gives up sooner."""
         prefix = self._repo_prefix(repo_id)
         entries: list[dict[str, Any]] = []
-        for item in self._objects(prefix):
+        for item in self._objects(prefix, self.read_client if interactive else None):
             relative = (item.get("Key") or "")[len(prefix) :]
             if not relative:
                 continue
@@ -861,11 +920,13 @@ class S3ModelStorage(FilesystemModelStorage):
 
     def stat_repository_file(self, repo_id: str, relative_path: str) -> dict[str, Any] | None:
         try:
-            head = self.client.head_object(
+            head = self.read_client.head_object(
                 Bucket=self.bucket, Key=self._object_key(repo_id, relative_path)
             )
-        except Exception:
-            return None
+        except Exception as error:
+            if _missing_object(error):
+                return None
+            raise StorageUnavailableError(self.unreachable_message()) from error
         return {
             "size": int(head.get("ContentLength") or 0),
             "version": _iso(head.get("LastModified")),

@@ -131,7 +131,8 @@ function UploadAccess({
         ) : (
           <span className="upload-access-open">Everyone who can upload</span>
         )}
-        {canManage && (
+        {/* Nobody can upload to a bucket that is offline, so there is nothing to reserve yet. */}
+        {canManage && target.connected && (
           <button
             type="button"
             className="secondary-button compact"

@@ -15,7 +15,7 @@ from .config import Settings
 from .avatars import avatar_url
 from .indexer import BASE_MODEL_RELATIONS, UNSAFE_EXTENSIONS, hidden_path
 from .reads import reads
-from .storage import FilesystemModelStorage, StorageRegistry
+from .storage import FilesystemModelStorage, StorageRegistry, StorageUnavailableError
 
 
 MODEL_CARD_MAX_BYTES = 120_000
@@ -389,7 +389,7 @@ class LocalCatalog:
             payload, _ = self.read_bytes(
                 model, readme["path"], 0, MODEL_CARD_MAX_BYTES - 1, MODEL_CARD_MAX_BYTES
             )
-        except (FileNotFoundError, ValueError, OSError):
+        except (FileNotFoundError, ValueError, OSError, StorageUnavailableError):
             return None
         return payload.decode("utf-8", errors="replace")
 
