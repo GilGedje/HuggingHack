@@ -482,3 +482,75 @@ def test_the_default_upload_message_counts_only_listed_files(org):  # noqa: F811
     [commit] = main.database.list_commits(repo_id)
     assert commit["message"] == "Upload 1 file"
     assert main.database.get_local_model(repo_id)["file_count"] == 1
+
+
+# The download worker starts from any directory, in Docker and in a checkout.
+
+
+def test_the_download_worker_imports_wherever_the_server_was_started(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    from app.downloads import WORKER_MODULE, worker_environment
+
+    base = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    started = subprocess.run(
+        [sys.executable, "-m", WORKER_MODULE, "--help"],
+        cwd=tmp_path, env=worker_environment(base), capture_output=True, text=True, timeout=60,
+    )
+    assert started.returncode == 0, started.stderr
+    assert "--repo-id" in started.stdout
+    kept = worker_environment({**base, "PYTHONPATH": "/opt/extra"})["PYTHONPATH"].split(os.pathsep)
+    assert kept[1:] == ["/opt/extra"]
+
+
+# A Viewer's organization role only reads, including for private repositories.
+
+
+def test_a_viewer_with_an_old_write_role_cannot_see_private_organization_repositories(org):  # noqa: F811
+    writer, _ = login("writer")
+    repo_id = writer.post(
+        "/api/uploads/repositories", json={"slug": "private-team", "namespace": "Nvidia", "visibility": "private"}
+    ).json()["repo_id"]
+    upload(writer, repo_id, {"config.json": b"{}"})
+    shared = writer.post(
+        "/api/uploads/repositories", json={"slug": "team", "namespace": "Nvidia", "visibility": "organization"}
+    ).json()["repo_id"]
+    upload(writer, shared, {"config.json": b"{}"})
+    nvidia = main.database.get_organization("Nvidia")
+    # A role given before the Viewer cap existed, or before a demotion to Viewer.
+    main.database.set_organization_member(nvidia["id"], org["users"]["viewer"]["id"], "write", "2026-01-01T00:00:00+00:00")
+
+    anonymous = TestClient(main.app)
+    for username, expected in (("viewer", 404), ("writer", 200)):
+        client, _ = login(username)
+        assert client.get(f"/api/library/models/{repo_id}").status_code == expected, username
+        assert client.get(f"/api/library/models/{shared}").status_code == 200, username
+        token = client.post("/api/account/tokens", json={"name": "pull", "scope": "read"}).json()["token"]
+        pulled = anonymous.get(
+            f"/{repo_id}/resolve/main/config.json", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert pulled.status_code == expected, username
+        basic = base64.b64encode(f"git:{token}".encode()).decode()
+        refs = anonymous.get(f"/{repo_id}.git/info/refs", headers={"Authorization": f"Basic {basic}"})
+        assert refs.status_code == expected, username
+    counts = {item["name"]: item["repository_count"] for item in login("viewer")[0].get("/api/organizations").json()["items"]}
+    assert counts["Nvidia"] == 1
+
+
+# The health check never lists the bucket unless an administrator asks.
+
+
+def test_health_checks_object_storage_only_for_settings_viewers(server, monkeypatch):  # noqa: F811
+    calls = []
+    storage = main.storages.default
+    working = storage.health
+    monkeypatch.setattr(storage, "health", lambda: calls.append(1) or working())
+    assert TestClient(main.app).get("/api/health").json()["status"] == "ok"
+    member, _ = login("member")
+    assert member.get("/api/health").status_code == 200
+    assert calls == []
+    admin, _ = login("admin")
+    assert "object_storage" in admin.get("/api/health").json()
+    assert calls == [1]

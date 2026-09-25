@@ -129,7 +129,8 @@ def test_viewers_organization_roles_only_read(org):  # noqa: F811
     # An Admin role given before that rule existed manages nothing.
     main.database.set_organization_member(nvidia["id"], org["users"]["viewer"]["id"], "admin", "2026-01-01T00:00:00+00:00")
     viewer, _ = login("viewer")
-    assert viewer.get(f"/api/library/models/{repo_id}").json()["can_manage"] is False
+    # It only reads, so the private repository is not even visible to them.
+    assert viewer.get(f"/api/library/models/{repo_id}").status_code == 404
     renamed = viewer.post(
         "/api/repos/rename", params={"repo_id": repo_id}, json={"namespace": "Nvidia", "name": "taken", "confirmation": repo_id}
     )

@@ -280,7 +280,8 @@ def test_upload_permission_needs_both_server_and_organization_roles(org):
         content=b"{}",
     ).status_code == 403
     assert viewer.post("/api/repos/changes", json={"repo_id": repo_id}).status_code == 403
-    assert viewer.get(f"/api/library/models/{repo_id}").json()["can_edit"] is False
+    # Nor see the organization's private repository, which only its writers see.
+    assert viewer.get(f"/api/library/models/{repo_id}").status_code == 404
 
     # A member with only Read in the organization cannot write to it either.
     reader, _ = login("reader")

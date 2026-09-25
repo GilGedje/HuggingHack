@@ -20,8 +20,23 @@ from .indexer import LocalModelIndexer, directory_stats
 from .storage import FilesystemModelStorage, StorageRegistry
 
 
+# The folder holding this package (/app in Docker, backend/ in a checkout). The
+# download worker runs as a separate Python process, which finds the package only
+# if that folder is on its path, whatever directory the server was started from.
+PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+WORKER_MODULE = f"{__package__}.download_worker"
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def worker_environment(base: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment for a worker process, with this package importable."""
+    environment = dict(os.environ if base is None else base)
+    paths = [str(PACKAGE_ROOT), *filter(None, environment.get("PYTHONPATH", "").split(os.pathsep))]
+    environment["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(paths))
+    return environment
 
 
 class DownloadCancelled(Exception):
@@ -217,7 +232,7 @@ class DownloadManager:
         command = [
             sys.executable,
             "-m",
-            "app.download_worker",
+            WORKER_MODULE,
             "--repo-id",
             download["repo_id"],
             "--revision",
@@ -233,7 +248,7 @@ class DownloadManager:
             "--workers",
             str(self.settings.download_workers_per_job),
         ]
-        environment = os.environ.copy()
+        environment = worker_environment()
         environment["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
         if self.settings.hf_token:
             environment["HF_TOKEN"] = self.settings.hf_token
@@ -245,6 +260,7 @@ class DownloadManager:
                 stderr=error_output,
                 text=True,
                 env=environment,
+                cwd=PACKAGE_ROOT,
             )
             with self._lock:
                 self._processes[download_id] = process

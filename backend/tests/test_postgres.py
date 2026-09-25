@@ -445,12 +445,14 @@ def test_postgresql_visible_counts_and_saves_after_a_rename():
     suffix = uuid.uuid4().hex
     owner_id, reader_id, org_id = f"owner-{suffix}", f"reader-{suffix}", f"org-{suffix}"
     admin_id, retired_id = f"admin-{suffix}", f"retired-{suffix}"
+    viewer_id, idle_id = f"viewer-{suffix}", f"idle-{suffix}"
     old, new = f"o{suffix}/tiny", f"u{suffix}/tiny"
     timestamp = "2026-09-25T12:00:00+00:00"
     try:
         for user_id, username, role in (
             (owner_id, f"u{suffix}", "member"), (reader_id, f"r{suffix}", "member"),
             (admin_id, f"a{suffix}", "admin"), (retired_id, f"d{suffix}", "admin"),
+            (viewer_id, f"v{suffix}", "viewer"), (idle_id, f"i{suffix}", "member"),
         ):
             database.create_user(
                 {"id": user_id, "username": username, "display_name": username, "password_hash": "test-only",
@@ -458,12 +460,16 @@ def test_postgresql_visible_counts_and_saves_after_a_rename():
             )
         # A disabled administrator sees no more than anyone else.
         database.update_user(retired_id, disabled=1)
+        database.update_user(idle_id, disabled=1)
         database.create_organization(
             {"id": org_id, "name": f"o{suffix}", "display_name": "Org", "description": "",
              "created_at": timestamp, "updated_at": timestamp}
         )
         database.set_organization_member(org_id, owner_id, "admin", timestamp)
         database.set_organization_member(org_id, reader_id, "read", timestamp)
+        # Write roles held by a Viewer or a disabled account only read.
+        for user_id in (viewer_id, idle_id):
+            database.set_organization_member(org_id, user_id, "write", timestamp)
         for repo_id, visibility in ((old, "organization"), (f"o{suffix}/hidden", "private")):
             database.create_owned_repository(
                 {"id": uuid.uuid4().hex, "owner_id": owner_id, "repo_id": repo_id, "description": "",
@@ -472,9 +478,11 @@ def test_postgresql_visible_counts_and_saves_after_a_rename():
             )
         counts = {
             user: next(item for item in database.list_organizations(user) if item["id"] == org_id)["repository_count"]
-            for user in (owner_id, reader_id, admin_id, retired_id, None)
+            for user in (owner_id, reader_id, admin_id, retired_id, viewer_id, idle_id, None)
         }
-        assert counts == {owner_id: 2, reader_id: 1, admin_id: 2, retired_id: 0, None: 0}
+        assert counts == {
+            owner_id: 2, reader_id: 1, admin_id: 2, retired_id: 0, viewer_id: 1, idle_id: 1, None: 0
+        }
 
         database.upsert_local_model(
             {"repo_id": old, "relative_path": old, "size_bytes": 1, "file_count": 1, "modified_at": timestamp,
@@ -511,7 +519,7 @@ def test_postgresql_visible_counts_and_saves_after_a_rename():
             )
             connection.execute("DELETE FROM organization_members WHERE organization_id = ?", (org_id,))
             connection.execute("DELETE FROM organizations WHERE id = ?", (org_id,))
-            for user_id in (owner_id, reader_id, admin_id, retired_id):
+            for user_id in (owner_id, reader_id, admin_id, retired_id, viewer_id, idle_id):
                 connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
         database.close()
 

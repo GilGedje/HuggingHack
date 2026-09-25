@@ -281,3 +281,85 @@ def test_deleting_a_collection_keeps_its_saved_models(tmp_path: Path):
     [saved] = database.list_saved_models("u1")
     assert saved["repo_id"] == "owner/model"
     assert saved["collections"] == []
+
+
+BIG_SIZE = 5_000_000_000
+BIG_PARAMETERS = 405_000_000_000
+
+
+def store_and_read_big_numbers(database: Database) -> None:
+    """Sizes past 2 GB and parameter counts past 2 billion survive a round trip."""
+    timestamp = "2026-09-25T12:00:00+00:00"
+    database.upsert_local_model(
+        {"repo_id": "meta/llama-405b", "relative_path": "meta/llama-405b", "size_bytes": BIG_SIZE,
+         "file_count": 191, "modified_at": timestamp, "downloaded_at": None, "revision": None, "sha": None,
+         "pipeline_tag": None, "library_name": None, "license": None, "tags_json": "[]", "config_json": "{}",
+         "source_url": None, "managed": 1, "storage_backend": "filesystem", "cached": 1, "remote_uri": None,
+         "parameter_count": BIG_PARAMETERS}
+    )
+    model = database.get_local_model("meta/llama-405b")
+    assert (model["size_bytes"], model["parameter_count"]) == (BIG_SIZE, BIG_PARAMETERS)
+    database.create_download(
+        {"id": "big-download", "repo_id": "meta/llama-405b", "revision": "main", "status": "running",
+         "total_bytes": BIG_SIZE, "downloaded_bytes": BIG_SIZE - 1, "progress": 99.9, "speed_bps": 0,
+         "error": None, "target_path": None, "payload_json": "{}", "metadata_json": "{}",
+         "created_at": timestamp, "updated_at": timestamp, "completed_at": None}
+    )
+    download = database.get_download("big-download")
+    assert (download["total_bytes"], download["downloaded_bytes"]) == (BIG_SIZE, BIG_SIZE - 1)
+    database.create_runtime_job(
+        {"id": "big-job", "target_id": "gpu", "target_name": "GPU", "target_kind": "vllm",
+         "repo_id": "meta/llama-405b", "runtime_model_name": "llama", "source_file": None, "status": "ready",
+         "total_bytes": BIG_SIZE, "processed_bytes": BIG_SIZE, "progress": 100, "message": "", "error": None,
+         "created_at": timestamp, "updated_at": timestamp, "completed_at": timestamp, "user_id": None}
+    )
+    assert database.get_runtime_job("big-job")["processed_bytes"] == BIG_SIZE
+    database.create_move(
+        {"id": "big-move", "repo_id": "meta/llama-405b", "source_target": "local", "destination_target": "lake",
+         "keep_local": 0, "status": "copying", "message": "", "created_by": None,
+         "created_at": timestamp, "updated_at": timestamp}
+    )
+    moved = database.update_move("big-move", total_bytes=BIG_SIZE, copied_bytes=BIG_SIZE, verified_bytes=BIG_SIZE)
+    assert (moved["total_bytes"], moved["copied_bytes"], moved["verified_bytes"]) == (BIG_SIZE,) * 3
+
+
+def test_sqlite_stores_sizes_and_parameter_counts_past_32_bits(tmp_path: Path):
+    database = Database(tmp_path / "db.sqlite3")
+    database.initialize()
+    store_and_read_big_numbers(database)
+
+
+def test_postgresql_widens_byte_and_parameter_columns_to_bigint(fresh_postgres: str):
+    import psycopg
+
+    database = Database(fresh_postgres)
+    database.initialize()
+    database.close()
+    # A database created when these columns were INTEGER.
+    narrowed = {
+        "downloads": ("total_bytes", "downloaded_bytes"),
+        "local_models": ("size_bytes", "parameter_count"),
+        "runtime_jobs": ("total_bytes", "processed_bytes"),
+        "storage_moves": ("total_bytes", "copied_bytes", "verified_bytes"),
+    }
+    with psycopg.connect(fresh_postgres, autocommit=True) as connection:
+        for table, columns in narrowed.items():
+            for column in columns:
+                connection.execute(f"ALTER TABLE {table} ALTER COLUMN {column} TYPE INTEGER")
+
+    upgraded = Database(fresh_postgres)
+    upgraded.initialize()
+    upgraded.initialize()  # idempotent
+    with psycopg.connect(fresh_postgres) as connection:
+        types = {
+            (table, column): data_type
+            for table, column, data_type in connection.execute(
+                "SELECT table_name, column_name, data_type FROM information_schema.columns "
+                "WHERE table_schema = current_schema()"
+            ).fetchall()
+        }
+    for table, columns in narrowed.items():
+        for column in columns:
+            assert types[(table, column)] == "bigint", (table, column)
+    store_and_read_big_numbers(upgraded)
+    upgraded.close()

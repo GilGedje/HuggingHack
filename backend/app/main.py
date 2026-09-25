@@ -633,12 +633,9 @@ def health(request: Request) -> dict:
     """Anyone (and container health checks) learns whether the server is up; signed-in
     users also get what the web UI needs; server details are for settings.view."""
     settings.ensure_directories()
-    object_storage = storages.default.health()
-    result = {
-        "status": "ok" if object_storage["connected"] else "degraded",
-        "app": settings.app_name,
-        "version": settings.app_version,
-    }
+    # Checking the bucket lists objects in it, so only settings.view callers do;
+    # the container health check calls this every 30 seconds.
+    result = {"status": "ok", "app": settings.app_name, "version": settings.app_version}
     user = optional_user(request)
     if not user:
         return result
@@ -651,8 +648,10 @@ def health(request: Request) -> dict:
     }
     if not can(user, "settings.view"):
         return result
+    object_storage = storages.default.health()
     usage = shutil.disk_usage(settings.model_storage)
     return result | {
+        "status": "ok" if object_storage["connected"] else "degraded",
         "database_backend": database.backend,
         "storage": {
             "path": str(settings.model_storage),

@@ -146,6 +146,15 @@ RUNTIME_JOB_FIELDS = {
 
 
 ROLES = ("admin", "member", "viewer")
+# Columns holding byte counts or parameter counts, which pass 2**31 for large models.
+# SQLite integers are 64-bit already; PostgreSQL INTEGER is 32-bit, so older
+# PostgreSQL databases have these widened to BIGINT at start.
+BIG_NUMBER_COLUMNS = {
+    "downloads": ("total_bytes", "downloaded_bytes"),
+    "local_models": ("size_bytes", "parameter_count"),
+    "runtime_jobs": ("total_bytes", "processed_bytes"),
+    "storage_moves": ("total_bytes", "copied_bytes", "verified_bytes"),
+}
 USERS_COLUMNS = """
                     id TEXT PRIMARY KEY,
                     username TEXT NOT NULL UNIQUE,
@@ -187,25 +196,29 @@ OWNED_REPOSITORY_FIELDS = (
     "id", "owner_id", "repo_id", "description", "visibility", "status",
     "created_at", "updated_at", "organization_id",
 )
-# An organization admin acts as one only while their account is enabled and their
-# server role may create repositories; a Viewer's organization roles only read
-# (see effective_org_role). A WHERE fragment over `users`.
-ACTING_ORG_ADMIN = "users.disabled = 0 AND users.role IN ({})".format(
+# An organization Admin or Write role acts as one only while the account is enabled
+# and its server role may create repositories; a Viewer's organization roles only
+# read (see effective_org_role). A WHERE fragment over `users`.
+ORG_ROLE_ACTS = "users.disabled = 0 AND users.role IN ({})".format(
     ", ".join(f"'{role}'" for role, capabilities in ROLE_CAPABILITIES.items() if "repos.create" in capabilities)
 )
 # Who may see an uploaded repository, as a WHERE fragment over `owned_repositories`
 # that takes the viewing user's id three times. Models that are not uploads are
-# public, and server administrators see every repository, as they manage them all.
+# public; organization repositories are seen by every member, and private ones by
+# members whose Admin or Write role acts (ORG_ROLE_ACTS); server administrators see
+# every repository, as they manage them all.
 VISIBLE_TO_USER = """(
                     owned_repositories.id IS NULL
                     OR owned_repositories.visibility = 'public'
                     OR (owned_repositories.organization_id IS NULL
                         AND owned_repositories.owner_id = ?)
                     OR owned_repositories.organization_id IN (
-                        SELECT organization_id FROM organization_members
-                        WHERE user_id = ?
+                        SELECT organization_members.organization_id FROM organization_members
+                        JOIN users ON users.id = organization_members.user_id
+                        WHERE organization_members.user_id = ?
                           AND (owned_repositories.visibility = 'organization'
-                               OR role IN ('admin', 'write'))
+                               OR (organization_members.role IN ('admin', 'write')
+                                   AND """ + ORG_ROLE_ACTS + """))
                     )
                     OR EXISTS (
                         SELECT 1 FROM users
@@ -323,8 +336,8 @@ class Database:
                     repo_id TEXT NOT NULL,
                     revision TEXT NOT NULL,
                     status TEXT NOT NULL,
-                    total_bytes INTEGER NOT NULL DEFAULT 0,
-                    downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+                    total_bytes BIGINT NOT NULL DEFAULT 0,
+                    downloaded_bytes BIGINT NOT NULL DEFAULT 0,
                     progress REAL NOT NULL DEFAULT 0,
                     speed_bps REAL NOT NULL DEFAULT 0,
                     error TEXT,
@@ -343,7 +356,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS local_models (
                     repo_id TEXT PRIMARY KEY,
                     relative_path TEXT NOT NULL UNIQUE,
-                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    size_bytes BIGINT NOT NULL DEFAULT 0,
                     file_count INTEGER NOT NULL DEFAULT 0,
                     modified_at TEXT NOT NULL,
                     downloaded_at TEXT,
@@ -378,8 +391,8 @@ class Database:
                     runtime_model_name TEXT NOT NULL,
                     source_file TEXT,
                     status TEXT NOT NULL,
-                    total_bytes INTEGER NOT NULL DEFAULT 0,
-                    processed_bytes INTEGER NOT NULL DEFAULT 0,
+                    total_bytes BIGINT NOT NULL DEFAULT 0,
+                    processed_bytes BIGINT NOT NULL DEFAULT 0,
                     progress REAL NOT NULL DEFAULT 0,
                     message TEXT NOT NULL DEFAULT '',
                     error TEXT,
@@ -517,9 +530,9 @@ class Database:
                     status TEXT NOT NULL,
                     message TEXT NOT NULL DEFAULT '',
                     error TEXT,
-                    total_bytes INTEGER NOT NULL DEFAULT 0,
-                    copied_bytes INTEGER NOT NULL DEFAULT 0,
-                    verified_bytes INTEGER NOT NULL DEFAULT 0,
+                    total_bytes BIGINT NOT NULL DEFAULT 0,
+                    copied_bytes BIGINT NOT NULL DEFAULT 0,
+                    verified_bytes BIGINT NOT NULL DEFAULT 0,
                     file_count INTEGER NOT NULL DEFAULT 0,
                     active_reads INTEGER NOT NULL DEFAULT 0,
                     created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
@@ -647,7 +660,29 @@ class Database:
                 "DELETE FROM sessions WHERE expires_at <= ?",
                 (datetime.now(timezone.utc).isoformat(),),
             )
+            if self.backend == "postgresql":
+                self._widen_big_number_columns(connection)
         self._migrate_visibility()
+
+    def _widen_big_number_columns(self, connection: _PostgresConnection) -> None:
+        """Make byte and parameter counts BIGINT in PostgreSQL databases created
+        when they were INTEGER, which overflows past 2 GB or 2 billion parameters."""
+        for table, columns in BIG_NUMBER_COLUMNS.items():
+            narrow = {
+                row["name"]
+                for row in connection.execute(
+                    """
+                    SELECT column_name AS name
+                    FROM information_schema.columns
+                    WHERE table_schema = current_schema() AND table_name = ?
+                      AND data_type IN ('integer', 'smallint')
+                    """,
+                    (table,),
+                ).fetchall()
+            }
+            for column in columns:
+                if column in narrow:
+                    connection.execute(f"ALTER TABLE {table} ALTER COLUMN {column} TYPE BIGINT")
 
     def _migrate_visibility(self) -> None:
         """Move uploads from private/shared to private/organization/public.
@@ -2525,12 +2560,12 @@ class Database:
         return row["role"] if row else None
 
     def _organization_admins(self, connection: Any, organization_id: str) -> int:
-        """Admins who can act as one; see ACTING_ORG_ADMIN."""
+        """Admins who can act as one; see ORG_ROLE_ACTS."""
         row = connection.execute(
             "SELECT COUNT(*) AS count FROM organization_members "
             "JOIN users ON users.id = organization_members.user_id "
             "WHERE organization_members.organization_id = ? AND organization_members.role = 'admin' "
-            f"AND {ACTING_ORG_ADMIN}",
+            f"AND {ORG_ROLE_ACTS}",
             (organization_id,),
         ).fetchone()
         return int(row["count"])
@@ -2539,7 +2574,7 @@ class Database:
         """A member's role, and whether they act as an admin (1) or not (0)."""
         return connection.execute(
             "SELECT organization_members.role, "
-            f"CASE WHEN organization_members.role = 'admin' AND {ACTING_ORG_ADMIN} "
+            f"CASE WHEN organization_members.role = 'admin' AND {ORG_ROLE_ACTS} "
             "THEN 1 ELSE 0 END AS acting_admin "
             "FROM organization_members JOIN users ON users.id = organization_members.user_id "
             "WHERE organization_members.organization_id = ? AND organization_members.user_id = ?",
@@ -2622,11 +2657,11 @@ class Database:
                 JOIN organizations ON organizations.id = organization_members.organization_id
                 JOIN users ON users.id = organization_members.user_id
                 WHERE organization_members.user_id = ? AND organization_members.role = 'admin'
-                  AND {ACTING_ORG_ADMIN}
+                  AND {ORG_ROLE_ACTS}
                   AND (SELECT COUNT(*) FROM organization_members AS others
                        JOIN users ON users.id = others.user_id
                        WHERE others.organization_id = organization_members.organization_id
-                         AND others.role = 'admin' AND {ACTING_ORG_ADMIN}) = 1
+                         AND others.role = 'admin' AND {ORG_ROLE_ACTS}) = 1
                 ORDER BY LOWER(organizations.name)
                 """,
                 (user_id,),
