@@ -2832,6 +2832,10 @@ a.model-tree-name:hover { text-decoration: underline; text-underline-offset: 3px
 
 /* Profile pictures fill the circles that otherwise show initials. */
 :is(.model-monogram, .model-avatar, .account-avatar, .org-avatar, .namespace-avatar, .account-chip-avatar, .avatar-editor-preview) { overflow: hidden; }
+/* Behind a picture: white, never the initials' yellow, so transparent logos read as drawn. */
+:is(.model-monogram, .model-avatar, .account-avatar, .org-avatar, .namespace-avatar, .account-chip-avatar, .avatar-editor-preview):has(> .avatar-image) {
+  background: #fff;
+}
 .avatar-image {
   width: 100%; height: 100%; display: block; object-fit: cover; border-radius: inherit;
   animation: fade-in 260ms var(--ease-out) backwards;
