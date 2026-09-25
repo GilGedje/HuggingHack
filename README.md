@@ -526,10 +526,9 @@ The **Models** page filters by:
   gives one and roughly agrees with its weights (`Qwen3-8B-FP8` is 8B, even though it
   holds 8.19B parameters), and at its counted parameters otherwise. Both ends of the range
   are inclusive.
-- **Tasks:** Hugging Face task names, grouped as Text (Text Generation), Vision
-  (Image-Text-to-Text), Multimodal (Any-to-Any), Embedding (Feature Extraction, Sentence
-  Similarity), and Reranking (Text Ranking). Any other task in your library appears under
-  Other. The task comes from `pipeline_tag` in the model card.
+- **Tasks:** Hugging Face task names: Text Generation, Image-Text-to-Text, Any-to-Any,
+  Feature Extraction, Sentence Similarity, and Text Ranking, followed by any other task
+  your library has. The task comes from `pipeline_tag` in the model card.
 - **Precision:** BF16, FP8, or NVFP4, read at scan time from `quantization_config` in
   `config.json`, from ModelOpt's `hf_quant_config.json`, and otherwise from the dtype. Packed
   4-bit weights are counted as two parameters per byte, so NVFP4 models show their real size.
