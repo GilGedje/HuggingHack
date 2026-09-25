@@ -415,8 +415,8 @@ function ModelsPage({ onToast }: { onToast: ToastHandler }) {
                 : loading
                 ? 'Reading the local library…'
                 : models.length === libraryTotal
-                  ? `${models.length} models`
-                  : `${models.length} of ${libraryTotal} models shown`}
+                  ? `${models.length} model${models.length === 1 ? '' : 's'}`
+                  : `${models.length} of ${libraryTotal} model${libraryTotal === 1 ? '' : 's'} shown`}
             </span>
             <span>{formatBytes(libraryBytes)} stored locally</span>
           </div>
