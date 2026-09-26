@@ -198,7 +198,9 @@ Notes:
 - To let clients download straight from the bucket, see [Direct downloads](#direct-downloads).
 - HuggingHack keeps up to `DATABASE_POOL_SIZE` (default 10) PostgreSQL connections open
   and reuses them. Keep it below the server's `max_connections`, less what other clients
-  need.
+  need. With `CLUSTER_MODE` each server can hold up to twice that plus one (a second pool for
+  cluster locks, and the leader's own connection), so budget
+  `servers × (2 × DATABASE_POOL_SIZE + 1)`; see [SCALING.md](SCALING.md#running-several-replicas).
 - The other security settings (`ALLOWED_HOSTS`, `FORWARDED_ALLOW_IPS`, `API_DOCS_ENABLED`)
   are described in [Security settings](AIRGAPPED.md#security-settings).
 

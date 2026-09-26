@@ -278,7 +278,9 @@ uploads, and takes `Database.cluster_lock` for repository names, finalize and co
 
 Set on every server: `CLUSTER_MODE=true`, the same `DATABASE_URL` (PostgreSQL),
 `DEFAULT_STORAGE_TARGET` and `SYSTEM_STORAGE_TARGET` naming buckets, and a distinct
-`INSTANCE_ID` (the host name by default, which is the pod name under Kubernetes). A server
+`INSTANCE_ID` (the host name by default, which is the pod name under Kubernetes). Budget
+PostgreSQL connections at `servers × (2 × DATABASE_POOL_SIZE + 1)`: the query pool, a second
+pool of the same size for cluster locks, and the leader's own connection. A server
 that cannot share the library refuses to start and logs one sentence per reason:
 
 - `DATABASE_URL` is SQLite.
@@ -304,7 +306,8 @@ never overwrites it.
 Differences from a single server:
 - The local model cache is off: restore and evict answer 409 with a sentence and the buttons
   are hidden (the capability is turned off). Loading a model into a runtime needs that cache,
-  so it is refused in cluster mode until runtimes read from the bucket.
+  so `runtimes.use` is turned off too: **Send to runtime** and Admin → Runtimes are hidden
+  until runtimes read from the bucket.
 - Moves go between buckets only. The old copy is kept for 24 h after the switch, because
   downloads other servers are sending cannot be counted from the leader.
 - The sign-in throttle counts failures in the `login_attempts` table, so the limit is the same

@@ -446,8 +446,9 @@ def test_failed_sign_ins_count_across_servers(shared_url, tmp_path: Path):
 
 def test_cluster_mode_turns_off_the_local_cache_with_a_sentence(monkeypatch):
     monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, cluster_mode=True))
-    assert "library.cache" in main.disabled_capabilities()
-    status, detail = main.DISABLED_FEATURES["library.cache"]
-    assert status == 409 and "CLUSTER_MODE" in detail
+    assert {"library.cache", "runtimes.use"} <= main.disabled_capabilities()
+    for capability in ("library.cache", "runtimes.use"):
+        status, detail = main.DISABLED_FEATURES[capability]
+        assert status == 409 and "CLUSTER_MODE" in detail
     monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, cluster_mode=False))
-    assert "library.cache" not in main.disabled_capabilities()
+    assert not {"library.cache", "runtimes.use"} & main.disabled_capabilities()

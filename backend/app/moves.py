@@ -270,9 +270,12 @@ class MoveManager:
                 self._guarded(self._run, queued)
                 continue
             waiting = any(item["status"] in POST_SWITCH for item in pending)
-            # Other servers queue moves too, and cannot wake this one.
+            # Other servers queue moves too, and cannot wake this one. A cluster's
+            # draining moves wait out a grace period, not readers, so they are
+            # checked every 30 s rather than every second.
             idle = CLUSTER_POLL_SECONDS if cluster else 30
-            self._wake.wait(timeout=DRAIN_POLL_SECONDS if waiting else idle)
+            drain = 30 if cluster else DRAIN_POLL_SECONDS
+            self._wake.wait(timeout=drain if waiting else idle)
             self._wake.clear()
 
     def _guarded(self, step: Callable[[dict[str, Any]], Any], move: dict[str, Any]) -> None:

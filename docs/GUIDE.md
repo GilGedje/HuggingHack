@@ -102,6 +102,10 @@ or pick the model folder, then review and upload.
   browse. An interrupted upload keeps its progress: choose the same folder again under
   **Unfinished uploads** to resume from the server's confirmed offset. Two tabs never take
   over each other's running uploads.
+- For a bucket with [direct uploads](SERVE_FROM_S3.md#direct-uploads), the browser sends each
+  file in large parts straight to the bucket, several at a time, and resumes from the parts the
+  bucket already holds. Resume within 24 hours: after that, a file's unfinished parts are
+  discarded and it starts again (files already complete are kept).
 - Model files stay in model storage, never in the metadata database.
 
 | Visibility | Who can see it |
@@ -433,7 +437,9 @@ VLLM_AGENT_TOKEN=replace-with-the-same-long-random-secret-used-on-the-agent
   vLLM machine and set `remote_model_root` to that mount path. vLLM fixes its model at startup,
   so the agent stops the process it manages and starts `vllm serve` with the selected model;
   requests in flight are interrupted during a switch.
-- S3-only models must be restored to the local cache first.
+- S3-only models must be restored to the local cache first. Servers that share the library
+  (`CLUSTER_MODE`, see [SCALING.md](SCALING.md)) keep no local copies, so **Send to runtime**
+  is not offered there; point vLLM at `HF_ENDPOINT` instead.
 
 The job's progress shows on the model page and on **Admin → Runtimes**, where **Stop** ends an
 active job at once (the runtime may keep what it already received). A runtime that stops answering

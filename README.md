@@ -172,6 +172,7 @@ commands the site shows use the address other machines reach.
 | --- | --- |
 | Install on a network with no internet access | [Air-gapped setup guide](docs/AIRGAPPED.md) |
 | Keep models in S3 and metadata in PostgreSQL, with no lasting data on the server | [Serve from S3 and PostgreSQL](docs/SERVE_FROM_S3.md) |
+| Let clients pull and upload straight to the bucket, and run several servers behind one address | [Scaling](docs/SCALING.md) |
 | Switch from SQLite to PostgreSQL, or move an existing install | [Guide → PostgreSQL](docs/GUIDE.md#postgresql) |
 | Run it on a Synology, TrueNAS, or QNAP | [Guide → Run it on a NAS](docs/GUIDE.md#run-it-on-a-nas) |
 | Sign in with Authentik, Keycloak, Entra ID, or another OIDC provider | [Guide → Single sign-on](docs/GUIDE.md#single-sign-on-openid-connect) |

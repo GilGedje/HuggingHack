@@ -666,6 +666,11 @@ DISABLED_FEATURES = {
         "Servers sharing the library (CLUSTER_MODE) keep models in buckets only, "
         "so there is no local copy to restore or remove.",
     ),
+    "runtimes.use": (
+        409,
+        "Loading into a runtime needs a local copy of the model, which servers sharing "
+        "the library (CLUSTER_MODE) do not keep. Point the runtime at HF_ENDPOINT instead.",
+    ),
 }
 
 
@@ -673,7 +678,8 @@ def disabled_capabilities() -> frozenset[str]:
     """Capabilities for features this server has turned off."""
     disabled = set() if settings.hf_downloads_enabled else {"hub.download"}
     if settings.cluster_mode:
-        disabled.add("library.cache")
+        # Both need a copy of the model on this server's disk.
+        disabled.update({"library.cache", "runtimes.use"})
     return frozenset(disabled)
 
 

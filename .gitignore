@@ -30,3 +30,4 @@ backend/**/__pycache__/
 docker-compose.override.yml
 .playwright-mcp/
 .claude/worktrees/
+.DS_Store
