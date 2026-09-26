@@ -258,6 +258,7 @@ function HardwareCard({
       const result = await api.updateModelHardware(model.id, chosen)
       onSaved(result.hardware)
       edit(false)
+      onToast(result.hardware.length ? 'Hardware tags saved.' : 'Hardware tags cleared.')
     } catch (reason) {
       onToast(reason instanceof Error ? reason.message : 'Could not save the hardware tags.', 'error')
     } finally {
@@ -747,7 +748,7 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
       </header>
 
       <div className={section === 'card' ? 'model-page-body with-aside' : 'model-page-body'} ref={body}>
-        <main className="model-page-main">
+        <div className="model-page-main">
           {section === 'card' && (
             model.model_card ? (
               <>
@@ -804,7 +805,7 @@ export function ModelPage({ onToast }: { onToast: ToastHandler }) {
               files={ggufFiles}
             />
           )}
-        </main>
+        </div>
 
         {section === 'card' && (
           <aside className="model-page-aside" ref={aside}>

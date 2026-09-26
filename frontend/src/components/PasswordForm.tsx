@@ -11,11 +11,14 @@ const MIN_LENGTH = 12
  * resolving `false` (a declined confirmation) keeps them and says nothing.
  */
 export function PasswordForm({
+  username,
   askCurrent,
   submitLabel,
   doneMessage,
   onSubmit,
 }: {
+  /** Whose password this is, so password managers file the new one under the right account. */
+  username?: string
   askCurrent: boolean
   submitLabel: string
   doneMessage: string
@@ -57,6 +60,7 @@ export function PasswordForm({
 
   return (
     <form className="account-form" onSubmit={submit} onChange={() => setDone(false)}>
+      {username && <input type="text" autoComplete="username" value={username} readOnly hidden />}
       {askCurrent && (
         <label>
           Current password

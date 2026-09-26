@@ -91,7 +91,7 @@ function RepositoryRow({
             </span>
           )}
           {repository.size_bytes != null && <span>{formatBytes(repository.size_bytes)}</span>}
-          {repository.file_count != null && <span>{repository.file_count} files</span>}
+          {repository.file_count != null && <span>{repository.file_count} file{repository.file_count === 1 ? '' : 's'}</span>}
           <span>Updated {relativeTime(repository.updated_at)}</span>
         </div>
       </div>

@@ -127,6 +127,7 @@ function ProfileTab({ overview, onToast, onSaved }: { overview: AccountOverview;
               </div>
             </div>
             <PasswordForm
+              username={overview.user.username}
               askCurrent
               submitLabel="Change password"
               doneMessage={
