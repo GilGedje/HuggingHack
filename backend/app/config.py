@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -36,6 +37,14 @@ def _positive_int(name: str, default: int, maximum: int) -> int:
     except ValueError:
         return default
     return max(1, min(value, maximum))
+
+
+def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return max(minimum, min(value, maximum))
 
 
 def _boolean(name: str, default: bool) -> bool:
@@ -81,6 +90,10 @@ class Settings:
     runtime_targets_json: str = os.getenv("RUNTIME_TARGETS_JSON", "[]")
     runtime_workers: int = _positive_int("RUNTIME_WORKERS", 2, 8)
     runtime_api_token: str | None = os.getenv("RUNTIME_API_TOKEN") or None
+    # Several HuggingHack processes share one PostgreSQL database and the buckets
+    # (docs/SCALING.md, phase 3); each names itself so it can tell its own work apart.
+    cluster_mode: bool = _boolean("CLUSTER_MODE", False)
+    instance_id: str = (os.getenv("INSTANCE_ID") or "").strip()[:64] or socket.gethostname()[:64] or "hugginghack"
     s3_bucket: str | None = os.getenv("S3_BUCKET") or None
     s3_prefix: str = os.getenv("S3_PREFIX", "models").strip().strip("/")
     s3_endpoint_url: str | None = os.getenv("S3_ENDPOINT_URL") or None
@@ -92,6 +105,15 @@ class Settings:
     s3_verify_ssl: bool = _boolean("S3_VERIFY_SSL", True)
     s3_addressing_style: str = os.getenv("S3_ADDRESSING_STYLE", "auto").strip().lower()
     s3_storage_class: str | None = os.getenv("S3_STORAGE_CLASS") or None
+    # Direct transfers (docs/SCALING.md): clients move bytes to and from the bucket
+    # through short-lived signed links, signed for the endpoint clients can reach.
+    s3_public_endpoint_url: str | None = os.getenv("S3_PUBLIC_ENDPOINT_URL") or None
+    s3_ca_bundle: str | None = (os.getenv("S3_CA_BUNDLE") or "").strip() or None
+    s3_direct_downloads: bool = _boolean("S3_DIRECT_DOWNLOADS", False)
+    s3_presign_ttl_seconds: int = _bounded_int("S3_PRESIGN_TTL_SECONDS", 900, 60, 604800)
+    s3_direct_uploads: bool = _boolean("S3_DIRECT_UPLOADS", False)
+    s3_part_size_mb: int = _bounded_int("S3_PART_SIZE_MB", 64, 5, 5120)
+    s3_upload_presign_ttl_seconds: int = _bounded_int("S3_UPLOAD_PRESIGN_TTL_SECONDS", 3600, 60, 604800)
     s3_max_concurrency: int = _positive_int("S3_MAX_CONCURRENCY", 4, 32)
     s3_multipart_chunk_mb: int = _positive_int("S3_MULTIPART_CHUNK_MB", 64, 512)
     storage_targets_json: str = os.getenv("STORAGE_TARGETS_JSON", "[]")

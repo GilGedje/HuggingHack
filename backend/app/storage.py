@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 from uuid import uuid4
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from .config import Settings, repository_path, validate_repo_id
 from .indexer import (
@@ -33,6 +33,15 @@ MANIFEST_NAME = ".hugginghack.json"
 # the repository, so a scan never adopts them as a commit.
 PENDING_NAME = ".hugginghack-pending.json"
 TARGET_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+# The parts of a signed link that grant access; never logged or shown.
+SIGNED_QUERY = re.compile(r"((?:X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token|Signature|AWSAccessKeyId)=)[^&\s\"'<>]+")
+
+
+def content_disposition(filename: str) -> str:
+    """`attachment` with the name in both the plain and the RFC 5987 form."""
+    name = PurePosixPath(filename).name or "download"
+    plain = "".join(ch if 32 <= ord(ch) < 127 and ch not in '"\\' else "_" for ch in name)
+    return f"attachment; filename=\"{plain}\"; filename*=UTF-8''{quote(name, safe='')}"
 
 try:
     from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
@@ -77,6 +86,15 @@ class S3TargetConfig:
     verify_ssl: bool = True
     addressing_style: str = "auto"
     storage_class: str | None = None
+    # Direct transfers: signed links name public_endpoint_url, which must match a
+    # name on the endpoint's certificate; ca_bundle verifies a private CA.
+    public_endpoint_url: str | None = None
+    ca_bundle: str | None = None
+    direct_downloads: bool = False
+    presign_ttl_seconds: int = 900
+    direct_uploads: bool = False
+    part_size_mb: int = 64
+    upload_presign_ttl_seconds: int = 3600
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "S3TargetConfig":
@@ -95,6 +113,13 @@ class S3TargetConfig:
             verify_ssl=settings.s3_verify_ssl,
             addressing_style=settings.s3_addressing_style,
             storage_class=settings.s3_storage_class,
+            public_endpoint_url=settings.s3_public_endpoint_url,
+            ca_bundle=settings.s3_ca_bundle,
+            direct_downloads=settings.s3_direct_downloads,
+            presign_ttl_seconds=settings.s3_presign_ttl_seconds,
+            direct_uploads=settings.s3_direct_uploads,
+            part_size_mb=settings.s3_part_size_mb,
+            upload_presign_ttl_seconds=settings.s3_upload_presign_ttl_seconds,
         )
 
     @property
@@ -113,6 +138,13 @@ def _env_value(item: dict[str, Any], key: str) -> str | None:
     if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", name):
         raise ValueError(f"{key} must be an environment variable name.")
     return os.getenv(name) or None
+
+
+def _bounded(item: dict[str, Any], key: str, default: int, minimum: int, maximum: int, target_id: str) -> int:
+    value = item.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise ValueError(f"Storage target {target_id} {key} must be a whole number from {minimum} to {maximum}.")
+    return value
 
 
 def parse_storage_targets(raw: str) -> list[S3TargetConfig]:
@@ -159,6 +191,13 @@ def parse_storage_targets(raw: str) -> list[S3TargetConfig]:
             verify_ssl=bool(item.get("verify_ssl", True)),
             addressing_style=addressing_style,
             storage_class=item.get("storage_class") or None,
+            public_endpoint_url=item.get("public_endpoint_url") or None,
+            ca_bundle=item.get("ca_bundle") or None,
+            direct_downloads=bool(item.get("direct_downloads", False)),
+            presign_ttl_seconds=_bounded(item, "presign_ttl_seconds", 900, 60, 604800, target_id),
+            direct_uploads=bool(item.get("direct_uploads", False)),
+            part_size_mb=_bounded(item, "part_size_mb", 64, 5, 5120, target_id),
+            upload_presign_ttl_seconds=_bounded(item, "upload_presign_ttl_seconds", 3600, 60, 604800, target_id),
         )
         if bool(target.access_key_id) != bool(target.secret_access_key):
             raise ValueError(
@@ -219,6 +258,9 @@ def repository_files(root: Path) -> list[tuple[Path, str]]:
 
 
 class FilesystemModelStorage:
+    # Only buckets can hand clients signed links to their objects.
+    direct_downloads = False
+    direct_uploads = False
     backend = "filesystem"
     remote = False
     id = LOCAL_TARGET_ID
@@ -353,10 +395,18 @@ class S3ModelStorage(FilesystemModelStorage):
                 raise RuntimeError(
                     "S3 storage requires boto3. Install backend requirements first."
                 ) from error
+            verify: bool | str = target.verify_ssl
+            if target.ca_bundle:
+                if not Path(target.ca_bundle).is_file():
+                    raise ValueError(
+                        f"The CA bundle {target.ca_bundle} for storage target {target.id} does not exist. "
+                        "Mount the root CA's PEM file there or remove ca_bundle."
+                    )
+                verify = target.ca_bundle
             client_options: dict[str, Any] = {
                 "service_name": "s3",
                 "use_ssl": target.use_ssl,
-                "verify": target.verify_ssl,
+                "verify": verify,
                 "config": Config(
                     connect_timeout=3,
                     read_timeout=10,
@@ -401,6 +451,19 @@ class S3ModelStorage(FilesystemModelStorage):
                     ),
                 }
             )
+            # Signing happens offline, for the address clients use, which can differ
+            # from the one this server reaches the bucket at.
+            self.signing_client = boto3.client(
+                **{
+                    **client_options,
+                    "endpoint_url": target.public_endpoint_url or target.endpoint_url,
+                    "region_name": target.region or "us-east-1",
+                    "config": Config(
+                        signature_version="s3v4",
+                        s3={"addressing_style": target.addressing_style},
+                    ),
+                }
+            )
             chunk_bytes = settings.s3_multipart_chunk_mb * 1024**2
             transfer_config = TransferConfig(
                 multipart_threshold=chunk_bytes,
@@ -413,7 +476,11 @@ class S3ModelStorage(FilesystemModelStorage):
             self.health_client = client
         if not hasattr(self, "read_client"):
             self.read_client = client
+        if not hasattr(self, "signing_client"):
+            self.signing_client = client
         self.transfer_config = transfer_config
+        self.direct_downloads = target.direct_downloads
+        self.direct_uploads = target.direct_uploads
 
     def _prefix(self, value: str = "") -> str:
         parts = [part for part in (self.prefix, value.strip("/")) if part]
@@ -566,10 +633,25 @@ class S3ModelStorage(FilesystemModelStorage):
         }
 
     def redact(self, text: str) -> str:
-        """An error message without this target's credentials."""
+        """An error message without this target's credentials or link signatures."""
         for secret in self.target.secrets:
             text = text.replace(secret, "[redacted]")
-        return text
+        return SIGNED_QUERY.sub(r"\1[redacted]", text)
+
+    def _presign(self, operation: str, params: dict[str, Any], ttl: int) -> str:
+        return self.signing_client.generate_presigned_url(
+            operation, Params={"Bucket": self.bucket, **params}, ExpiresIn=ttl
+        )
+
+    def presigned_get(
+        self, repo_id: str, relative_path: str, *, filename: str | None = None, ttl: int | None = None
+    ) -> str:
+        """A short-lived link that lets whoever holds it GET one file of a repository,
+        with Range requests. With `filename`, browsers save it under that name."""
+        params: dict[str, Any] = {"Key": self._object_key(validate_repo_id(repo_id), relative_path)}
+        if filename:
+            params["ResponseContentDisposition"] = content_disposition(filename)
+        return self._presign("get_object", params, ttl or self.target.presign_ttl_seconds)
 
     def describe_error(self, error: Exception) -> str:
         """A sentence for people about a failed bucket request. botocore's own text

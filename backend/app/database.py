@@ -7,9 +7,10 @@ import sqlite3
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from .permissions import ROLE_CAPABILITIES
 
@@ -293,6 +294,9 @@ class Database:
         self._pool_size = max(1, pool_size)
         self._pool: Any = None
         self._pool_lock = threading.Lock()
+        self._lock_pool: Any = None
+        self._named_locks: dict[str, threading.Lock] = {}
+        self._named_locks_guard = threading.Lock()
 
     def _connection_pool(self) -> Any:
         """PostgreSQL connections, opened on first use and reused afterwards."""
@@ -315,12 +319,59 @@ class Database:
                 )
             return self._pool
 
+    def _locks_pool(self) -> Any:
+        """Connections that hold cluster locks, apart from the query pool, so work done
+        under a lock can still take query connections."""
+        with self._pool_lock:
+            if self._lock_pool is None:
+                if ConnectionPool is None:
+                    raise RuntimeError(
+                        "PostgreSQL support requires the 'psycopg[binary,pool]' dependency."
+                    )
+                self._lock_pool = ConnectionPool(
+                    self._database_url,
+                    min_size=0,
+                    max_size=self._pool_size,
+                    kwargs={"autocommit": True, **CONNECTION_OPTIONS},
+                    timeout=POOL_TIMEOUT_SECONDS,
+                    check=check_connection,
+                    name="hugginghack-locks",
+                    open=True,
+                )
+            return self._lock_pool
+
+    @contextmanager
+    def cluster_lock(self, key: str) -> Iterator[None]:
+        """One holder at a time for `key`, among the threads of this process and, on
+        PostgreSQL, every HuggingHack process sharing the database. Threads of one
+        process queue on an in-process lock first, so only one of them waits on the
+        database. The advisory lock belongs to its connection's session: if the
+        process dies, PostgreSQL releases it."""
+        with self._named_locks_guard:
+            local = self._named_locks.setdefault(key, threading.Lock())
+        with local:
+            if self.backend != "postgresql":
+                yield
+                return
+            with self._locks_pool().connection() as connection:
+                connection.execute("SELECT pg_advisory_lock(hashtextextended(%s, 0))", (key,))
+                try:
+                    yield
+                finally:
+                    try:
+                        connection.execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (key,))
+                    except psycopg.Error:
+                        # A broken connection has already lost the lock with its session.
+                        pass
+
     def close(self) -> None:
         """Close pooled PostgreSQL connections; the next query opens a new pool."""
         with self._pool_lock:
             pool, self._pool = self._pool, None
-        if pool is not None:
-            pool.close()
+            lock_pool, self._lock_pool = self._lock_pool, None
+        for each in (pool, lock_pool):
+            if each is not None:
+                each.close()
 
     def connect(self) -> sqlite3.Connection | _PostgresConnection:
         if self.backend == "postgresql":
