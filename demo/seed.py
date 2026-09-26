@@ -95,7 +95,13 @@ def direct_upload(base: str, params: dict, files: dict[str, Path]) -> None:
     for path, source in files.items():
         size = source.stat().st_size
         state = ok(client.post(f"{base}/begin", params=params, json={"path": path, "size": size}))
-        if state.get("direct") and state["part_count"]:
+        if not state.get("direct"):
+            # A repository on local disk takes the file in chunks through the server.
+            data = source.read_bytes()
+            ok(client.put(base, params={**params, "path": path}, content=data, headers={
+                "Upload-Offset": "0", "Upload-Length": str(len(data)), "Content-Type": "application/octet-stream"}))
+            continue
+        if state["part_count"]:
             links = ok(client.post(f"{base}/parts", params=params, json={"path": path, "parts": list(range(1, state["part_count"] + 1))}))
             data = source.read_bytes()
             for part in links["parts"]:
@@ -124,28 +130,41 @@ session = ok(client.post("/api/repos/changes", json={"repo_id": repo}))["id"]
 direct_upload(f"/api/repos/changes/{session}/files", {}, {"README.md": finetune / "README.md"})
 ok(client.post(f"/api/repos/changes/{session}/commit", json={"message": "Add evaluation results", "description": "Held-out intent and escalation sets."}))
 
+# ---- a commit on the quant: serving notes near the top of its card ------------------------
+card = WORK / "models" / "RedHat" / "Qwen3-0.6B-quantized.w4a16" / "README.md"
+text = card.read_text()
+notes = ("\n> **Serving notes (Acme AI):** runs on one L40 with vLLM 0.11, 8k context. "
+         "See the Config tab for the flags we use and the measured throughput.\n")
+edited = WORK / "seed" / "quant-README.md"
+edited.parent.mkdir(parents=True, exist_ok=True)
+edited.write_text(text.replace("# Qwen3-0.6B-quantized.w4a16\n", "# Qwen3-0.6B-quantized.w4a16\n" + notes, 1))
+session = ok(client.post("/api/repos/changes", json={"repo_id": "RedHat/Qwen3-0.6B-quantized.w4a16"}))["id"]
+direct_upload(f"/api/repos/changes/{session}/files", {}, {"README.md": edited})
+ok(client.post(f"/api/repos/changes/{session}/commit", json={
+    "message": "Add serving notes for the L40", "description": "What we run it with, and where the numbers are."}))
+
 # ---- deployment configs with results ------------------------------------------------------
 serve = """#!/bin/sh
-vllm serve Qwen/Qwen3-0.6B \\
+vllm serve RedHat/Qwen3-0.6B-quantized.w4a16 \\
   --max-model-len 8192 \\
   --gpu-memory-utilization 0.90{extra}
 """
 parent = None
 for message, extra, values in (
-    ("Baseline on one A100", "", {"output_tps": 1840, "per_user_tps": 57.5, "ttft_ms": 212, "ttft_p99_ms": 480, "tpot_ms": 17.4, "kv_cache_tokens": 310000}),
+    ("Baseline on one L40", "", {"output_tps": 1840, "per_user_tps": 57.5, "ttft_ms": 212, "ttft_p99_ms": 480, "tpot_ms": 17.4, "kv_cache_tokens": 310000}),
     ("More sequences and prefix caching", " \\\n  --max-num-seqs 256 \\\n  --enable-prefix-caching",
      {"output_tps": 2480, "per_user_tps": 77.5, "ttft_ms": 164, "ttft_p99_ms": 390, "tpot_ms": 13.9, "kv_cache_tokens": 310000}),
     ("FP8 KV cache", " \\\n  --max-num-seqs 256 \\\n  --enable-prefix-caching \\\n  --kv-cache-dtype fp8",
      {"output_tps": 2710, "per_user_tps": 84.7, "ttft_ms": 191, "ttft_p99_ms": 455, "tpot_ms": 12.6, "kv_cache_tokens": 620000}),
 ):
-    revision = ok(client.post("/api/library/configs", params={"repo_id": "Qwen/Qwen3-0.6B"}, json={
+    revision = ok(client.post("/api/library/configs", params={"repo_id": "RedHat/Qwen3-0.6B-quantized.w4a16"}, json={
         "parent_id": parent,
         "message": message,
         "files": [{"path": "serve.sh", "content": serve.format(extra=extra)}],
         "deletions": [],
         "results": {
             "values": {**values, "concurrency": 32, "input_tokens": 1024, "output_tokens": 256, "gpu_count": 1, "tp_size": 1},
-            "hardware": "a100", "vllm_version": "0.11.0", "custom": [], "notes": "",
+            "hardware": "l40", "vllm_version": "0.11.0", "custom": [], "notes": "",
         },
     }))
     parent = revision["id"]

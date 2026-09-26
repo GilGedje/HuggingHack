@@ -4,7 +4,7 @@
 # data/ or models/ themselves. See demo/README.md.
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
-work="${DEMO_WORK:-${TMPDIR:-/tmp}/hh-demo}"
+work="${DEMO_WORK:-/Users/Shared/hugginghack-demo}"
 port="${DEMO_PORT:-7870}"
 minio="${MINIO_URL:-http://127.0.0.1:9600}"
 export MINIO_KEY="${MINIO_KEY:-spikeadmin}" MINIO_SECRET="${MINIO_SECRET:-spike-secret-123}"
@@ -42,10 +42,10 @@ for bucket in ("demo-primary", "demo-archive"):
 PY
 
 echo "== the server on :$port"
-targets="[{\"id\":\"primary\",\"name\":\"NetApp primary\",\"bucket\":\"demo-primary\",\"prefix\":\"models\",\"endpoint_url\":\"$minio\",\"region\":\"us-east-1\",\"addressing_style\":\"path\",\"use_ssl\":false,\"access_key_env\":\"MINIO_KEY\",\"secret_key_env\":\"MINIO_SECRET\",\"direct_downloads\":true,\"direct_uploads\":true,\"part_size_mb\":8},{\"id\":\"archive\",\"name\":\"Archive bucket\",\"bucket\":\"demo-archive\",\"prefix\":\"models\",\"endpoint_url\":\"$minio\",\"region\":\"us-east-1\",\"addressing_style\":\"path\",\"use_ssl\":false,\"access_key_env\":\"MINIO_KEY\",\"secret_key_env\":\"MINIO_SECRET\"}]"
+targets="[{\"id\":\"primary\",\"name\":\"NetApp primary\",\"bucket\":\"demo-primary\",\"prefix\":\"models\",\"endpoint_url\":\"$minio\",\"region\":\"us-east-1\",\"addressing_style\":\"path\",\"use_ssl\":false,\"access_key_env\":\"MINIO_KEY\",\"secret_key_env\":\"MINIO_SECRET\",\"direct_downloads\":true,\"direct_uploads\":true,\"part_size_mb\":8,\"presign_ttl_seconds\":60},{\"id\":\"archive\",\"name\":\"Archive bucket\",\"bucket\":\"demo-archive\",\"prefix\":\"models\",\"endpoint_url\":\"$minio\",\"region\":\"us-east-1\",\"addressing_style\":\"path\",\"use_ssl\":false,\"access_key_env\":\"MINIO_KEY\",\"secret_key_env\":\"MINIO_SECRET\"}]"
 (cd "$repo" && env -u DATABASE_URL PYTHONPATH=backend MODEL_STORAGE="$work/models" DATA_DIR="$work/data" \
   ACCOUNTS_ENABLED=true STORAGE_TARGETS_JSON="$targets" DEFAULT_STORAGE_TARGET=primary \
-  PUBLIC_URL=http://127.0.0.1:$port \
+  PUBLIC_URL=http://hub.acme.internal \
   OIDC_ISSUER=http://auth.localhost:59090/application/o/hugginghack/ OIDC_CLIENT_ID=demo OIDC_PROVIDER_NAME=Authentik \
   "$python" -m uvicorn app.main:app --app-dir backend --port "$port" > "$work/server.log" 2>&1 &)
 for _ in $(seq 1 60); do curl -sf "http://127.0.0.1:$port/api/health" >/dev/null && break; sleep 1; done
@@ -62,7 +62,8 @@ root = Path(sys.argv[1])
 (root / "config.json").write_text(json.dumps({"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3", "torch_dtype": "bfloat16"}))
 (root / "README.md").write_text("---\nlicense: apache-2.0\npipeline_tag: text-generation\nbase_model: Qwen/Qwen3-0.6B\n"
                                 "base_model_relation: finetune\ntags: [sql]\n---\n# Qwen3-0.6B SQL\n\nText-to-SQL fine-tune.\n")
-count = 12_000_000
+# About 600 MB: long enough to watch the upload panel fill, a few seconds on a local bucket.
+count = 300_000_000
 header = json.dumps({"lm_head.weight": {"dtype": "BF16", "shape": [count], "data_offsets": [0, 2 * count]}}).encode()
 header += b" " * (-len(header) % 8)
 with (root / "model.safetensors").open("wb") as f:
@@ -72,12 +73,12 @@ PY
 echo "== real client output for the download scene"
 {
   echo '$ export HF_ENDPOINT=http://hub.acme.internal'
-  echo '$ hf download acme-ai/Qwen3-0.6B-support --local-dir ./support'
+  echo '$ hf download RedHat/Qwen3-0.6B-quantized.w4a16'
   HF_ENDPOINT="http://127.0.0.1:$port" HF_HOME="$work/hf" HF_HUB_DISABLE_TELEMETRY=1 \
-    "$repo/.venv/bin/hf" download acme-ai/Qwen3-0.6B-support --local-dir "$work/dl" 2>&1 | tr -d '\r' | grep -v "^$" | sed "s#$work/dl#./support#; s#127.0.0.1:$port#hub.acme.internal#g" | tail -4
-  echo '$ git clone http://hub.acme.internal/acme-ai/Qwen3-0.6B-support'
-  git clone "http://127.0.0.1:$port/acme-ai/Qwen3-0.6B-support" "$work/clone" 2>&1 | sed "s#$work/clone#Qwen3-0.6B-support#; s#127.0.0.1:$port#hub.acme.internal#g"
-  (cd "$work/clone" && echo '$ git log --oneline' && git log --oneline)
+    "$repo/.venv/bin/hf" download RedHat/Qwen3-0.6B-quantized.w4a16 2>&1 | tr -d '\r' | grep -v "^$" \
+    | sed -E "s#$work/hf#~/.cache/huggingface#g; s#127.0.0.1:$port#hub.acme.internal#g; s#/private/var[^ ]*hh-demo/hf#~/.cache/huggingface#g" | tail -3
+  echo '$ ls ~/.cache/huggingface/hub/models--RedHat--Qwen3-0.6B-quantized.w4a16/snapshots/*/'
+  ls "$work"/hf/hub/models--RedHat--Qwen3-0.6B-quantized.w4a16/snapshots/*/ | tr '\n' ' '; echo
 } > "$work/terminal.txt"
 cat "$work/terminal.txt"
 echo "Ready: http://127.0.0.1:$port (gil / ${DEMO_PASSWORD:-demo-password-2026}); work folder $work"
