@@ -143,6 +143,8 @@ class AuthService:
         display_name: str,
         password: str,
         role: str = "member",
+        *,
+        first: bool = False,
     ) -> dict[str, Any]:
         normalized = normalize_username(username)
         if normalized in RESERVED_NAMESPACES:
@@ -162,7 +164,8 @@ class AuthService:
                 "role": role,
                 "created_at": timestamp,
                 "updated_at": timestamp,
-            }
+            },
+            first=first,
         )
 
     def create_owner(
@@ -171,7 +174,7 @@ class AuthService:
         with self._setup_lock:
             if self.database.count_users() != 0:
                 raise ValueError("The owner account already exists.")
-            return self.create_user(username, display_name, password, role="admin")
+            return self.create_user(username, display_name, password, role="admin", first=True)
 
     def authenticate(self, username: str, password: str, client: str) -> dict[str, Any] | None:
         """The account these credentials sign in to, or None. `client` is the

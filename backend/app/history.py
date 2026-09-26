@@ -51,7 +51,12 @@ class RepoHistory:
         self._locks: dict[str, threading.Lock] = {}
         self._guard = threading.Lock()
 
-    def _lock(self, repo_id: str) -> threading.Lock:
+    def _lock(self, repo_id: str) -> Any:
+        """Commits of one repository are recorded one at a time, across every
+        HuggingHack process sharing the database, so none is lost or reordered."""
+        cluster_lock = getattr(self.database, "cluster_lock", None)
+        if cluster_lock is not None:
+            return cluster_lock(f"history:{repo_id}")
         with self._guard:
             return self._locks.setdefault(repo_id, threading.Lock())
 

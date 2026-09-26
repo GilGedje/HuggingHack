@@ -364,6 +364,20 @@ class Database:
                         # A broken connection has already lost the lock with its session.
                         pass
 
+    @contextmanager
+    def _guarded(self, key: str = "accounts") -> Iterator[Any]:
+        """One transaction that no other writer guarded by `key` runs alongside: in
+        this process through the write lock, and on PostgreSQL through a
+        transaction-scoped advisory lock taken on the same connection, so checks such
+        as "the last administrator stays" hold across every process. It needs no
+        extra connection and is released when the transaction ends."""
+        with self._write_lock, self.connect() as connection:
+            if self.backend == "postgresql":
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", (f"hugginghack:{key}",)
+                )
+            yield connection
+
     def close(self) -> None:
         """Close pooled PostgreSQL connections; the next query opens a new pool."""
         with self._pool_lock:
@@ -1005,22 +1019,29 @@ class Database:
     def namespace_taken(self, name: str) -> bool:
         """True when a user or organization already uses this name, ignoring case."""
         with self.connect() as connection:
-            for table, column in (("users", "username"), ("organizations", "name")):
-                row = connection.execute(
-                    f"SELECT 1 FROM {table} WHERE LOWER({column}) = LOWER(?)", (name,)
-                ).fetchone()
-                if row:
-                    return True
+            return self._namespace_taken(connection, name)
+
+    @staticmethod
+    def _namespace_taken(connection: Any, name: str) -> bool:
+        for table, column in (("users", "username"), ("organizations", "name")):
+            row = connection.execute(
+                f"SELECT 1 FROM {table} WHERE LOWER({column}) = LOWER(?)", (name,)
+            ).fetchone()
+            if row:
+                return True
         return False
 
-    def create_user(self, record: dict[str, Any]) -> dict[str, Any]:
+    def create_user(self, record: dict[str, Any], *, first: bool = False) -> dict[str, Any]:
+        """Insert an account. With `first`, only while there is none (the owner)."""
         record = {
             "email": None,
             "auth_provider": "local",
             "external_subject": None,
             **record,
         }
-        with self._write_lock, self.connect() as connection:
+        with self._guarded() as connection:
+            if first and connection.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+                raise ValueError("The owner account already exists.")
             if connection.execute(
                 "SELECT 1 FROM organizations WHERE LOWER(name) = LOWER(?)", (record["username"],)
             ).fetchone():
@@ -1177,8 +1198,13 @@ class Database:
         self, user_id: str, changes: dict[str, Any]
     ) -> dict[str, Any] | None:
         """Update a user unless it would leave no active administrator."""
-        with self._write_lock:
-            current = self.get_user(user_id, include_secret=False)
+        unknown = set(changes) - self.USER_FIELDS
+        if unknown:
+            raise ValueError(f"Unknown user fields: {sorted(unknown)}")
+        with self._guarded() as connection:
+            current = connection.execute(
+                "SELECT role, disabled FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
             if not current:
                 return None
             role = changes.get("role", current["role"])
@@ -1186,25 +1212,36 @@ class Database:
             if current["role"] == "admin" and not current["disabled"] and (
                 role != "admin" or disabled
             ):
-                if self.count_active_admins() <= 1:
+                if self._active_admins(connection) <= 1:
                     raise ValueError("At least one active administrator is required.")
-            return self.update_user(user_id, **changes)
+            if changes:
+                assignments = ", ".join(f"{key} = :{key}" for key in changes)
+                connection.execute(
+                    f"UPDATE users SET {assignments} WHERE id = :user_id",
+                    {**changes, "user_id": user_id},
+                )
+        return self.get_user(user_id, include_secret=False)
+
+    @staticmethod
+    def _active_admins(connection: Any) -> int:
+        row = connection.execute(
+            "SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND disabled = 0"
+        ).fetchone()
+        return int(row["count"])
 
     def count_active_admins(self) -> int:
         with self.connect() as connection:
-            row = connection.execute(
-                "SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND disabled = 0"
-            ).fetchone()
-        return int(row["count"])
+            return self._active_admins(connection)
 
     def delete_user(self, user_id: str) -> None:
-        with self._write_lock:
-            user = self.get_user(user_id, include_secret=False)
+        with self._guarded() as connection:
+            user = connection.execute(
+                "SELECT role, disabled FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
             if user and user["role"] == "admin" and not user["disabled"]:
-                if self.count_active_admins() <= 1:
+                if self._active_admins(connection) <= 1:
                     raise ValueError("At least one active administrator is required.")
-            with self.connect() as connection:
-                connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
 
     def update_user_password(
         self, user_id: str, password_hash: str, updated_at: str
@@ -2523,20 +2560,19 @@ class Database:
     # Organizations share one namespace with usernames.
 
     def create_organization(self, record: dict[str, Any]) -> dict[str, Any]:
-        with self._write_lock:
-            if self.namespace_taken(record["name"]):
+        with self._guarded() as connection:
+            if self._namespace_taken(connection, record["name"]):
                 raise ValueError("That name is already used by a user or organization.")
-            with self.connect() as connection:
-                connection.execute(
-                    """
-                    INSERT INTO organizations (
-                        id, name, display_name, description, created_at, updated_at
-                    ) VALUES (
-                        :id, :name, :display_name, :description, :created_at, :updated_at
-                    )
-                    """,
-                    record,
+            connection.execute(
+                """
+                INSERT INTO organizations (
+                    id, name, display_name, description, created_at, updated_at
+                ) VALUES (
+                    :id, :name, :display_name, :description, :created_at, :updated_at
                 )
+                """,
+                record,
+            )
         return self.get_organization(record["name"])
 
     def get_organization(self, name: str) -> dict[str, Any] | None:
@@ -2721,7 +2757,7 @@ class Database:
         """Add or change a member; the last acting organization admin stays unless
         `force`. An admin row held by a disabled account or a Viewer does not count,
         so such an organization can always be given a new admin."""
-        with self._write_lock, self.connect() as connection:
+        with self._guarded() as connection:
             current = self._membership(connection, organization_id, user_id)
             if (
                 current
@@ -2749,7 +2785,7 @@ class Database:
     def remove_organization_member(
         self, organization_id: str, user_id: str, *, force: bool = False
     ) -> bool:
-        with self._write_lock, self.connect() as connection:
+        with self._guarded() as connection:
             current = self._membership(connection, organization_id, user_id)
             if not current:
                 return False

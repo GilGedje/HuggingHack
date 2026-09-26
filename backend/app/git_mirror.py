@@ -111,9 +111,24 @@ class GitMirrors:
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
 
-    def _lock(self, repo_id: str) -> threading.Lock:
+    def _lock(self, repo_id: str) -> Any:
+        """One build of a repository's mirror at a time, across every HuggingHack
+        process sharing the database: two servers building separately would give
+        the same files two different commits, and `git pull` would stop working."""
+        cluster_lock = getattr(getattr(self.repositories, "database", None), "cluster_lock", None)
+        if cluster_lock is not None:
+            return cluster_lock(f"git-mirror:{repo_id}")
         with self._locks_guard:
             return self._locks.setdefault(repo_id, threading.Lock())
+
+    def _current(self, root: Path, sha: str) -> Mirror | None:
+        """The mirror on this server's disk, when it matches the repository."""
+        if self._metadata_sha(root) != sha:
+            return None
+        mirror = self._load(root)
+        # Mirrors built before empty files stayed out of LFS are rebuilt
+        # on top of themselves, so existing clones still fast-forward.
+        return mirror if mirror and EMPTY_OID not in mirror.lfs else None
 
     def _path(self, repo_id: str) -> Path:
         owner, name = repo_id.split("/", 1)
@@ -143,15 +158,18 @@ class GitMirrors:
         """Return an up-to-date mirror, rebuilding it when any file changed."""
         snapshot = self.repositories.snapshot(repo_id, user)
         root = self._path(snapshot.repo_id)
+        # Most pulls find an up-to-date mirror and need no lock.
+        mirror = self._current(root, snapshot.sha)
+        if mirror is not None:
+            return mirror
         with self._lock(snapshot.repo_id):
-            if not (root / METADATA_NAME).exists():
+            # In a cluster another server may have built a newer mirror since this one
+            # last did; every server builds on top of the one kept in the system folder.
+            if not (root / METADATA_NAME).exists() or self.repositories.settings.cluster_mode:
                 self._restore(snapshot.repo_id, root)
-            if self._metadata_sha(root) == snapshot.sha:
-                mirror = self._load(root)
-                # Mirrors built before empty files stayed out of LFS are rebuilt
-                # on top of themselves, so existing clones still fast-forward.
-                if mirror and EMPTY_OID not in mirror.lfs:
-                    return mirror
+            mirror = self._current(root, snapshot.sha)
+            if mirror is not None:
+                return mirror
             mirror = self._build(snapshot, root)
             self._persist(snapshot.repo_id, root)
             return mirror
