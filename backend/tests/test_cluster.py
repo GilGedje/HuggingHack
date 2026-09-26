@@ -452,3 +452,52 @@ def test_cluster_mode_turns_off_the_local_cache_with_a_sentence(monkeypatch):
         assert status == 409 and "CLUSTER_MODE" in detail
     monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, cluster_mode=False))
     assert not {"library.cache", "runtimes.use"} & main.disabled_capabilities()
+
+
+def test_runtime_routes_refuse_with_a_sentence_in_cluster_mode(monkeypatch, tmp_path: Path):
+    from fastapi.testclient import TestClient
+
+    database = Database(tmp_path / "hub.sqlite3")
+    database.initialize()
+    monkeypatch.setattr(main, "database", database)
+    auth = AuthService(main.settings, database)
+    auth.create_user("owner", "Owner", "correct horse battery", "admin")
+    monkeypatch.setattr(main, "auth", auth)
+    token = {"Authorization": "Bearer runtime-automation-token"}
+    monkeypatch.setattr(main, "settings", dataclasses.replace(main.settings, runtime_api_token="runtime-automation-token"))
+    client = TestClient(main.app)
+    assert client.get("/api/runtimes", headers=token).status_code == 200
+    monkeypatch.setattr(
+        main, "settings",
+        dataclasses.replace(main.settings, cluster_mode=True, runtime_api_token="runtime-automation-token"),
+    )
+    for method, path in (("get", "/api/runtimes"), ("get", "/api/runtime-jobs"), ("post", "/api/runtimes/any/load")):
+        answer = getattr(client, method)(path, headers=token, **({"json": {"repo_id": "a/b", "runtime_model_name": "x"}} if method == "post" else {}))
+        assert answer.status_code == 409, path
+        assert "CLUSTER_MODE" in answer.json()["detail"]
+    # Who asks is still checked first: a wrong token or no one learns nothing about the setup.
+    assert client.get("/api/runtimes", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert client.get("/api/runtimes").status_code == 401
+
+
+def test_abandoned_uploads_are_swept_hourly_by_the_leader_only(monkeypatch):
+    calls = []
+    leader = {"now": False}
+    monkeypatch.setattr(main, "SWEEP_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(main.uploads, "sweep_stale_uploads", lambda: calls.append(1))
+    monkeypatch.setattr(main.cluster, "is_leader", lambda: leader["now"])
+    main.sweep_stop.clear()
+    worker = threading.Thread(target=main.sweep_abandoned_uploads_forever, daemon=True)
+    worker.start()
+    try:
+        time.sleep(0.1)
+        assert calls == []  # a follower leaves it to the leader
+        leader["now"] = True
+        deadline = time.time() + 2
+        while not calls and time.time() < deadline:
+            time.sleep(0.01)
+        assert calls
+    finally:
+        main.sweep_stop.set()
+        worker.join(2)
+    assert not worker.is_alive()

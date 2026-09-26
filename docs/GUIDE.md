@@ -104,8 +104,10 @@ or pick the model folder, then review and upload.
   over each other's running uploads.
 - For a bucket with [direct uploads](SERVE_FROM_S3.md#direct-uploads), the browser sends each
   file in large parts straight to the bucket, several at a time, and resumes from the parts the
-  bucket already holds. Resume within 24 hours: after that, a file's unfinished parts are
-  discarded and it starts again (files already complete are kept).
+  bucket already holds. Resume within 24 hours: HuggingHack checks every hour for uploads
+  nobody touched for a day. A new model's unfinished files then start again (its finished
+  files are kept); an **Upload changes** session is discarded as a whole, and the published
+  model stays as it was.
 - Model files stay in model storage, never in the metadata database.
 
 | Visibility | Who can see it |

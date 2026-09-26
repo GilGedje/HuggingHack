@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import base64
 import errno
 import hashlib
@@ -268,6 +269,23 @@ def start_cluster() -> None:
     cluster.start()
 
 
+# Direct uploads nobody touched for STALE_CHANGE_SECONDS are given up. The leader (or a
+# single server) looks for them this often, on a thread of its own so a slow bucket
+# never holds up the cluster's heartbeats.
+SWEEP_INTERVAL_SECONDS = 3600
+sweep_stop = threading.Event()
+
+
+def sweep_abandoned_uploads_forever() -> None:
+    while not sweep_stop.wait(SWEEP_INTERVAL_SECONDS):
+        if not cluster.is_leader():
+            continue
+        try:
+            uploads.sweep_stale_uploads()
+        except Exception:
+            logger.exception("Could not clear abandoned uploads")
+
+
 def prepare_system_folder() -> None:
     """Check SYSTEM_STORAGE_TARGET, then move older local site files into the system
     folder. An unreachable bucket leaves them where they are until the next start."""
@@ -311,7 +329,10 @@ async def lifespan(_: FastAPI):
         startup_scan.add_done_callback(log_startup_scan)
     if settings.hf_downloads_enabled:
         downloads.resume_unfinished()
+    sweep_stop.clear()
+    threading.Thread(target=sweep_abandoned_uploads_forever, name="upload-sweeper", daemon=True).start()
     yield
+    sweep_stop.set()
     cluster.stop()
     downloads.shutdown()
     runtimes.shutdown()
@@ -2699,22 +2720,30 @@ def runtime_api_principal(request: Request) -> dict[str, Any] | None:
     return {"id": None, "role": "runtime", "capabilities": {"runtimes.use"}, "runtime_api": True}
 
 
+def refuse_disabled_runtimes() -> None:
+    """Runtime routes check roles themselves (the automation token has no account),
+    so they also refuse here when this server has runtimes turned off."""
+    if "runtimes.use" in disabled_capabilities():
+        status_code, detail = DISABLED_FEATURES["runtimes.use"]
+        raise HTTPException(status_code=status_code, detail=detail)
+
+
 def require_runtime_reader(request: Request) -> dict[str, Any]:
-    principal = runtime_api_principal(request)
-    if principal:
-        return principal
-    user = require_user(request)
-    require_runtime_admin(user)
-    return user
+    principal = runtime_api_principal(request) or require_user(request)
+    refuse_disabled_runtimes()
+    if not principal.get("runtime_api"):
+        require_runtime_admin(principal)
+    return principal
 
 
 def require_runtime_writer(request: Request) -> dict[str, Any]:
     principal = runtime_api_principal(request)
-    if principal:
-        return principal
-    user = require_write_user(request, require_user(request))
-    require_runtime_admin(user)
-    return user
+    if not principal:
+        principal = require_write_user(request, require_user(request))
+    refuse_disabled_runtimes()
+    if not principal.get("runtime_api"):
+        require_runtime_admin(principal)
+    return principal
 
 
 RuntimeReader = Annotated[dict[str, Any], Depends(require_runtime_reader)]

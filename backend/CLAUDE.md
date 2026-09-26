@@ -219,7 +219,8 @@ mirrored in `frontend/src/uploadPlan.ts` `isRecorded`, so change both together.
   of a repository**: `_begin_change`, `sync_repository`'s cleanup, `_repository_objects` (so
   listings, restores, `object_files` for moves) and `discover_repositories` all skip them; keep
   it that way in anything new that lists a prefix. `sweep_stale_uploads` (run by the library
-  scan) aborts uploads untouched for `STALE_CHANGE_SECONDS`. `main.CONTENT_SECURITY_POLICY`
+  scan, and hourly by `main.sweep_abandoned_uploads_forever` on the leader or a single server, on
+  its own thread so it never delays heartbeats) aborts uploads untouched for `STALE_CHANGE_SECONDS`. `main.CONTENT_SECURITY_POLICY`
   adds each direct-upload bucket's public origin to `connect-src` (`direct_upload_origins`).
 
 **HTTP security (main.py)**
