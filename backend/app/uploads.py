@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("hugginghack")
 SLUG_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 RESERVED_FILENAMES = {".hugginghack.json"}
+RESERVED_PREFIX = ".hugginghack"
 RESERVED_PARTS = {".git", ".cache", "__pycache__"}
 PART_SUFFIX = ".hugginghack-part"
 STAGING_DIRECTORY = ".hugginghack-staging"
@@ -99,6 +100,9 @@ def validate_upload_path(value: str) -> PurePosixPath:
         or any(part in {"", ".", ".."} for part in path.parts)
         or any(part in RESERVED_PARTS for part in path.parts)
         or path.name in RESERVED_FILENAMES
+        # HuggingHack's own records live beside the files: the manifest, the pending
+        # record, the change area and staging. Nobody may write or delete them.
+        or any(part.startswith(RESERVED_PREFIX) for part in path.parts)
         or any(path.name.endswith(suffix) for suffix in PART_SUFFIXES)
     ):
         raise ValueError("Upload path is invalid or reserved.")

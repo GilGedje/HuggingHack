@@ -347,10 +347,19 @@ def test_direct_upload_requests_check_who_asks_and_what_they_ask(direct):
     too_big = owner.post(f"{base}/begin", params=params, json={"path": "huge.bin", "size": 2 * 1024**3})
     assert too_big.status_code == 400 and too_big.json()["detail"] == "One file cannot exceed 1 GB."
     assert owner.post(f"{base}/begin", params=params, json={"path": "../escape", "size": 1}).status_code == 400
+    # HuggingHack's own records beside the files can never be written: a crafted manifest
+    # or pending record would change what the next scan believes about the repository.
+    for reserved in (".hugginghack.json", ".hugginghack-pending.json", ".hugginghack-changes/0/x.bin", "sub/.hugginghack-staging/y"):
+        refused = owner.post(f"{base}/begin", params=params, json={"path": reserved, "size": 1})
+        assert refused.status_code == 400, reserved
+        assert reserved.split("/")[-1] not in str(direct["fakes"]["grid"].objects)
     assert owner.post(f"{base}/begin", params=params, json={"path": "a.bin", "size": -1}).status_code == 422
     # Links only for parts the file has, and only for a started file.
     assert owner.post(f"{base}/parts", params=params, json={"path": "model.safetensors", "parts": [1]}).status_code == 404
     owner.post(f"{base}/begin", params=params, json=body)
+    # Every step checks who asks, not only the first.
+    assert member.post(f"{base}/parts", params=params, json={"path": "model.safetensors", "parts": [1]}).status_code == 404
+    assert member.post(f"{base}/complete", params=params, json={"path": "model.safetensors"}).status_code in {404, 422}
     wrong = owner.post(f"{base}/parts", params=params, json={"path": "model.safetensors", "parts": [4]})
     assert wrong.status_code == 400 and wrong.json()["detail"] == "Ask for 1 to 100 parts numbered 1 to 3."
     assert owner.post(f"{base}/parts", params=params, json={"path": "model.safetensors", "parts": list(range(1, 102))}).status_code == 422

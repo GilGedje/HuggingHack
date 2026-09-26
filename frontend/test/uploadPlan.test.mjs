@@ -40,6 +40,10 @@ test('missing essentials are reported, and only top-level files count', () => {
 
 test('names the server refuses are skipped, as validate_upload_path refuses them', () => {
   assert.equal(isSkipped('weights.bin.hugginghack-s3-part'), true)
+  assert.equal(isSkipped('.hugginghack-pending.json'), true)
+  assert.equal(isSkipped('.hugginghack-changes/0123/model.bin'), true)
+  assert.equal(isSkipped('sub/.hugginghack-staging/x'), true)
+  assert.equal(isSkipped('.gitattributes'), false)
   assert.equal(isSkipped('new\nline.txt'), true)
   assert.equal(isSkipped('tab\there/config.json'), true)
   assert.equal(isSkipped('bell\u007f.txt'), true)

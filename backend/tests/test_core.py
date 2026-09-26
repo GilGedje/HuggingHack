@@ -616,6 +616,9 @@ def test_chunked_upload_is_confined_owned_and_indexed(tmp_path: Path):
         "/absolute/file",
         ".git/config",
         ".hugginghack.json",
+        ".hugginghack-pending.json",
+        ".hugginghack-changes/0123/model.bin",
+        "sub/.hugginghack-staging/x.bin",
         # Hidden once stored, or impossible to request by name.
         "w.bin.hugginghack-part",
         "w.bin.hugginghack-s3-part",

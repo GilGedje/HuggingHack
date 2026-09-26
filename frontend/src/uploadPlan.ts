@@ -41,6 +41,8 @@ export function isSkipped(path: string): boolean {
   return (
     parts.slice(0, -1).some((part) => SKIPPED_FOLDERS.has(part)) ||
     SKIPPED_FILES.has(name) ||
+    // HuggingHack's own records (manifest, pending record, change area); the server refuses them.
+    parts.some((part) => part.startsWith('.hugginghack')) ||
     PART_SUFFIXES.some((suffix) => name.endsWith(suffix)) ||
     CONTROL_CHARACTERS.test(path)
   )
