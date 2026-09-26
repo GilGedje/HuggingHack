@@ -48,7 +48,7 @@ k create namespace "$ns" --dry-run=client -o yaml | k apply -f - >/dev/null
 k label namespace "$ns" --overwrite pod-security.kubernetes.io/enforce=restricted pod-security.kubernetes.io/warn=restricted >/dev/null
 
 echo "== install the umbrella fixture (2 replicas, CLUSTER_MODE)"
-h dependency build "$here/umbrella-fixture" >/dev/null
+h dependency update "$here/umbrella-fixture" >/dev/null
 pg_args=()
 if [ "${PG_MODE:-chart}" = external ]; then
   pg_args=(--set hugginghack.postgresql.enabled=false

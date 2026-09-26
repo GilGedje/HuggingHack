@@ -83,7 +83,7 @@ route:
   enabled: true
   host: $hub
 EOF
-h dependency build "$here/umbrella-fixture" >/dev/null
+h dependency update "$here/umbrella-fixture" >/dev/null
 h upgrade --install hh "$here/umbrella-fixture" -n "$ns" -f "$work/route-values.yaml" --wait --timeout 6m >/dev/null
 k -n "$ns" get pods -l app.kubernetes.io/name=hugginghack -o wide | awk '{print $1, $2, $3, $6}'
 

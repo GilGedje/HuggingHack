@@ -32,10 +32,18 @@ RUN groupadd --gid 1000 hugginghack \
        --shell /usr/sbin/nologin hugginghack \
     && mkdir -p /models /data \
     && chown 1000:0 /models /data \
-    && chmod 775 /models /data
+    && chmod 775 /models /data \
+    # No setuid or setgid programs (su, passwd, mount, …): nothing in the image can
+    # become root, whatever the pod's securityContext says.
+    && find / -xdev -perm /6000 -type f -exec chmod a-s {} +
 USER 1000:1000
 
+# docker buildx build --build-arg VERSION=… --build-arg REVISION=$(git rev-parse --short HEAD)
+ARG VERSION=""
+ARG REVISION=""
 LABEL org.opencontainers.image.title="HuggingHack" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.description="Self-hosted Hugging Face-style model hub for air-gapped networks" \
       org.opencontainers.image.source="https://github.com/GilGedje/HuggingHack" \
       io.k8s.display-name="HuggingHack" \

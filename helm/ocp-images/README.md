@@ -25,7 +25,7 @@ the commands below. This folder keeps the recipe and, locally, the files.
 ## Build (on a connected machine, any architecture)
 
 ```bash
-VERSION=1.3.0                      # the app version (backend/app/config.py, Chart.yaml appVersion)
+VERSION=1.3.1                      # the app version (backend/app/config.py, Chart.yaml appVersion)
 docker buildx build --platform linux/amd64 -t hugginghack:$VERSION --load .
 docker save hugginghack:$VERSION | gzip -6 > helm/ocp-images/hugginghack-$VERSION-linux-amd64.tar.gz
 (cd helm/ocp-images && shasum -a 256 hugginghack-$VERSION-linux-amd64.tar.gz > hugginghack-$VERSION-linux-amd64.tar.gz.sha256)
@@ -37,14 +37,14 @@ emulation on an ARM Mac.
 ## Load into the internal registry (offline side)
 
 ```bash
-shasum -a 256 -c hugginghack-1.3.0-linux-amd64.tar.gz.sha256
+shasum -a 256 -c hugginghack-1.3.1-linux-amd64.tar.gz.sha256
 # with podman or docker
-podman load -i hugginghack-1.3.0-linux-amd64.tar.gz
-podman tag hugginghack:1.3.0 registry.internal/hugginghack/hugginghack:1.3.0
-podman push registry.internal/hugginghack/hugginghack:1.3.0
+podman load -i hugginghack-1.3.1-linux-amd64.tar.gz
+podman tag hugginghack:1.3.1 registry.internal/hugginghack/hugginghack:1.3.1
+podman push registry.internal/hugginghack/hugginghack:1.3.1
 # or without a container engine
-skopeo copy docker-archive:hugginghack-1.3.0-linux-amd64.tar.gz \
-  docker://registry.internal/hugginghack/hugginghack:1.3.0
+skopeo copy docker-archive:hugginghack-1.3.1-linux-amd64.tar.gz \
+  docker://registry.internal/hugginghack/hugginghack:1.3.1
 ```
 
 Then set `image.repository` / `image.tag` in the umbrella values (see `../README.md`). With

@@ -75,8 +75,8 @@ has the exact commands and a checked archive. Add
 `postgres:17-alpine` if the chart will run PostgreSQL for you:
 
 ```bash
-docker tag hugginghack:local registry.internal/hugginghack:1.3.0
-docker push registry.internal/hugginghack:1.3.0
+docker tag hugginghack:local registry.internal/hugginghack:1.3.1
+docker push registry.internal/hugginghack:1.3.1
 docker tag postgres:17-alpine registry.internal/postgres:17-alpine   # only with postgresql.enabled
 docker push registry.internal/postgres:17-alpine
 ```

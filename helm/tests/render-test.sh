@@ -51,7 +51,7 @@ echo "ok  caBundle mount only when set"
 
 # The umbrella fixture wires the names through and its checksums follow the data.
 fixture="$here/umbrella-fixture"
-helm dependency build "$fixture" >/dev/null
+helm dependency update "$fixture" >/dev/null
 helm lint --strict "$fixture" >/dev/null
 one="$(helm template f "$fixture" --show-only charts/hugginghack/templates/deployment.yaml)"
 two="$(helm template f "$fixture" --set global.sharedData.ALLOWED_HOSTS=changed --show-only charts/hugginghack/templates/deployment.yaml)"
