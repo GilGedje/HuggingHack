@@ -12,6 +12,17 @@ minutes, 1920×1200 at 30 fps, captions instead of a voice-over.
    The move waits for the old bucket's download links to expire; the video cuts that wait out
    and says so.
 
+A second video, `hugginghack-upload.mp4` (about two and a half minutes), covers every way a
+model comes in:
+
+1. A browser upload of a 4 GB fine-tune: owner, visibility, bucket, the folder check, and a
+   listing correction on review. Close-ups of the upload panel show the parts going to the bucket.
+2. The tab is closed partway through. The panel asks for the same folder and sends only the
+   missing parts.
+3. **Upload changes** commits a new file and a replaced model card together, with its diff.
+4. A folder copied into model storage appears after **Scan storage**.
+5. A GPU node pulls the new model with `hf download`. The output is real; the wait is cut.
+
 The recording is real: a Chrome driven by Playwright against a throwaway HuggingHack seeded
 through its own API, with copies of the local models and two buckets on a local MinIO. Nothing
 touches the live `data/` or `models/`. The MP4 is not committed (`.gitignore`); re-record it:
@@ -20,6 +31,7 @@ touches the live `data/` or `models/`. The MP4 is not committed (`.gitignore`); 
 # MinIO on 127.0.0.1:9600 (backend/CLAUDE.md shows how the test one is started), then:
 demo/render.sh                     # reseeds, records, writes demo/hugginghack-demo.mp4
 DEMO_HEADED=1 demo/render.sh       # the same, watching the browser on screen
+demo/render-upload.sh              # the upload video: demo/hugginghack-upload.mp4 (needs ~9 GB free)
 demo/setup.sh                      # only the seeded instance on :7870, to click around
 ```
 
@@ -35,6 +47,8 @@ stops sending frames.
 | `record.mjs` | The scenes. A cursor, eased scrolling, captions and fades are injected into the page; every step is a real click or keystroke. Frames come from Chrome's screencast with their timestamps (`frames.json`) |
 | `assemble.mjs` | Resamples the timestamped frames to a constant 30 fps list for ffmpeg |
 | `render.sh` | Runs `setup.sh`, `record.mjs`, `assemble.mjs`, then ffmpeg to an H.264 MP4 |
+| `record-upload.mjs` | The upload video's scenes, on the same capture and overlay; close-ups use Chrome's pinch zoom |
+| `render-upload.sh` | Runs `setup.sh`, prepares the upload folders (sparse weights), then `record-upload.mjs`, `assemble.mjs` and ffmpeg |
 
 Needs Google Chrome, Node, ffmpeg and the repo `.venv`. `playwright-core` is installed once into
 `$TMPDIR/hugginghack-demo-playwright` (or set `PLAYWRIGHT_CORE`). The seeded numbers in the
