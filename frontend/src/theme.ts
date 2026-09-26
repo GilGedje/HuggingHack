@@ -41,7 +41,7 @@ export function announceThemePreference(preference: ThemePreference) {
   window.dispatchEvent(new CustomEvent(THEME_EVENT, { detail: preference }))
 }
 
-/** The logo for a theme: on dark backgrounds its side brackets turn brand orange, since the
+/** The logo for a theme: on dark backgrounds its side brackets turn light, since the
  * light logo's near-black brackets disappear there. Both files live in public/. */
 export function brandMark(theme: Theme): string {
   return theme === 'dark' ? '/hugginghack-mark-dark.svg' : '/hugginghack-mark.svg'
