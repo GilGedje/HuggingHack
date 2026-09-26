@@ -50,7 +50,8 @@ git-lfs, the clone tests skip. SQLite passing alone is not enough. GitHub Action
 | `config.py` | `Settings` (every env var), `settings`, `validate_repo_id`, `validate_namespace`, `RESERVED_NAMESPACES`, `repository_path` (path-escape guard) |
 | `database.py` | `Database`: all SQL for both backends, schema creation and migrations in `initialize()`, `VISIBLE_TO_USER`, `ORG_ROLE_ACTS`, `BIG_NUMBER_COLUMNS` |
 | `permissions.py` | `CAPABILITIES`, `ROLE_CAPABILITIES` (viewer ⊂ member ⊂ admin), `can()`, `permission_matrix()` |
-| `auth.py` | `AuthService`: scrypt passwords, sessions and CSRF tokens, `hht_` API tokens (stored as SHA-256), in-memory login throttle, OIDC user provisioning |
+| `auth.py` | `AuthService`: scrypt passwords, sessions and CSRF tokens, `hht_` API tokens (stored as SHA-256), login throttle (in memory, or the `login_attempts` table in cluster mode), OIDC user provisioning |
+| `cluster.py` | `Cluster`: leader election (session advisory lock on its own connection) and the per-server tick (heartbeats, cancels from other servers); `startup_problems` for `CLUSTER_MODE` |
 | `oidc.py` | `OidcClient`: Authorization Code flow with PKCE. It fetches discovery lazily on the first SSO sign-in and validates ID tokens with PyJWT. |
 | `hub_api.py` | Hub protocol: `HubRepositories` (`model`, `model_info`, `tree`, `resolve`), `HubError`, `local_entries`/`remote_entries`, `parse_range` |
 | `git_mirror.py` | `GitMirrors`: pure-Python bare repos served over git's dumb HTTP. Weights become LFS pointers and are streamed from the library. Mirrors persist in the system folder. |
@@ -106,10 +107,21 @@ Last come the **Hub routes** (`/api/models/{owner}/{name}…`, `/{owner}/{name}/
   CHECK-constraint change needs a table rebuild on SQLite and DROP/ADD CONSTRAINT on Postgres (see `_migrate_users`, `_migrate_visibility`).
 - Postgres uses a `psycopg_pool.ConnectionPool` (`DATABASE_POOL_SIZE`, default 10, with a
   health check). SQLite opens a WAL connection per `connect()`. Leaving `with database.connect()` commits, or rolls back on an exception.
-- **Single process.** `Database._write_lock` is a `threading.RLock`, and it makes
-  check-then-write rules atomic (last admin, last org admin). The login throttle and the
-  touch timestamps live in `AuthService` memory. Don't add `--workers` or replicas without
-  moving those checks into SQL transactions. The Dockerfile runs one uvicorn process.
+- **Several processes (CLUSTER_MODE).** A check-then-write rule (last admin, last acting org
+  admin, names shared by users and organizations, the first owner) runs inside
+  `Database._guarded()`: one transaction, the in-process `_write_lock`, and on PostgreSQL a
+  `pg_advisory_xact_lock` on the same connection, so it holds across processes and needs no
+  extra connection. Work that spans several transactions (a repository's commits in
+  `history.py`, a git-mirror build, the library scan, schema setup) takes
+  `Database.cluster_lock(key)`, a session advisory lock on a separate small pool. Never check
+  in one `connect()` block and write in another without one of these. Per-process state that
+  other servers must see goes in the database: the sign-in throttle (`login_attempts`, in
+  cluster mode), the scan state (`cluster_state`, via `main.scan_state()`), jobs' and moves'
+  `worker_id`/`heartbeat_at`/`cancel_requested`. The leader (`cluster.Cluster`, a session
+  advisory lock on its own connection) runs moves, the startup scan and recovery; everything
+  else runs on the server that got the request. `cluster.startup_problems` lists what cluster
+  mode refuses. The Dockerfile runs one uvicorn process per pod; scale with replicas, not
+  `--workers`. docs/SCALING.md, "Running several replicas", has the operator's view.
 
 **Visibility**
 - `database.VISIBLE_TO_USER` (takes the user id 3×) is the only definition. A user sees
