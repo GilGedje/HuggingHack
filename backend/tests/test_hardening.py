@@ -328,6 +328,8 @@ def test_pages_carry_a_content_security_policy_and_the_api_reference_is_off(serv
     for path in ("/api/health", "/"):
         policy = client.get(path).headers.get("content-security-policy", "")
         assert "script-src 'self'" in policy and "frame-ancestors 'none'" in policy, path
+        # Without a bucket that takes direct uploads, requests only go back to this server.
+        assert "connect-src 'self';" in policy, path
     for path in ("/api/docs", "/openapi.json"):
         assert client.get(path).status_code == 404, path
 

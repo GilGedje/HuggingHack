@@ -60,6 +60,12 @@ def startup_problems(
             "CLUSTER_MODE needs SYSTEM_STORAGE_TARGET set to an S3 target id, so every server shares "
             "profile pictures and git history."
         )
+    staging = [storage.id for storage in storages.remotes if not getattr(storage, "direct_uploads", False)]
+    if staging:
+        problems.append(
+            f"CLUSTER_MODE needs direct uploads on every bucket, so no upload waits on one server's disk: "
+            f"set direct_uploads for {', '.join(staging)} (and its bucket CORS policy, see docs/SERVE_FROM_S3.md)."
+        )
     if settings.hf_downloads_enabled:
         problems.append(
             "CLUSTER_MODE does not support HF_DOWNLOADS_ENABLED yet: downloads are written to one "

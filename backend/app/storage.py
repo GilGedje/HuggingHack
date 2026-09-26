@@ -5,6 +5,8 @@ import logging
 import os
 import re
 import shutil
+import struct
+import tempfile
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -18,6 +20,7 @@ from .indexer import (
     LEGACY_S3_TARGET_ID,
     LOCAL_TARGET_ID,
     PART_SUFFIXES,
+    SAFETENSORS_MAX_HEADER_BYTES,
     UNSAFE_EXTENSIONS,
     hidden_path,
     manifest_target,
@@ -32,9 +35,34 @@ MANIFEST_NAME = ".hugginghack.json"
 # that fails part-way leaves them behind; until one succeeds, they are not part of
 # the repository, so a scan never adopts them as a commit.
 PENDING_NAME = ".hugginghack-pending.json"
+# Where the browser uploads a change to a published repository, one folder per
+# change session, until the commit copies it into place. Never part of the
+# repository: listings, scans, moves and cleanup all leave it alone.
+CHANGES_DIRECTORY = ".hugginghack-changes"
+# S3 multipart limits: at most 10,000 parts, each at least 5 MB except the last.
+MAX_PARTS = 10_000
+MIN_PART_BYTES = 5 * 1024**2
+# What finalizing a directly uploaded repository reads to describe it: these files
+# whole, and the start of each weight file (GGUF metadata can hold a large vocabulary).
+SKETCH_WHOLE_FILES = {"config.json", "hf_quant_config.json", "README.md"}
+SKETCH_WHOLE_MAX_BYTES = 1_000_000
+SKETCH_GGUF_HEADER_BYTES = 64 * 1024**2
 TARGET_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 # The parts of a signed link that grant access; never logged or shown.
 SIGNED_QUERY = re.compile(r"((?:X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token|Signature|AWSAccessKeyId)=)[^&\s\"'<>]+")
+
+
+def in_change_area(relative: str) -> bool:
+    return relative == CHANGES_DIRECTORY or relative.startswith(f"{CHANGES_DIRECTORY}/")
+
+
+def part_size_for(size: int, preferred: int) -> int:
+    """The part size for a file: the preferred one, grown in whole megabytes when a
+    file that large would need more than MAX_PARTS parts."""
+    needed = -(-size // MAX_PARTS) if size else 0
+    part = max(preferred, MIN_PART_BYTES, needed)
+    megabyte = 1024**2
+    return -(-part // megabyte) * megabyte
 
 
 def content_disposition(filename: str) -> str:
@@ -556,7 +584,11 @@ class S3ModelStorage(FilesystemModelStorage):
         Returns the change's id, the leftovers of earlier failed attempts, and
         whether a record now exists."""
         prefix = self._repo_prefix(repo_id)
-        present = {(item.get("Key") or "")[len(prefix) :] for item in self._objects(prefix)}
+        present = {
+            relative
+            for item in self._objects(prefix)
+            if not in_change_area(relative := (item.get("Key") or "")[len(prefix) :])
+        }
         unpublished: set[str] = set()
         if PENDING_NAME in present:
             unpublished = self._unpublished(
@@ -606,7 +638,12 @@ class S3ModelStorage(FilesystemModelStorage):
                 repo_id, manifest if manifest is not None else self.repository_manifest(repo_id)
             )
         excluded.add(PENDING_NAME)
-        return [item for item in objects if (item.get("Key") or "")[len(prefix) :] not in excluded]
+        return [
+            item
+            for item in objects
+            if (relative := (item.get("Key") or "")[len(prefix) :]) not in excluded
+            and not in_change_area(relative)
+        ]
 
     def _transfer_options(self) -> dict[str, Any]:
         options: dict[str, Any] = {}
@@ -699,6 +736,38 @@ class S3ModelStorage(FilesystemModelStorage):
     def _local_files(self, root: Path) -> list[tuple[Path, str]]:
         return repository_files(root)
 
+    def _describe(self, repo_id: str, root: Path, manifest: dict[str, Any]) -> None:
+        """Fill a manifest with where the repository lives and what the files in
+        `root` say about it: config, task, license, size, precision."""
+        config_path = root / "config.json"
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            if not isinstance(config, dict):
+                config = {}
+        except (OSError, json.JSONDecodeError):
+            config = {}
+        manifest["storage_backend"] = "s3"
+        manifest["storage_target"] = self.id
+        manifest["remote_uri"] = self.remote_uri(repo_id)
+        manifest["config"] = {
+            "architectures": config.get("architectures"),
+            "model_type": config.get("model_type"),
+            "torch_dtype": config.get("torch_dtype"),
+            "vocab_size": config.get("vocab_size"),
+        }
+        facts = repository_facts(root, manifest)
+        manifest.update({key: facts[key] for key in ("parameter_count", "formats", "precision")})
+        # The card's task, license, library, and tags, so a rescan of the bucket lists
+        # the model as the local copy did; the manifest's own (from the Hub) win.
+        manifest.update(
+            {key: facts[key] for key in ("pipeline_tag", "library_name", "license", "tags") if facts[key]}
+        )
+        # What the model derives from comes from its card; a manifest that already
+        # names one (from the Hub) keeps it.
+        if not manifest.get("base_model") and facts.get("base_model"):
+            manifest["base_model"] = facts["base_model"]
+            manifest["base_model_relation"] = facts["base_model_relation"]
+
     def sync_repository(
         self, repo_id: str, root: Path, changed: set[str] | None = None
     ) -> str:
@@ -721,34 +790,7 @@ class S3ModelStorage(FilesystemModelStorage):
         if manifest.get("status") != "complete" or manifest.get("repo_id") != validated:
             raise ValueError("Only complete repositories can be synced to S3.")
 
-        config_path = root / "config.json"
-        try:
-            config = json.loads(config_path.read_text(encoding="utf-8"))
-            if not isinstance(config, dict):
-                config = {}
-        except (OSError, json.JSONDecodeError):
-            config = {}
-        manifest["storage_backend"] = "s3"
-        manifest["storage_target"] = self.id
-        manifest["remote_uri"] = self.remote_uri(validated)
-        manifest["config"] = {
-            "architectures": config.get("architectures"),
-            "model_type": config.get("model_type"),
-            "torch_dtype": config.get("torch_dtype"),
-            "vocab_size": config.get("vocab_size"),
-        }
-        facts = repository_facts(root, manifest)
-        manifest.update({key: facts[key] for key in ("parameter_count", "formats", "precision")})
-        # The card's task, license, library, and tags, so a rescan of the bucket lists
-        # the model as the local copy did; the manifest's own (from the Hub) win.
-        manifest.update(
-            {key: facts[key] for key in ("pipeline_tag", "library_name", "license", "tags") if facts[key]}
-        )
-        # What the model derives from comes from its card; a manifest that already
-        # names one (from the Hub) keeps it.
-        if not manifest.get("base_model") and facts.get("base_model"):
-            manifest["base_model"] = facts["base_model"]
-            manifest["base_model_relation"] = facts["base_model_relation"]
+        self._describe(validated, root, manifest)
         with self._lock:
             repo_prefix = self._repo_prefix(validated)
             manifest_key = self._manifest_key(validated)
@@ -779,8 +821,13 @@ class S3ModelStorage(FilesystemModelStorage):
             )
             # The new version is published; leftovers only cost space, and the
             # next sync of this repository removes whatever this one could not.
+            # Change sessions upload into the change area meanwhile: never theirs to remove.
             try:
-                existing = {(item.get("Key") or "")[len(repo_prefix) :] for item in self._objects(repo_prefix)}
+                existing = {
+                    relative
+                    for item in self._objects(repo_prefix)
+                    if not in_change_area(relative := (item.get("Key") or "")[len(repo_prefix) :])
+                }
             except Exception as error:
                 existing = set()
                 logger.warning(
@@ -876,6 +923,8 @@ class S3ModelStorage(FilesystemModelStorage):
             if len(parts) < 3:
                 continue
             repo_id = f"{parts[0]}/{parts[1]}"
+            if parts[2] == CHANGES_DIRECTORY:
+                continue
             if len(parts) == 3 and parts[-1] == MANIFEST_NAME:
                 manifests.append((repo_id, item))
             elif len(parts) == 3 and parts[-1] == PENDING_NAME:
@@ -1156,6 +1205,196 @@ class S3ModelStorage(FilesystemModelStorage):
                 return
             yield payload
             position += len(payload)
+
+    # Uploads straight from the browser (direct_uploads): each file is one multipart
+    # upload whose parts the browser PUTs to signed links, so no byte passes through
+    # this server. A new repository's files go to their final keys, and nothing lists
+    # them until its manifest is published; a change to a published repository goes
+    # to its change area and is copied into place, inside the bucket, on commit.
+
+    def change_key(self, repo_id: str, session_id: str, relative_path: str) -> str:
+        if not re.fullmatch(r"[0-9a-f]{32}", session_id):
+            raise ValueError("Change session not found.")
+        relative = _safe_relative_key(relative_path)
+        return f"{self._repo_prefix(validate_repo_id(repo_id))}{CHANGES_DIRECTORY}/{session_id}/{relative.as_posix()}"
+
+    def file_key(self, repo_id: str, relative_path: str) -> str:
+        return self._object_key(validate_repo_id(repo_id), relative_path)
+
+    def start_multipart(self, key: str) -> str:
+        options: dict[str, Any] = {"Bucket": self.bucket, "Key": key}
+        if self.target.storage_class:
+            options["StorageClass"] = self.target.storage_class
+        return self.client.create_multipart_upload(**options)["UploadId"]
+
+    def presigned_part(self, key: str, upload_id: str, number: int) -> str:
+        return self._presign(
+            "upload_part",
+            {"Key": key, "UploadId": upload_id, "PartNumber": number},
+            self.target.upload_presign_ttl_seconds,
+        )
+
+    def uploaded_parts(self, key: str, upload_id: str) -> list[dict[str, Any]]:
+        """The parts the bucket has for a multipart upload, from the bucket itself, so
+        a browser that reloaded carries on from what really arrived."""
+        parts: list[dict[str, Any]] = []
+        marker = 0
+        while True:
+            response = self.read_client.list_parts(
+                Bucket=self.bucket, Key=key, UploadId=upload_id, PartNumberMarker=marker, MaxParts=1000
+            )
+            parts.extend(
+                {"number": int(item["PartNumber"]), "size": int(item.get("Size") or 0), "etag": item.get("ETag")}
+                for item in response.get("Parts") or []
+            )
+            if not response.get("IsTruncated"):
+                return parts
+            marker = int(response.get("NextPartNumberMarker") or 0)
+
+    def complete_multipart(self, key: str, upload_id: str, parts: list[dict[str, Any]]) -> None:
+        self.client.complete_multipart_upload(
+            Bucket=self.bucket,
+            Key=key,
+            UploadId=upload_id,
+            MultipartUpload={"Parts": [{"PartNumber": part["number"], "ETag": part["etag"]} for part in parts]},
+        )
+
+    def abort_multipart(self, key: str, upload_id: str) -> None:
+        """Give up an unfinished upload so its parts stop taking space. Best effort:
+        one the bucket already forgot is fine."""
+        try:
+            self.client.abort_multipart_upload(Bucket=self.bucket, Key=key, UploadId=upload_id)
+        except Exception as error:
+            if _error_code(error) not in {"NoSuchUpload", "404"}:
+                logger.warning(
+                    "Could not abort an upload in %s: %s", self.id, self.redact(str(error) or error.__class__.__name__)
+                )
+
+    def put_empty(self, key: str) -> None:
+        self.client.put_object(Bucket=self.bucket, Key=key, Body=b"")
+
+    def object_size(self, key: str) -> int | None:
+        try:
+            head = self.client.head_object(Bucket=self.bucket, Key=key)
+        except Exception as error:
+            if _missing_object(error):
+                return None
+            raise
+        return int(head.get("ContentLength") or 0)
+
+    def delete_change_area(self, repo_id: str, session_id: str) -> None:
+        prefix = self.change_key(repo_id, session_id, "x")[: -len("x")]
+        try:
+            self._delete_keys(item["Key"] for item in self._objects(prefix))
+        except Exception as error:
+            logger.warning(
+                "Could not remove an upload area of %s in %s: %s",
+                repo_id, self.id, self.redact(str(error) or error.__class__.__name__),
+            )
+
+    def publish_uploaded_repository(self, repo_id: str, manifest: dict[str, Any]) -> dict[str, Any]:
+        """Publish a new repository whose files were uploaded straight to their keys:
+        read what the files say about the model, then write the manifest, which is
+        what makes the repository exist. Returns the published manifest."""
+        validated = validate_repo_id(repo_id)
+        with self._lock, tempfile.TemporaryDirectory(prefix="hugginghack-sketch-") as workspace:
+            root = Path(workspace) / "repository"
+            self._sketch(validated, root)
+            manifest = {**manifest}
+            self._describe(validated, root, manifest)
+            manifest["change"] = uuid4().hex
+            self.publish_manifest(validated, manifest)
+        return manifest
+
+    def _sketch(self, repo_id: str, root: Path) -> None:
+        """A local stand-in for a bucket repository, enough for repository_facts:
+        every file by name, the small metadata files whole, and only the headers of
+        weight files, fetched by range."""
+        prefix = self._repo_prefix(repo_id)
+        sizes: dict[str, int] = {}
+        for item in self._repository_objects(repo_id):
+            relative = (item.get("Key") or "")[len(prefix) :]
+            if not relative or relative in {MANIFEST_NAME, PENDING_NAME}:
+                continue
+            sizes[_safe_relative_key(relative).as_posix()] = int(item.get("Size") or 0)
+        root.mkdir(parents=True)
+        for relative in sizes:
+            target = root.joinpath(*PurePosixPath(relative).parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.touch()
+        for relative, size in sizes.items():
+            name = relative.lower()
+            key = f"{prefix}{relative}"
+            target = root.joinpath(*PurePosixPath(relative).parts)
+            if relative in SKETCH_WHOLE_FILES and size <= SKETCH_WHOLE_MAX_BYTES:
+                target.write_bytes(self._range(key, 0, size - 1) if size else b"")
+            elif name.endswith(".safetensors") and size >= 8:
+                (length,) = struct.unpack("<Q", self._range(key, 0, 7))
+                if 0 < length <= SAFETENSORS_MAX_HEADER_BYTES and 8 + length <= size:
+                    target.write_bytes(self._range(key, 0, 7 + length))
+            elif name.endswith(".gguf") and size:
+                target.write_bytes(self._range(key, 0, min(size, SKETCH_GGUF_HEADER_BYTES) - 1))
+
+    def _range(self, key: str, start: int, end: int) -> bytes:
+        body = self.client.get_object(Bucket=self.bucket, Key=key, Range=f"bytes={start}-{end}")["Body"]
+        try:
+            return body.read()
+        finally:
+            close = getattr(body, "close", None)
+            if close:
+                close()
+
+    def apply_uploaded_changes(
+        self,
+        repo_id: str,
+        uploaded: dict[str, str],
+        deletions: set[str],
+        manifest: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Commit a change whose files the browser uploaded to the change area: copy
+        them into place inside the bucket, publish the manifest, then make the
+        deletions. The same order and pending record as apply_changes, so a failure
+        part-way leaves the published version as it was."""
+        validated = validate_repo_id(repo_id)
+        repo_prefix = self._repo_prefix(validated)
+        with self._lock:
+            copies = {_safe_relative_key(relative).as_posix(): key for relative, key in uploaded.items()}
+            change, leftovers, recorded = self._begin_change(validated, set(copies), manifest)
+            for relative, source in copies.items():
+                self.client.copy(
+                    {"Bucket": self.bucket, "Key": source},
+                    self.bucket,
+                    f"{repo_prefix}{relative}",
+                    **self._upload_options(),
+                )
+            manifest = {
+                **manifest,
+                "storage_backend": "s3",
+                "storage_target": self.id,
+                "remote_uri": self.remote_uri(validated),
+                "change": change,
+            }
+            self.publish_manifest(validated, manifest)
+            removed = {_safe_relative_key(relative).as_posix() for relative in deletions}
+            self._finish_change(validated, removed | (leftovers - set(copies)), recorded)
+        return manifest
+
+    def download_files(self, repo_id: str, relatives: Iterable[str], root: Path) -> None:
+        """Bring the local cache of a repository up to date with some of its files."""
+        for relative in relatives:
+            relative_path = _safe_relative_key(relative)
+            target = root.joinpath(*relative_path.parts)
+            resolved_parent = target.parent.resolve() if target.parent.exists() else target.parent
+            if root != resolved_parent and root not in resolved_parent.parents:
+                raise ValueError("S3 object key escapes the repository cache.")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            partial = target.with_name(f".{target.name}.hugginghack-s3-part")
+            if target.is_symlink() or partial.is_symlink():
+                raise ValueError("S3 restore cannot overwrite a symbolic link.")
+            self.client.download_file(
+                self.bucket, self._object_key(repo_id, relative_path.as_posix()), str(partial), **self._transfer_options()
+            )
+            partial.replace(target)
 
     # Object-level access for storage moves: the mover writes files one by one and
     # publishes the manifest last, so a half-copied repository is never discovered.

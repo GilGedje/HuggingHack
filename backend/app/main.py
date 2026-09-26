@@ -68,7 +68,7 @@ from .moves import MoveManager
 from .reads import LeasedResponse, reads
 from .listing import PRECISIONS, preview as preview_listing, validate_overrides
 from .runtimes import RuntimeManager
-from .storage import BOTO_ERRORS, StorageUnavailableError, create_storage_registry
+from .storage import BOTO_ERRORS, StorageRegistry, StorageUnavailableError, create_storage_registry
 from .uploads import UploadManager
 
 
@@ -215,6 +215,11 @@ def _refresh_model_index() -> dict[str, Any]:
     for model in database.list_local_models():
         if model["storage_target"] == storages.local.id:
             record_history(model)
+    try:
+        # Direct uploads nobody touched for a day stop taking space in the bucket.
+        uploads.sweep_stale_uploads()
+    except Exception:
+        logger.exception("Could not clear abandoned uploads")
     record_scan_state(conflicts, errors)
     models = database.list_local_models()
     return {
@@ -403,11 +408,37 @@ async def reject_cross_site_writes(request: Request, call_next):
 
 
 # What the web UI needs and nothing more: its own scripts, styles, and API.
-CONTENT_SECURITY_POLICY = (
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; "
-    "base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
-)
+def direct_upload_origins(registry: StorageRegistry) -> list[str]:
+    """The origins browsers PUT parts to: each direct-upload bucket's public
+    endpoint (scheme, host and port only)."""
+    origins: list[str] = []
+    for storage in registry.remotes:
+        if not getattr(storage, "direct_uploads", False):
+            continue
+        endpoint = storage.target.public_endpoint_url or storage.target.endpoint_url
+        if not endpoint:
+            continue
+        parts = urlsplit(endpoint)
+        if parts.scheme in {"http", "https"} and parts.netloc:
+            origin = f"{parts.scheme}://{parts.netloc}"
+            if origin not in origins:
+                origins.append(origin)
+    return origins
+
+
+def content_security_policy(connect_origins: list[str]) -> str:
+    """The page's CSP. Scripts, styles, images and fonts only ever come from this
+    server; the only other origins it may send requests to are the buckets that
+    take direct uploads."""
+    connect = " ".join(["'self'", *connect_origins])
+    return (
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        f"img-src 'self' data: blob:; font-src 'self' data:; connect-src {connect}; object-src 'none'; "
+        "base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    )
+
+
+CONTENT_SECURITY_POLICY = content_security_policy(direct_upload_origins(storages))
 
 
 @app.middleware("http")
@@ -2058,7 +2089,7 @@ def start_repository_change(payload: ChangeStartRequest, user: Editor) -> dict:
     visible_model(payload.repo_id, user["id"])
     try:
         return uploads.start_change(payload.repo_id, user)
-    except (PermissionError, FileNotFoundError, ValueError, OSError) as error:
+    except (PermissionError, FileNotFoundError, ValueError, RuntimeError, OSError) as error:
         raise change_errors(error) from error
 
 
@@ -2068,8 +2099,18 @@ def repository_change_file_status(
 ) -> dict:
     try:
         return uploads.change_file_status(session_id, user, path)
-    except (FileNotFoundError, ValueError) as error:
+    except (FileNotFoundError, ValueError, RuntimeError) as error:
         raise change_errors(error) from error
+
+
+def refuse_server_staging() -> None:
+    """In a cluster, a file sent in chunks to one server would sit on that server's
+    disk, out of reach of the others; uploads go straight to the bucket instead."""
+    if settings.cluster_mode:
+        raise HTTPException(
+            status_code=409,
+            detail="This server takes uploads straight to storage. Reload the page and resume the upload.",
+        )
 
 
 async def read_upload_chunk(request: Request) -> tuple[int, int, bytes]:
@@ -2096,6 +2137,7 @@ async def repository_change_chunk(
     user: Editor,
     path: Annotated[str, Query(max_length=500)],
 ) -> dict:
+    refuse_server_staging()
     offset, total, payload = await read_upload_chunk(request)
     try:
         return await run_in_threadpool(
@@ -2103,6 +2145,49 @@ async def repository_change_chunk(
         )
     except (FileNotFoundError, FileExistsError, RuntimeError, ValueError, OSError) as error:
         raise change_errors(error) from error
+
+
+# Direct uploads (docs/SCALING.md, phase 2): the browser sends a file's parts
+# straight to the bucket through signed links. `begin` answers {"direct": false}
+# when the repository's storage takes uploads through this server instead.
+
+
+class DirectBeginRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=500)
+    size: int = Field(ge=0)
+
+
+class DirectPartsRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=500)
+    parts: list[int] = Field(min_length=1, max_length=100)
+
+
+class DirectFileRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=500)
+
+
+async def direct_upload_call(call: Callable[..., Any], *arguments: Any) -> dict:
+    try:
+        return await run_in_threadpool(call, *arguments)
+    except StorageUnavailableError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    except (PermissionError, FileNotFoundError, FileExistsError, ValueError, RuntimeError, OSError) as error:
+        raise change_errors(error) from error
+
+
+@app.post("/api/repos/changes/{session_id}/files/begin")
+async def begin_change_file(session_id: str, payload: DirectBeginRequest, user: Editor) -> dict:
+    return await direct_upload_call(uploads.begin_change_file, session_id, user, payload.path, payload.size)
+
+
+@app.post("/api/repos/changes/{session_id}/files/parts")
+async def change_file_parts(session_id: str, payload: DirectPartsRequest, user: Editor) -> dict:
+    return await direct_upload_call(uploads.change_part_links, session_id, user, payload.path, payload.parts)
+
+
+@app.post("/api/repos/changes/{session_id}/files/complete")
+async def complete_change_file(session_id: str, payload: DirectFileRequest, user: Editor) -> dict:
+    return await direct_upload_call(uploads.complete_change_file, session_id, user, payload.path)
 
 
 @app.post("/api/repos/changes/{session_id}/commit")
@@ -2121,7 +2206,7 @@ async def commit_repository_change(
     except StorageUnavailableError as error:
         # The change session is intact: commit it again, or cancel it.
         raise HTTPException(status_code=502, detail=str(error)) from error
-    except (PermissionError, FileNotFoundError, ValueError, OSError) as error:
+    except (PermissionError, FileNotFoundError, ValueError, RuntimeError, OSError) as error:
         raise change_errors(error) from error
     return {
         "model": result["model"],
@@ -3148,6 +3233,29 @@ def upload_file_status(
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.post("/api/uploads/repositories/files/begin")
+async def begin_repository_file(
+    payload: DirectBeginRequest, user: Uploader, repo_id: Annotated[str, Query(max_length=200)]
+) -> dict:
+    return await direct_upload_call(uploads.begin_repository_file, repo_id, user["id"], payload.path, payload.size)
+
+
+@app.post("/api/uploads/repositories/files/parts")
+async def repository_file_parts(
+    payload: DirectPartsRequest, user: Uploader, repo_id: Annotated[str, Query(max_length=200)]
+) -> dict:
+    return await direct_upload_call(uploads.repository_part_links, repo_id, user["id"], payload.path, payload.parts)
+
+
+@app.post("/api/uploads/repositories/files/complete")
+async def complete_repository_file(
+    payload: DirectFileRequest, user: Uploader, repo_id: Annotated[str, Query(max_length=200)]
+) -> dict:
+    return await direct_upload_call(uploads.complete_repository_file, repo_id, user["id"], payload.path)
 
 
 @app.put("/api/uploads/repositories/files")
@@ -3157,6 +3265,7 @@ async def upload_file_chunk(
     repo_id: Annotated[str, Query(max_length=200)],
     path: Annotated[str, Query(max_length=500)],
 ) -> dict:
+    refuse_server_staging()
     try:
         offset = int(request.headers.get("Upload-Offset", "-1"))
         total = int(request.headers.get("Upload-Length", "-1"))

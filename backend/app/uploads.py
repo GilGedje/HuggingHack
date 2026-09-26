@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Callable, Iterator
 
@@ -24,7 +25,12 @@ from .indexer import (
     utc_now,
 )
 from .permissions import can
-from .storage import FilesystemModelStorage, StorageRegistry, StorageUnavailableError
+from .storage import (
+    FilesystemModelStorage,
+    StorageRegistry,
+    StorageUnavailableError,
+    part_size_for,
+)
 
 if TYPE_CHECKING:
     from .history import RepoHistory
@@ -42,6 +48,26 @@ BACKUP_SUFFIX = ".backup"
 SESSION_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 # A change session untouched this long is abandoned and no longer blocks a rename.
 STALE_CHANGE_SECONDS = 24 * 60 * 60
+# Direct uploads: the scope of a new repository's files (a change session's files
+# use the session id), and how many signed part links one request may ask for.
+REPOSITORY_SCOPE = "repository"
+MAX_PART_LINKS = 100
+UPLOADS_TO_STORAGE = (
+    "This upload goes straight to storage now. Reload the page and resume it."
+)
+
+
+def part_count(size: int, part_size: int) -> int:
+    return max(1, -(-size // part_size)) if size else 0
+
+
+def expected_part_size(size: int, part_size: int, number: int) -> int:
+    count = part_count(size, part_size)
+    return part_size if number < count else size - part_size * (count - 1)
+
+
+def iso_seconds_ago(seconds: float) -> str:
+    return datetime.fromtimestamp(time.time() - seconds, timezone.utc).isoformat()
 
 
 def validate_slug(value: str) -> str:
@@ -179,6 +205,9 @@ class UploadManager:
                 continue
             if path.stat().st_mtime > cutoff:
                 return "Someone is uploading changes to this repository."
+        recent = iso_seconds_ago(STALE_CHANGE_SECONDS)
+        if any(session["updated_at"] > recent for session in self.database.list_direct_change_sessions(repo_id)):
+            return "Someone is uploading changes to this repository."
         return None
 
     def _drop_stale_changes(self, repo_id: str) -> None:
@@ -190,6 +219,8 @@ class UploadManager:
                     path.unlink(missing_ok=True)
             except (OSError, json.JSONDecodeError):
                 continue
+        for session in self.database.list_direct_change_sessions(repo_id):
+            self._discard_direct_session(session)
 
     def namespaces(self, user: dict[str, Any]) -> list[dict[str, Any]]:
         """Where this user may create repositories: their own name and writable orgs."""
@@ -255,6 +286,9 @@ class UploadManager:
             }
         choices = []
         for storage in self.storages.all():
+            # In a cluster, a server's own disk is gone with the server.
+            if self.settings.cluster_mode and not storage.remote:
+                continue
             granted = {(item["kind"], item["id"]) for item in grants.get(storage.id, [])}
             dedicated = bool(granted & owners)
             if manage or not granted or dedicated:
@@ -323,45 +357,72 @@ class UploadManager:
         owner_name = organization["name"] if organization else user["username"]
         repo_id = validate_repo_id(f"{owner_name}/{name}")
         target = self._repository_root(repo_id)
-        # Also a model in the library without a local folder (kept only in S3),
-        # or objects already in the bucket: an upload must never take one over.
-        if (
-            target.exists()
-            or self.database.repository_id_taken(repo_id)
-            or self._bucket_has(target_storage, repo_id)
-        ):
-            raise FileExistsError("That repository already exists.")
-        target.mkdir(parents=True, exist_ok=False)
-        timestamp = utc_now()
-        manifest = {
-            "status": "uploading",
-            "repo_id": repo_id,
-            "owner_id": user["id"],
-            "organization_id": organization["id"] if organization else None,
-            "source": "user-upload",
-            "created_at": timestamp,
-            "storage_target": target_storage.id,
-        }
-        (target / ".hugginghack.json").write_text(
-            json.dumps(manifest, indent=2), encoding="utf-8"
-        )
-        try:
-            return self.database.create_owned_repository(
-                {
-                    "id": uuid.uuid4().hex,
-                    "owner_id": user["id"],
-                    "repo_id": repo_id,
-                    "description": detail,
-                    "visibility": visibility,
+        direct = self._direct(target_storage)
+        # One server at a time decides whether a name is free.
+        with self.database.cluster_lock(f"repo-name:{repo_id.lower()}"):
+            # Also a model in the library without a local folder (kept only in S3),
+            # or objects already in the bucket: an upload must never take one over.
+            if (
+                target.exists()
+                or self.database.repository_id_taken(repo_id)
+                or self._bucket_has(target_storage, repo_id)
+            ):
+                raise FileExistsError("That repository already exists.")
+            timestamp = utc_now()
+            if direct:
+                # Its files go straight to the bucket, so nothing is kept on this
+                # server's disk: the database remembers where they go.
+                self.database.set_upload_target(repo_id, target_storage.id, timestamp)
+            else:
+                target.mkdir(parents=True, exist_ok=False)
+                manifest = {
                     "status": "uploading",
-                    "created_at": timestamp,
-                    "updated_at": timestamp,
+                    "repo_id": repo_id,
+                    "owner_id": user["id"],
                     "organization_id": organization["id"] if organization else None,
+                    "source": "user-upload",
+                    "created_at": timestamp,
+                    "storage_target": target_storage.id,
                 }
-            )
-        except Exception:
-            shutil.rmtree(target, ignore_errors=True)
-            raise
+                (target / ".hugginghack.json").write_text(
+                    json.dumps(manifest, indent=2), encoding="utf-8"
+                )
+            try:
+                return self.database.create_owned_repository(
+                    {
+                        "id": uuid.uuid4().hex,
+                        "owner_id": user["id"],
+                        "repo_id": repo_id,
+                        "description": detail,
+                        "visibility": visibility,
+                        "status": "uploading",
+                        "created_at": timestamp,
+                        "updated_at": timestamp,
+                        "organization_id": organization["id"] if organization else None,
+                    }
+                )
+            except Exception:
+                if direct:
+                    self.database.delete_upload_target(repo_id)
+                else:
+                    shutil.rmtree(target, ignore_errors=True)
+                raise
+
+    @staticmethod
+    def _direct(storage: FilesystemModelStorage | None) -> bool:
+        """Whether uploads to this storage go straight from the browser to it."""
+        return bool(storage is not None and storage.remote and getattr(storage, "direct_uploads", False))
+
+    def upload_storage(self, repo_id: str) -> FilesystemModelStorage | None:
+        """Where an unfinished repository's files go straight to, if they do."""
+        target = self.database.get_upload_target(repo_id)
+        if not target:
+            return None
+        try:
+            storage = self.storages.get(target)
+        except ValueError:
+            return None
+        return storage if self._direct(storage) else None
 
     @staticmethod
     def _bucket_has(storage: FilesystemModelStorage, repo_id: str) -> bool:
@@ -376,6 +437,8 @@ class UploadManager:
 
     def file_status(self, repo_id: str, user_id: str, file_path: str) -> dict[str, Any]:
         self._owned(repo_id, user_id)
+        if self.upload_storage(repo_id):
+            raise RuntimeError(UPLOADS_TO_STORAGE)
         target, partial, _ = self._upload_target(repo_id, file_path)
         if target.is_file():
             return {"offset": target.stat().st_size, "complete": True}
@@ -397,6 +460,8 @@ class UploadManager:
             raise ValueError(
                 "Repository is finalized. Upload a change to it from the model page instead."
             )
+        if self.upload_storage(repo_id):
+            raise RuntimeError(UPLOADS_TO_STORAGE)
 
         self._check_chunk(offset, total, payload)
         result = self._write_chunk(
@@ -404,6 +469,208 @@ class UploadManager:
         )
         self.database.update_owned_repository(repo_id, updated_at=utc_now())
         return result
+
+    # Direct uploads: the browser asks to begin a file, gets signed links for its
+    # parts, PUTs them to the bucket, and asks to complete it. What arrived is always
+    # read from the bucket (ListParts), so a reload or another server carries on.
+
+    def begin_repository_file(
+        self, repo_id: str, user_id: str, file_path: str, size: int
+    ) -> dict[str, Any]:
+        """Start (or resume) one file of a new repository. {"direct": False} when its
+        storage takes uploads through this server instead."""
+        self._uploading(repo_id, user_id)
+        storage = self.upload_storage(repo_id)
+        if storage is None:
+            return {"direct": False}
+        relative = validate_upload_path(file_path).as_posix()
+        state = self._begin_direct(
+            storage, repo_id, REPOSITORY_SCOPE, relative, storage.file_key(repo_id, relative), size, user_id
+        )
+        self.database.update_owned_repository(repo_id, updated_at=utc_now())
+        return state
+
+    def repository_part_links(
+        self, repo_id: str, user_id: str, file_path: str, numbers: list[int]
+    ) -> dict[str, Any]:
+        self._uploading(repo_id, user_id)
+        storage, record = self._direct_record(self.upload_storage(repo_id), repo_id, REPOSITORY_SCOPE, file_path)
+        return self._part_links(storage, record, numbers)
+
+    def complete_repository_file(self, repo_id: str, user_id: str, file_path: str) -> dict[str, Any]:
+        self._uploading(repo_id, user_id)
+        storage, record = self._direct_record(self.upload_storage(repo_id), repo_id, REPOSITORY_SCOPE, file_path)
+        return self._complete_direct(storage, record)
+
+    def _uploading(self, repo_id: str, user_id: str) -> dict[str, Any]:
+        repository = self._owned(repo_id, user_id)
+        if repository["status"] != "uploading":
+            raise ValueError(
+                "Repository is finalized. Upload a change to it from the model page instead."
+            )
+        return repository
+
+    def _check_size(self, size: int) -> None:
+        if size < 0:
+            raise ValueError("File size is invalid.")
+        if size > self.settings.max_upload_size_gb * 1024**3:
+            raise ValueError(f"One file cannot exceed {self.settings.max_upload_size_gb} GB.")
+
+    def _begin_direct(
+        self,
+        storage: FilesystemModelStorage,
+        repo_id: str,
+        scope: str,
+        relative: str,
+        key: str,
+        size: int,
+        user_id: str,
+    ) -> dict[str, Any]:
+        self._check_size(size)
+        with self.database.cluster_lock(f"upload:{repo_id}:{scope}:{relative}"):
+            record = self.database.get_direct_upload(repo_id, scope, relative)
+            if record and record["size"] != size:
+                # The size a file started with stays its size, as with chunk uploads.
+                raise RuntimeError(
+                    f"This file was started as {record['size']} bytes, not {size}. "
+                    "Cancel the upload and start the file again."
+                )
+            if record is None:
+                now = utc_now()
+                with self._storage_errors(storage, repo_id, "The storage could not start the upload. Try again."):
+                    if size == 0:
+                        # Nothing to send: the empty object is written here.
+                        storage.put_empty(key)
+                        upload_id = None
+                    else:
+                        upload_id = storage.start_multipart(key)
+                record = self.database.add_direct_upload(
+                    {
+                        "id": uuid.uuid4().hex,
+                        "repo_id": repo_id,
+                        "scope": scope,
+                        "path": relative,
+                        "storage_target": storage.id,
+                        "object_key": key,
+                        "upload_id": upload_id,
+                        "size": size,
+                        "part_size": part_size_for(size, storage.target.part_size_mb * 1024**2),
+                        "complete": size == 0,
+                        "user_id": user_id,
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                )
+            else:
+                self.database.update_direct_upload(record["id"], updated_at=utc_now())
+        return self._direct_state(storage, record)
+
+    def _direct_record(
+        self, storage: FilesystemModelStorage | None, repo_id: str, scope: str, file_path: str
+    ) -> tuple[FilesystemModelStorage, dict[str, Any]]:
+        relative = validate_upload_path(file_path).as_posix()
+        record = self.database.get_direct_upload(repo_id, scope, relative)
+        if storage is None or record is None or record["storage_target"] != storage.id:
+            raise FileNotFoundError("Start this file's upload first.")
+        return storage, record
+
+    def _direct_state(self, storage: FilesystemModelStorage, record: dict[str, Any]) -> dict[str, Any]:
+        size, part_size = record["size"], record["part_size"]
+        count = part_count(size, part_size)
+        state = {
+            "direct": True,
+            "path": record["path"],
+            "size": size,
+            "part_size": part_size,
+            "part_count": count,
+            "complete": record["complete"],
+            "done": list(range(1, count + 1)) if record["complete"] else [],
+        }
+        if not record["complete"]:
+            with self._storage_errors(storage, record["repo_id"], "The storage could not be reached. Try again."):
+                parts = storage.uploaded_parts(record["object_key"], record["upload_id"])
+            state["done"] = sorted(
+                part["number"]
+                for part in parts
+                if 1 <= part["number"] <= count and part["size"] == expected_part_size(size, part_size, part["number"])
+            )
+        return state
+
+    def _part_links(
+        self, storage: FilesystemModelStorage, record: dict[str, Any], numbers: list[int]
+    ) -> dict[str, Any]:
+        if record["complete"]:
+            raise RuntimeError("This file is already uploaded.")
+        count = part_count(record["size"], record["part_size"])
+        wanted = sorted(set(numbers))
+        if not wanted or len(wanted) > MAX_PART_LINKS or wanted[0] < 1 or wanted[-1] > count:
+            raise ValueError(f"Ask for 1 to {MAX_PART_LINKS} parts numbered 1 to {count}.")
+        self.database.update_direct_upload(record["id"], updated_at=utc_now())
+        return {
+            "expires_in": storage.target.upload_presign_ttl_seconds,
+            "parts": [
+                {
+                    "number": number,
+                    "url": storage.presigned_part(record["object_key"], record["upload_id"], number),
+                    "size": expected_part_size(record["size"], record["part_size"], number),
+                }
+                for number in wanted
+            ],
+        }
+
+    def _complete_direct(self, storage: FilesystemModelStorage, record: dict[str, Any]) -> dict[str, Any]:
+        if record["complete"]:
+            return self._direct_state(storage, record)
+        size, part_size = record["size"], record["part_size"]
+        count = part_count(size, part_size)
+        failure = "The storage could not finish the upload. Try again."
+        with self.database.cluster_lock(f"upload:{record['repo_id']}:{record['scope']}:{record['path']}"):
+            with self._storage_errors(storage, record["repo_id"], failure):
+                parts = {part["number"]: part for part in storage.uploaded_parts(record["object_key"], record["upload_id"])}
+            for number in range(1, count + 1):
+                part = parts.get(number)
+                if part is None or part["size"] != expected_part_size(size, part_size, number):
+                    raise RuntimeError(
+                        f"Part {number} of {record['path']} has not reached the storage yet. "
+                        "Retry the upload to send it again."
+                    )
+            with self._storage_errors(storage, record["repo_id"], failure):
+                storage.complete_multipart(record["object_key"], record["upload_id"], [parts[n] for n in range(1, count + 1)])
+                stored = storage.object_size(record["object_key"])
+            if stored != size:
+                raise RuntimeError(f"The storage holds {stored} bytes of {record['path']}, not {size}. Upload it again.")
+            self.database.update_direct_upload(record["id"], complete=True, updated_at=utc_now())
+        return self._direct_state(storage, {**record, "complete": True})
+
+    def _abort_direct_uploads(self, repo_id: str, scope: str | None = None) -> None:
+        for record in self.database.list_direct_uploads(repo_id, scope):
+            if record["complete"] or not record["upload_id"]:
+                continue
+            try:
+                self.storages.get(record["storage_target"]).abort_multipart(record["object_key"], record["upload_id"])
+            except ValueError:
+                continue
+        self.database.delete_direct_uploads(repo_id, scope)
+
+    def sweep_stale_uploads(self) -> int:
+        """Give up direct uploads nobody touched for a day: their parts stop taking
+        space in the bucket, and a change session's upload area is removed. A new
+        repository's finished files stay; its unfinished ones start over."""
+        cutoff = iso_seconds_ago(STALE_CHANGE_SECONDS)
+        swept = 0
+        for session in self.database.list_direct_change_sessions(updated_before=cutoff):
+            self._discard_direct_session(session)
+            swept += 1
+        for record in self.database.list_direct_uploads(scope=REPOSITORY_SCOPE, updated_before=cutoff):
+            if record["complete"]:
+                continue
+            try:
+                self.storages.get(record["storage_target"]).abort_multipart(record["object_key"], record["upload_id"])
+            except ValueError:
+                pass
+            self.database.delete_direct_uploads(record["repo_id"], REPOSITORY_SCOPE, record["id"])
+            swept += 1
+        return swept
 
     def _check_chunk(self, offset: int, total: int, payload: bytes) -> None:
         if offset < 0 or total < 0 or offset + len(payload) > total:
@@ -463,7 +730,10 @@ class UploadManager:
         description: str = "",
     ) -> dict[str, Any]:
         repository = self._owned(repo_id, user_id)
-        with self._write_lock:
+        storage = self.upload_storage(repo_id)
+        if storage is not None:
+            return self._finalize_direct(repository, storage, user_id, message, description)
+        with self.database.cluster_lock(f"repo:{repo_id}"), self._write_lock:
             root = self._repository_root(repo_id)
             partials = [
                 path for path in root.rglob(f"*{PART_SUFFIX}") if path.is_file()
@@ -519,6 +789,69 @@ class UploadManager:
                 )
         return updated or repository
 
+    def _finalize_direct(
+        self,
+        repository: dict[str, Any],
+        storage: FilesystemModelStorage,
+        user_id: str,
+        message: str,
+        description: str,
+    ) -> dict[str, Any]:
+        """Publish a repository whose files the browser uploaded to the bucket. Until
+        this writes its manifest, no scan, listing or pull sees any of its files."""
+        repo_id = repository["repo_id"]
+        failure = "The upload could not be saved to object storage. Finalize it again."
+        with self.database.cluster_lock(f"repo:{repo_id}"):
+            if any(not record["complete"] for record in self.database.list_direct_uploads(repo_id, REPOSITORY_SCOPE)):
+                raise ValueError("Finish all file uploads before finalizing the repository.")
+            with self._storage_errors(storage, repo_id, failure):
+                entries = [
+                    entry
+                    for entry in storage.list_repository_entries(repo_id) or []
+                    if entry["path"] != ".hugginghack.json"
+                ]
+            if not entries:
+                raise ValueError("Upload at least one model or metadata file first.")
+            listed = [entry for entry in entries if not hidden_path(entry["path"])]
+            completed = utc_now()
+            total = sum(entry["size"] for entry in entries)
+            manifest = {
+                "status": "complete",
+                "repo_id": repo_id,
+                "owner_id": repository["owner_id"],
+                "organization_id": repository.get("organization_id"),
+                "source": "user-upload",
+                "uploaded_at": completed,
+                "total_bytes": total,
+                "file_count": len(listed),
+                "storage_target": storage.id,
+            }
+            with self._storage_errors(storage, repo_id, failure):
+                published = storage.publish_uploaded_repository(repo_id, manifest)
+            model = self.indexer.index_remote(
+                {
+                    **published,
+                    "relative_path": repo_id,
+                    "size_bytes": total,
+                    "file_count": len(listed),
+                    "modified_at": completed,
+                    "formats": published.get("formats") or model_formats(entry["path"] for entry in listed),
+                    "cached": False,
+                    "managed": True,
+                }
+            )
+            updated = self.database.update_owned_repository(repo_id, status="ready", updated_at=completed)
+            self.database.delete_direct_uploads(repo_id, REPOSITORY_SCOPE)
+            self.database.delete_upload_target(repo_id)
+            if self.history and model:
+                self.history.record(
+                    model,
+                    message or f"Upload {len(listed)} file{'' if len(listed) == 1 else 's'}",
+                    author=self.database.get_user(user_id, include_secret=False),
+                    description=description,
+                )
+        return updated or repository
+
     def update_repository(
         self,
         repo_id: str,
@@ -542,6 +875,17 @@ class UploadManager:
         repository = self._managed(repo_id, user)
         if confirmation != repo_id:
             raise ValueError("Repository name confirmation does not match.")
+        storage = self.upload_storage(repo_id)
+        if storage is not None and repository["status"] != "ready":
+            # Never published: its files sit in the bucket without a manifest.
+            with self.database.cluster_lock(f"repo:{repo_id}"):
+                self._abort_direct_uploads(repo_id)
+                with self._storage_errors(storage, repo_id, "The upload could not be removed from object storage. Try again."):
+                    storage.delete_repository(repo_id)
+                self.database.delete_upload_target(repo_id)
+                self.database.delete_owned_repository(repo_id)
+                self._forget(repo_id)
+            return
         with self._write_lock:
             root = self._repository_root(repo_id)
             manifest = self._read_manifest(root)
@@ -576,6 +920,10 @@ class UploadManager:
             shutil.rmtree(self.settings.data_dir / "git-mirrors" / repo_id, ignore_errors=True)
 
     def _forget(self, repo_id: str) -> None:
+        for session in self.database.list_direct_change_sessions(repo_id):
+            self._discard_direct_session(session)
+        self._abort_direct_uploads(repo_id)
+        self.database.delete_upload_target(repo_id)
         self.database.delete_commits(repo_id)
         self.database.delete_file_digests(repo_id)
         self.database.delete_config_revisions(repo_id)
@@ -738,7 +1086,10 @@ class UploadManager:
                     "created_at": timestamp,
                 }
 
-        with self._write_lock:
+        with self.database.cluster_lock(f"repo-name:{new.lower()}"), self._write_lock:
+            # Checked again now that no other server can take the name meanwhile.
+            if self.database.repository_id_taken(new, ignore=old):
+                raise FileExistsError(f"{new} already exists.")
             manifest_path = old_root / ".hugginghack.json"
             original_manifest = manifest_path.read_text(encoding="utf-8") if manifest_path.is_file() else None
             self._move_folder(old_root, new_root)
@@ -790,9 +1141,16 @@ class UploadManager:
     def _staging_root(self) -> Path:
         return self.settings.model_storage / STAGING_DIRECTORY
 
-    def _session(self, session_id: str, user: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
+    def _session(self, session_id: str, user: dict[str, Any]) -> tuple[Path | None, dict[str, Any]]:
+        """A change session: its staging folder and record, or no folder for one
+        whose files go straight to the bucket (kept in the database instead)."""
         if not SESSION_PATTERN.fullmatch(session_id):
             raise FileNotFoundError("Change session not found.")
+        direct = self.database.get_direct_change_session(session_id)
+        if direct is not None:
+            if direct["user_id"] != user["id"]:
+                raise FileNotFoundError("Change session not found.")
+            return None, direct
         root = self._staging_root() / session_id
         try:
             session = json.loads((root.parent / f"{session_id}.json").read_text(encoding="utf-8"))
@@ -814,6 +1172,25 @@ class UploadManager:
         if moving:
             raise ValueError(moving)
         session_id = uuid.uuid4().hex
+        storage = self.storages.for_model(model)
+        if self._direct(storage):
+            now = utc_now()
+            record = self.database.create_direct_change_session(
+                {
+                    "id": session_id,
+                    "repo_id": validated,
+                    "user_id": user["id"],
+                    "storage_target": storage.id,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+            return {key: record[key] for key in ("id", "repo_id", "user_id", "created_at")}
+        if self.settings.cluster_mode:
+            raise RuntimeError(
+                "This model's storage does not take uploads straight from the browser, "
+                "which several servers need. Ask an administrator to turn on direct uploads for it."
+            )
         staging = self._staging_root()
         (staging / session_id).mkdir(parents=True)
         session = {
@@ -836,10 +1213,71 @@ class UploadManager:
             raise ValueError("Symbolic links are not valid upload targets.")
         return target, partial, relative
 
+    def begin_change_file(
+        self, session_id: str, user: dict[str, Any], file_path: str, size: int
+    ) -> dict[str, Any]:
+        root, session = self._session(session_id, user)
+        if root is not None:
+            return {"direct": False}
+        storage = self._session_storage(session)
+        relative = validate_upload_path(file_path).as_posix()
+        self.database.touch_direct_change_session(session_id, utc_now())
+        return self._begin_direct(
+            storage,
+            session["repo_id"],
+            session_id,
+            relative,
+            storage.change_key(session["repo_id"], session_id, relative),
+            size,
+            user["id"],
+        )
+
+    def change_part_links(
+        self, session_id: str, user: dict[str, Any], file_path: str, numbers: list[int]
+    ) -> dict[str, Any]:
+        storage, record = self._change_record(session_id, user, file_path)
+        return self._part_links(storage, record, numbers)
+
+    def complete_change_file(self, session_id: str, user: dict[str, Any], file_path: str) -> dict[str, Any]:
+        storage, record = self._change_record(session_id, user, file_path)
+        return self._complete_direct(storage, record)
+
+    def _change_record(
+        self, session_id: str, user: dict[str, Any], file_path: str
+    ) -> tuple[FilesystemModelStorage, dict[str, Any]]:
+        root, session = self._session(session_id, user)
+        if root is not None:
+            raise FileNotFoundError("Start this file's upload first.")
+        self.database.touch_direct_change_session(session_id, utc_now())
+        return self._direct_record(self._session_storage(session), session["repo_id"], session_id, file_path)
+
+    def _session_storage(self, session: dict[str, Any]) -> FilesystemModelStorage:
+        try:
+            storage = self.storages.get(session["storage_target"])
+        except ValueError as error:
+            raise FileNotFoundError("Change session not found.") from error
+        if not self._direct(storage):
+            raise RuntimeError("This model's storage no longer takes uploads straight from the browser. Start the change again.")
+        return storage
+
+    def _discard_direct_session(self, session: dict[str, Any]) -> None:
+        """Remove a change session that uploads to a bucket, with its unfinished
+        uploads and its upload area. Best effort in the bucket."""
+        self._abort_direct_uploads(session["repo_id"], session["id"])
+        try:
+            storage = self.storages.get(session["storage_target"])
+        except ValueError:
+            storage = None
+        if storage is not None and storage.remote:
+            storage.delete_change_area(session["repo_id"], session["id"])
+        self.database.delete_direct_change_session(session["id"])
+
     def change_file_status(
         self, session_id: str, user: dict[str, Any], file_path: str
     ) -> dict[str, Any]:
         root, _ = self._session(session_id, user)
+        if root is None:
+            raise RuntimeError(UPLOADS_TO_STORAGE)
         target, partial, _ = self._staged_target(root, file_path)
         if target.is_file():
             return {"offset": target.stat().st_size, "complete": True}
@@ -857,13 +1295,18 @@ class UploadManager:
         payload: bytes,
     ) -> dict[str, Any]:
         root, _ = self._session(session_id, user)
+        if root is None:
+            raise RuntimeError(UPLOADS_TO_STORAGE)
         self._check_chunk(offset, total, payload)
         return self._write_chunk(
             lambda: self._staged_target(root, file_path), offset, total, payload
         )
 
     def abort_change(self, session_id: str, user: dict[str, Any]) -> None:
-        root, _ = self._session(session_id, user)
+        root, session = self._session(session_id, user)
+        if root is None:
+            self._discard_direct_session(session)
+            return
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(root.parent / f"{session_id}{BACKUP_SUFFIX}", ignore_errors=True)
         (root.parent / f"{session_id}.json").unlink(missing_ok=True)
@@ -886,6 +1329,8 @@ class UploadManager:
         moving = self.move_guard(repo_id) if self.move_guard else None
         if moving:
             raise ValueError(moving)
+        if root is None:
+            return self._commit_direct(session, model, user, message, description, deletions)
         if any(path.name.endswith(PART_SUFFIX) for path in root.rglob("*")):
             raise ValueError("Finish all file uploads before committing the change.")
         staged = {
@@ -901,7 +1346,7 @@ class UploadManager:
         repository_root = self._repository_root(repo_id)
         local_copy = bool(model.get("cached")) and repository_root.is_dir()
 
-        with self._write_lock:
+        with self.database.cluster_lock(f"repo:{repo_id}"), self._write_lock:
             if local_copy:
                 self._apply_local_change(root, repo_id, storage, repository_root, staged, removed)
                 updated = self.indexer.index_path(repository_root)
@@ -926,6 +1371,66 @@ class UploadManager:
                 author=user,
                 description=description,
                 touched=set(staged),
+            )
+        return {"model": updated, "commit": commit}
+
+    def _commit_direct(
+        self,
+        session: dict[str, Any],
+        model: dict[str, Any],
+        user: dict[str, Any],
+        message: str,
+        description: str,
+        deletions: list[str] | None,
+    ) -> dict[str, Any]:
+        """Commit a change the browser uploaded to the bucket's change area: the
+        bucket copies the files into place, so no byte passes through this server."""
+        repo_id, session_id = session["repo_id"], session["id"]
+        storage = self._session_storage(session)
+        if storage.id != self.storages.for_model(model).id:
+            raise ValueError("The model moved to another storage location during the upload. Start the change again.")
+        records = self.database.list_direct_uploads(repo_id, session_id)
+        if any(not record["complete"] for record in records):
+            raise ValueError("Finish all file uploads before committing the change.")
+        uploaded = {record["path"]: record["object_key"] for record in records}
+        removed = {validate_upload_path(path).as_posix() for path in deletions or []} - set(uploaded)
+        if not uploaded and not removed:
+            raise ValueError("Upload or delete at least one file.")
+        repository_root = self._repository_root(repo_id)
+        local_copy = bool(model.get("cached")) and repository_root.is_dir()
+        with self.database.cluster_lock(f"repo:{repo_id}"), self._write_lock:
+            with self._storage_errors(storage, repo_id):
+                manifest = storage.repository_manifest(repo_id, strict=True) or self._replacement_manifest(repo_id)
+                published = storage.apply_uploaded_changes(repo_id, uploaded, removed, manifest)
+                if local_copy:
+                    # This server's cached copy follows the bucket.
+                    storage.download_files(repo_id, uploaded, repository_root)
+            if local_copy:
+                for relative in removed:
+                    target = repository_root.joinpath(*PurePosixPath(relative).parts)
+                    if target.is_file() and not target.is_symlink():
+                        target.unlink()
+                        self._remove_empty_parents(repository_root, PurePosixPath(relative))
+                size, file_count, _ = directory_stats(repository_root)
+                cached = self._read_manifest(repository_root) or dict(published)
+                cached.update(
+                    {"change": published.get("change"), "total_bytes": size, "file_count": file_count, "updated_at": utc_now()}
+                )
+                (repository_root / ".hugginghack.json").write_text(json.dumps(cached, indent=2), encoding="utf-8")
+                updated = self.indexer.index_path(repository_root)
+            else:
+                updated = self._reindex_remote(model, storage)
+            self._discard_direct_session(session)
+        if self.database.get_owned_repository(repo_id):
+            self.database.update_owned_repository(repo_id, updated_at=utc_now())
+        commit = None
+        if self.history and updated:
+            commit = self.history.record(
+                updated,
+                message,
+                author=user,
+                description=description,
+                touched=set(uploaded),
             )
         return {"model": updated, "commit": commit}
 

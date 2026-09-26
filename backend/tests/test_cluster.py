@@ -111,12 +111,18 @@ def test_cluster_mode_accepts_postgres_and_buckets_but_not_models_on_a_disk(shar
     settings, database = server(
         shared_url, tmp_path, "a", cluster_mode=True,
         storage_targets_json='[{"id":"grid","bucket":"models","endpoint_url":"http://grid.test",'
-        '"access_key_env":"GRID_KEY","secret_key_env":"GRID_SECRET"}]',
+        '"access_key_env":"GRID_KEY","secret_key_env":"GRID_SECRET","direct_uploads":true}]',
         default_storage_target="grid",
     )
     storages = create_storage_registry(settings)
     try:
         assert startup_problems(settings, database, storages, system_remote=True) == []
+        # A bucket that takes uploads through a server's disk cannot be shared.
+        staging = dataclasses.replace(settings, storage_targets_json=settings.storage_targets_json.replace(
+            '"direct_uploads":true', '"direct_uploads":false'
+        ))
+        [problem] = startup_problems(staging, database, create_storage_registry(staging), system_remote=True)
+        assert problem.startswith("CLUSTER_MODE needs direct uploads on every bucket") and "grid" in problem
         folder = settings.model_storage / "acme" / "on-disk"
         folder.mkdir(parents=True)
         (folder / "config.json").write_text("{}")

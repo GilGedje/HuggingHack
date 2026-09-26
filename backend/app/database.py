@@ -207,6 +207,7 @@ BIG_NUMBER_COLUMNS = {
     "local_models": ("size_bytes", "parameter_count"),
     "runtime_jobs": ("total_bytes", "processed_bytes"),
     "storage_moves": ("total_bytes", "copied_bytes", "verified_bytes"),
+    "direct_uploads": ("size", "part_size"),
 }
 USERS_COLUMNS = """
                     id TEXT PRIMARY KEY,
@@ -686,6 +687,41 @@ class Database:
                     name TEXT PRIMARY KEY,
                     value_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS upload_targets (
+                    repo_id TEXT PRIMARY KEY,
+                    storage_target TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS direct_change_sessions (
+                    id TEXT PRIMARY KEY,
+                    repo_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    storage_target TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_direct_change_sessions_repo
+                    ON direct_change_sessions(repo_id);
+
+                CREATE TABLE IF NOT EXISTS direct_uploads (
+                    id TEXT PRIMARY KEY,
+                    repo_id TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    storage_target TEXT NOT NULL,
+                    object_key TEXT NOT NULL,
+                    upload_id TEXT,
+                    size BIGINT NOT NULL,
+                    part_size BIGINT NOT NULL,
+                    complete INTEGER NOT NULL DEFAULT 0,
+                    user_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(repo_id, scope, path)
                 );
 
                 CREATE TABLE IF NOT EXISTS revision_aliases (
@@ -2428,6 +2464,159 @@ class Database:
                 "SELECT value_json FROM cluster_state WHERE name = ?", (name,)
             ).fetchone()
         return json.loads(row["value_json"]) if row else None
+
+    # Uploads that go from the browser straight to a bucket (docs/SCALING.md, phase 2).
+    # A new repository's bucket is recorded until it is finalized; a change session
+    # to a bucket lives here instead of in the staging folder, so any server can
+    # continue it; each file is one multipart upload with its declared size.
+
+    def set_upload_target(self, repo_id: str, storage_target: str, created_at: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO upload_targets (repo_id, storage_target, created_at) VALUES (?, ?, ?) "
+                "ON CONFLICT (repo_id) DO UPDATE SET storage_target = excluded.storage_target",
+                (repo_id, storage_target, created_at),
+            )
+
+    def get_upload_target(self, repo_id: str) -> str | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT storage_target FROM upload_targets WHERE repo_id = ?", (repo_id,)
+            ).fetchone()
+        return row["storage_target"] if row else None
+
+    def delete_upload_target(self, repo_id: str) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM upload_targets WHERE repo_id = ?", (repo_id,))
+
+    def create_direct_change_session(self, record: dict[str, Any]) -> dict[str, Any]:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO direct_change_sessions (id, repo_id, user_id, storage_target, created_at, updated_at) "
+                "VALUES (:id, :repo_id, :user_id, :storage_target, :created_at, :updated_at)",
+                record,
+            )
+        return dict(record)
+
+    def get_direct_change_session(self, session_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM direct_change_sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def touch_direct_change_session(self, session_id: str, updated_at: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE direct_change_sessions SET updated_at = ? WHERE id = ?", (updated_at, session_id)
+            )
+
+    def list_direct_change_sessions(
+        self, repo_id: str | None = None, updated_before: str | None = None
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if repo_id is not None:
+            clauses.append("repo_id = ?")
+            parameters.append(repo_id)
+        if updated_before is not None:
+            clauses.append("updated_at < ?")
+            parameters.append(updated_before)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM direct_change_sessions{where} ORDER BY created_at", parameters
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_direct_change_session(self, session_id: str) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM direct_uploads WHERE scope = ?", (session_id,))
+            connection.execute("DELETE FROM direct_change_sessions WHERE id = ?", (session_id,))
+
+    def add_direct_upload(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Record a file's multipart upload. The one already recorded wins, so two
+        requests starting the same file share one upload."""
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO direct_uploads (
+                    id, repo_id, scope, path, storage_target, object_key, upload_id,
+                    size, part_size, complete, user_id, created_at, updated_at
+                ) VALUES (
+                    :id, :repo_id, :scope, :path, :storage_target, :object_key, :upload_id,
+                    :size, :part_size, :complete, :user_id, :created_at, :updated_at
+                )
+                ON CONFLICT (repo_id, scope, path) DO NOTHING
+                """,
+                {**record, "complete": int(bool(record.get("complete")))},
+            )
+        return self.get_direct_upload(record["repo_id"], record["scope"], record["path"])  # type: ignore[return-value]
+
+    def get_direct_upload(self, repo_id: str, scope: str, path: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM direct_uploads WHERE repo_id = ? AND scope = ? AND path = ?",
+                (repo_id, scope, path),
+            ).fetchone()
+        return self._direct_upload(row)
+
+    @staticmethod
+    def _direct_upload(row: Any) -> dict[str, Any] | None:
+        if not row:
+            return None
+        result = dict(row)
+        result["complete"] = bool(result["complete"])
+        result["size"] = int(result["size"])
+        result["part_size"] = int(result["part_size"])
+        return result
+
+    def list_direct_uploads(
+        self, repo_id: str | None = None, scope: str | None = None, updated_before: str | None = None
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        for column, value in (("repo_id", repo_id), ("scope", scope)):
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                parameters.append(value)
+        if updated_before is not None:
+            clauses.append("updated_at < ?")
+            parameters.append(updated_before)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM direct_uploads{where} ORDER BY path", parameters
+            ).fetchall()
+        return [self._direct_upload(row) for row in rows]  # type: ignore[misc]
+
+    def update_direct_upload(self, upload_id: str, **fields: Any) -> None:
+        values = {
+            key: (int(value) if key == "complete" else value)
+            for key, value in fields.items()
+            if key in {"complete", "updated_at"}
+        }
+        if not values:
+            return
+        assignments = ", ".join(f"{key} = :{key}" for key in values)
+        with self.connect() as connection:
+            connection.execute(
+                f"UPDATE direct_uploads SET {assignments} WHERE id = :id", {**values, "id": upload_id}
+            )
+
+    def delete_direct_uploads(
+        self, repo_id: str, scope: str | None = None, upload_id: str | None = None
+    ) -> None:
+        clauses = ["repo_id = ?"]
+        parameters: list[Any] = [repo_id]
+        if scope is not None:
+            clauses.append("scope = ?")
+            parameters.append(scope)
+        if upload_id is not None:
+            clauses.append("id = ?")
+            parameters.append(upload_id)
+        with self.connect() as connection:
+            connection.execute(f"DELETE FROM direct_uploads WHERE {' AND '.join(clauses)}", parameters)
 
     def open_session(self) -> Any:
         """A PostgreSQL connection of its own, outside the pools, for a session-level
