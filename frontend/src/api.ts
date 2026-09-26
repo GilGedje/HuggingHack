@@ -20,6 +20,10 @@ import type {
   UserPreferences,
   AuthStatus,
   ChangeSession,
+  DirectPartLink,
+  DirectUploadState,
+  ServerUpload,
+  UploadDestination,
   CommitDetail,
   CommitSummary,
   ConfigListing,
@@ -486,6 +490,25 @@ export const api = {
       signal,
     )
   },
+  // Direct uploads: the server starts and completes a file; its parts go to the bucket.
+  beginDirectFile: (destination: UploadDestination, path: string, size: number, signal?: AbortSignal) =>
+    request<DirectUploadState | ServerUpload>(directUrl(destination, 'begin'), {
+      method: 'POST',
+      body: JSON.stringify({ path, size }),
+      signal,
+    }),
+  directFileParts: (destination: UploadDestination, path: string, parts: number[], signal?: AbortSignal) =>
+    request<{ parts: DirectPartLink[]; expires_in: number }>(directUrl(destination, 'parts'), {
+      method: 'POST',
+      body: JSON.stringify({ path, parts }),
+      signal,
+    }),
+  completeDirectFile: (destination: UploadDestination, path: string, signal?: AbortSignal) =>
+    request<DirectUploadState>(directUrl(destination, 'complete'), {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+      signal,
+    }),
   commitChange: (
     sessionId: string,
     payload: { message: string; description?: string; deletions?: string[] },
@@ -512,6 +535,13 @@ export const api = {
     ),
   fileUrl: (repoId: string, path: string) =>
     `/api/library/file?${new URLSearchParams({ repo_id: repoId, path }).toString()}`,
+}
+
+export function directUrl(destination: UploadDestination, step: 'begin' | 'parts' | 'complete'): string {
+  if ('sessionId' in destination) {
+    return `/api/repos/changes/${encodeURIComponent(destination.sessionId)}/files/${step}`
+  }
+  return `/api/uploads/repositories/files/${step}?${new URLSearchParams({ repo_id: destination.repoId }).toString()}`
 }
 
 async function uploadResumable(

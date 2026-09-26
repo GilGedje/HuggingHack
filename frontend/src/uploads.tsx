@@ -20,6 +20,8 @@ import {
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { api } from './api'
+import { uploadDirect } from './directUpload'
+import type { UploadDestination } from './types'
 import { useConfirm } from './components/ConfirmDialog'
 import { DOCK_EXIT_MS, useFadeOnChange } from './motion'
 import { isRecorded } from './uploadPlan'
@@ -310,7 +312,23 @@ export function UploadProvider({
                   : entry,
               ),
             )
-          if (job.kind === 'change' && sessionId) {
+          const destination: UploadDestination =
+            job.kind === 'change' && sessionId ? { sessionId } : { repoId: job.repoId }
+          // Storage that takes uploads straight from the browser gets the parts;
+          // otherwise the file goes to the server in chunks.
+          const begun = await api.beginDirectFile(destination, item.path, item.file.size, controller.signal)
+          if (begun.direct) {
+            await uploadDirect(
+              item.file,
+              begun,
+              {
+                parts: (numbers) => api.directFileParts(destination, item.path, numbers, controller.signal),
+                complete: () => api.completeDirectFile(destination, item.path, controller.signal),
+              },
+              progress,
+              controller.signal,
+            )
+          } else if (job.kind === 'change' && sessionId) {
             await api.uploadChangeFile(
               sessionId, item.path, item.file, chunkBytes.current, progress, controller.signal,
             )

@@ -47,6 +47,11 @@ MIN_PART_BYTES = 5 * 1024**2
 SKETCH_WHOLE_FILES = {"config.json", "hf_quant_config.json", "README.md"}
 SKETCH_WHOLE_MAX_BYTES = 1_000_000
 SKETCH_GGUF_HEADER_BYTES = 64 * 1024**2
+# What a manifest says about a model that its files decide.
+DESCRIBED_KEYS = {
+    "config", "parameter_count", "formats", "precision", "pipeline_tag", "library_name",
+    "license", "tags", "base_model", "base_model_relation",
+}
 TARGET_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 # The parts of a signed link that grant access; never logged or shown.
 SIGNED_QUERY = re.compile(r"((?:X-Amz-Signature|X-Amz-Credential|X-Amz-Security-Token|Signature|AWSAccessKeyId)=)[^&\s\"'<>]+")
@@ -1305,6 +1310,24 @@ class S3ModelStorage(FilesystemModelStorage):
             manifest["change"] = uuid4().hex
             self.publish_manifest(validated, manifest)
         return manifest
+
+    def describe_published(self, repo_id: str, manifest: dict[str, Any]) -> dict[str, Any]:
+        """Describe a published repository again from its files in the bucket, after a
+        change replaced or removed some, and publish the manifest with what they say
+        now. An upload's facts come from its files alone: a card that was deleted
+        takes its license and task with it."""
+        validated = validate_repo_id(repo_id)
+        described = {
+            key: value
+            for key, value in manifest.items()
+            if manifest.get("source") != "user-upload" or key not in DESCRIBED_KEYS
+        }
+        with self._lock, tempfile.TemporaryDirectory(prefix="hugginghack-sketch-") as workspace:
+            root = Path(workspace) / "repository"
+            self._sketch(validated, root)
+            self._describe(validated, root, described)
+            self.publish_manifest(validated, described)
+        return described
 
     def _sketch(self, repo_id: str, root: Path) -> None:
         """A local stand-in for a bucket repository, enough for repository_facts:

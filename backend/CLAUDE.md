@@ -39,7 +39,7 @@ PYTHONPATH=backend DATABASE_URL=postgresql://... .venv/bin/python -m app.migrate
 ```
 
 **Definition of done:** run the suite with `TEST_POSTGRES_URL` set, and with `git` and
-`git-lfs` on PATH, until it reports **0 skipped**. Without Postgres, 19 tests skip. Without
+`git-lfs` on PATH, until it reports **0 skipped**. Without Postgres, 40 tests skip. Without
 git-lfs, the clone tests skip. SQLite passing alone is not enough. GitHub Actions does not run for this repository, so this local run is the gate.
 
 ## Module map (`backend/app`)
@@ -56,7 +56,7 @@ git-lfs, the clone tests skip. SQLite passing alone is not enough. GitHub Action
 | `hub_api.py` | Hub protocol: `HubRepositories` (`model`, `model_info`, `tree`, `resolve`), `HubError`, `local_entries`/`remote_entries`, `parse_range` |
 | `git_mirror.py` | `GitMirrors`: pure-Python bare repos served over git's dumb HTTP. Weights become LFS pointers and are streamed from the library. Mirrors persist in the system folder. |
 | `storage.py` | `FilesystemModelStorage`, `S3ModelStorage` (boto3), `StorageRegistry` (local plus `STORAGE_TARGETS_JSON` targets), `StorageUnavailableError` |
-| `uploads.py` | `UploadManager`: repo create/rename/delete, resumable chunk uploads, `finalize`, change sessions (`start_change` → `change_chunk` → `commit_change`), `can_manage`/`can_edit` |
+| `uploads.py` | `UploadManager`: repo create/rename/delete, resumable chunk uploads, `finalize`, change sessions (`start_change` → `change_chunk` → `commit_change`), direct uploads to a bucket (`begin_*_file` → `*_part_links` → `complete_*_file`, `sweep_stale_uploads`), `can_manage`/`can_edit` |
 | `indexer.py` | `LocalModelIndexer.scan`/`index_path`/`index_remote`, `hidden_path`, safetensors/GGUF header parsing (bytes only), `upload_is_registered` |
 | `history.py` | `RepoHistory`: commit records per repository, with text blobs deduplicated by SHA-256 for diffs |
 | `catalog.py` | Offline Models-tab search, facets, model card, GGUF ranges and assets (callers pass pre-filtered models) |
@@ -204,6 +204,23 @@ mirrored in `frontend/src/uploadPlan.ts` `isRecorded`, so change both together.
   until `presign_ttl_seconds` after the switch (`MoveManager._links_outstanding`, from the
   `switched_at` column, so it survives restarts). Signed links never go into logs or
   responses other than the redirect: `redact()` strips `SIGNED_QUERY`.
+- **Direct uploads** (`direct_uploads` on a target): one S3 multipart upload per file; the
+  browser PUTs parts to `S3ModelStorage.presigned_part` links. `begin` answers `{"direct": false}`
+  for other storage (the chunk path stays the fallback) and otherwise the parts the bucket has,
+  read with `uploaded_parts` (`ListParts`); `complete` checks every part's size from the bucket,
+  never from the browser. In-flight state is in the database only: `upload_targets` (an
+  unfinished repository's bucket; no local folder is made for it), `direct_change_sessions`,
+  `direct_uploads` (declared size is fixed per file). A new repository's files land at their
+  final keys and exist only once `_finalize_direct` publishes the manifest
+  (`publish_uploaded_repository`, which describes the model from a `_sketch`: small metadata
+  files whole, weight headers by range). A change lands in `CHANGES_DIRECTORY`
+  (`<repo>/.hugginghack-changes/<session>/`) and `apply_uploaded_changes` copies it into place
+  with the same pending-record order as `apply_changes`. **`in_change_area` keys are never part
+  of a repository**: `_begin_change`, `sync_repository`'s cleanup, `_repository_objects` (so
+  listings, restores, `object_files` for moves) and `discover_repositories` all skip them; keep
+  it that way in anything new that lists a prefix. `sweep_stale_uploads` (run by the library
+  scan) aborts uploads untouched for `STALE_CHANGE_SECONDS`. `main.CONTENT_SECURITY_POLICY`
+  adds each direct-upload bucket's public origin to `connect-src` (`direct_upload_origins`).
 
 **HTTP security (main.py)**
 - `reject_cross_site_writes`: a POST/PUT/PATCH/DELETE carrying a foreign `Origin` gets 403.
@@ -212,7 +229,9 @@ mirrored in `frontend/src/uploadPlan.ts` `isRecorded`, so change both together.
   uvicorn does), or uvicorn already swapped the client for its `X-Forwarded-For` (port 0).
   Clients that send no Origin (git, hf, curl) pass.
 - `security_headers` sets `CONTENT_SECURITY_POLICY`: `script-src 'self'`,
-  `connect-src 'self'`, no external origins (styles may be inline). The built UI must have no
+  `connect-src 'self'` plus only the public origins of buckets with `direct_uploads`
+  (`content_security_policy(direct_upload_origins(storages))`), no other external origins
+  (styles may be inline). The built UI must have no
   inline scripts and no CDN or external URLs. `nosniff`, `X-Frame-Options: DENY`, and `no-cache` for HTML.
 - `AllowedHosts` enforces `ALLOWED_HOSTS` (loopback is always allowed). `/api/docs` and
   `/openapi.json` exist only with `API_DOCS_ENABLED` (Swagger comes from a CDN, so it won't render offline).
@@ -290,7 +309,8 @@ safetensors/GGUF headers with bounded sizes. Pickle-family files are only flagge
 | `UPLOAD_CHUNK_MB` / `MAX_UPLOAD_SIZE_GB` | `8` / `1024` | Upload chunking and cap |
 | `S3_BUCKET` `S3_PREFIX`(`models`) `S3_ENDPOINT_URL` `S3_REGION` `S3_ACCESS_KEY_ID` `S3_SECRET_ACCESS_KEY` `S3_SESSION_TOKEN` `S3_USE_SSL`(`true`) `S3_VERIFY_SSL`(`true`) `S3_ADDRESSING_STYLE`(`auto`) `S3_STORAGE_CLASS` | — | Legacy single bucket. Keys can come from boto3's chain (`AWS_*`) instead. |
 | `S3_MAX_CONCURRENCY` / `S3_MULTIPART_CHUNK_MB` | `4` / `64` | boto3 transfer tuning (applies to all targets) |
-| `S3_CA_BUNDLE` `S3_DIRECT_DOWNLOADS`(`false`) `S3_PUBLIC_ENDPOINT_URL` `S3_PRESIGN_TTL_SECONDS`(`900`) | — | Private CA for the endpoint; direct downloads through signed links (per target: `ca_bundle`, `direct_downloads`, `public_endpoint_url`, `presign_ttl_seconds`). The upload counterparts (`S3_DIRECT_UPLOADS`, `S3_PART_SIZE_MB`, `S3_UPLOAD_PRESIGN_TTL_SECONDS`) are read but not used yet (docs/SCALING.md phase 2). |
+| `S3_CA_BUNDLE` `S3_DIRECT_DOWNLOADS`(`false`) `S3_PUBLIC_ENDPOINT_URL` `S3_PRESIGN_TTL_SECONDS`(`900`) | — | Private CA for the endpoint; direct downloads through signed links (per target: `ca_bundle`, `direct_downloads`, `public_endpoint_url`, `presign_ttl_seconds`) |
+| `S3_DIRECT_UPLOADS`(`false`) `S3_PART_SIZE_MB`(`64`) `S3_UPLOAD_PRESIGN_TTL_SECONDS`(`3600`) | — | Direct uploads from the browser (per target: `direct_uploads`, `part_size_mb`, `upload_presign_ttl_seconds`); the bucket's CORS must allow `PUT` from `PUBLIC_URL` |
 | `CLUSTER_MODE` / `INSTANCE_ID` | `false` / hostname | Several processes sharing one database (docs/SCALING.md phase 3) |
 | `STORAGE_TARGETS_JSON` / `DEFAULT_STORAGE_TARGET` | `[]` / auto | Extra buckets (`parse_storage_targets`; credentials named via `access_key_env`/`secret_key_env`) / where new repos go |
 | `SYSTEM_STORAGE_TARGET` / `SYSTEM_STORAGE_PREFIX` | `local` / `<prefix>/_system` | Where avatars and git mirrors live |
@@ -307,7 +327,9 @@ Not in `config.py`: `FORWARDED_ALLOW_IPS` (read by uvicorn `--proxy-headers`, se
   import. Setting env vars after `import app.main` does nothing. Tests construct
   `Settings(...)` and monkeypatch `main.database`, `main.uploads` and so on.
 - Postgres tests share one database, so use unique ids (`uuid4().hex`) and clean up. They don't get a fresh schema.
-- Staging for change sessions is `MODEL_STORAGE/.hugginghack-staging`. The dotted name keeps it out of scans. A session younger than 24 h (`STALE_CHANGE_SECONDS`) blocks rename and delete.
+- Staging for change sessions is `MODEL_STORAGE/.hugginghack-staging`. The dotted name keeps it out of scans. A session younger than 24 h (`STALE_CHANGE_SECONDS`) blocks rename and delete. Direct change sessions have no staging folder (`_session` returns `None` for the root); they block the same way through `direct_change_sessions.updated_at`.
+- `_storage_errors` turns any non-`ValueError` raised inside it into `StorageUnavailableError` (502). Raise your own `RuntimeError` (409) outside the block, as `_complete_direct` does.
+- `add_direct_upload` stores `complete` as 0/1: PostgreSQL rejects a Python `bool` for an `INTEGER` column (SQLite does not), so the direct-upload tests run on both databases.
 - Threads: downloads (`ThreadPoolExecutor` plus a subprocess), runtime jobs, the move worker, S3 transfers (`use_threads=True`) and sync routes in Starlette's threadpool. Shared state needs locks, and file reads must take a `reads` lease (`main.leased`, `reads.hold`).
 - `/api/health` checks storage (an S3 `ListObjects`) only for callers with `settings.view`; anonymous calls, including the container health check, never touch S3.
 - `ACCOUNTS_ENABLED=false` makes `verify_csrf` always true. The Origin check is then the only CSRF defence.

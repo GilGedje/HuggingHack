@@ -604,6 +604,31 @@ export interface CommitDetail extends CommitSummary {
   changes: CommitChange[]
 }
 
+/** A file uploaded straight to the bucket: its parts, and those the bucket already has. */
+export interface DirectUploadState {
+  direct: true
+  path: string
+  size: number
+  part_size: number
+  part_count: number
+  complete: boolean
+  done: number[]
+}
+
+/** `begin` for storage that takes uploads through the server instead. */
+export interface ServerUpload {
+  direct: false
+}
+
+export interface DirectPartLink {
+  number: number
+  url: string
+  size: number
+}
+
+/** Where a file is uploaded: a new repository, or a change session. */
+export type UploadDestination = { repoId: string } | { sessionId: string }
+
 export interface ChangeSession {
   id: string
   repo_id: string

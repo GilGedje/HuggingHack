@@ -1405,6 +1405,15 @@ class UploadManager:
                 if local_copy:
                     # This server's cached copy follows the bucket.
                     storage.download_files(repo_id, uploaded, repository_root)
+                elif any(self._describes_model(path) for path in set(uploaded) | removed):
+                    # New weights or a new card change what the model is.
+                    published = storage.describe_published(repo_id, published)
+                    model = {
+                        **model,
+                        **{key: published.get(key) for key in ("pipeline_tag", "library_name", "license", "tags", "base_model", "base_model_relation", "parameter_count")},
+                        "config": published.get("config") or {},
+                        "precision": published.get("precision"),
+                    }
             if local_copy:
                 for relative in removed:
                     target = repository_root.joinpath(*PurePosixPath(relative).parts)
@@ -1433,6 +1442,12 @@ class UploadManager:
                 touched=set(uploaded),
             )
         return {"model": updated, "commit": commit}
+
+    @staticmethod
+    def _describes_model(path: str) -> bool:
+        """Whether a file says what the model is: its card, config, or weights."""
+        name = path.lower()
+        return path in {"README.md", "config.json", "hf_quant_config.json"} or name.endswith((".safetensors", ".gguf"))
 
     def _replacement_manifest(self, repo_id: str) -> dict[str, Any]:
         """A manifest for a bucket repository that has none, keeping an upload's

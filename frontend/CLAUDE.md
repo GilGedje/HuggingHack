@@ -148,7 +148,10 @@ Paths below are relative to `frontend/` unless marked *(repo root)*.
   - The address is the source of truth.
 - **Uploads.**
   - `UploadWizard` and `UploadChangeDialog` call `useUploads().enqueue(...)`, and `uploads.tsx` does the rest.
-  - Each file goes through `uploadResumable`, then `finalizeUpload` (new repo) or `startChange` → `uploadChangeFile` → `commitChange` / `abortChange` (change sessions).
+  - Each file first calls `api.beginDirectFile` (the new repository or the change session as its `UploadDestination`). Two engines follow:
+    - **Direct** (`begun.direct`, a bucket with `direct_uploads`): `uploadDirect` in `directUpload.ts` asks for signed part links in batches (`directFileParts`) and PUTs up to `PARALLEL_PARTS` parts at once straight to the bucket (`fetch` with `credentials: 'omit'`, no HuggingHack headers: the link is the permission), then `completeDirectFile`. Resume needs nothing stored: `begin` returns the parts the bucket already has. A refused part is signed again and retried; a network or TLS failure stops with `storageUnreachableMessage`, which names the storage host and the certificate/CORS causes, never `UNREACHABLE_MESSAGE`. Pure helpers and the engine are node-tested in `test/directUpload.test.mjs`.
+    - **Through the server** (`{direct: false}`): `uploadResumable` chunks as before.
+  - Then `finalizeUpload` (new repo) or `commitChange` / `abortChange` (change sessions, started with `startChange`).
   - On success it dispatches `hugginghack:repository-changed`, which pages listen for to refresh.
   - Each tab saves unfinished jobs under its own `hugginghack-uploads:<tab id>` key and heartbeats every 20 s. Another tab adopts them only once the lease (120 s) has lapsed (`uploadStore.ts`). `File` objects can't be stored, so restored jobs come back without their files.
   - **Keep these mirrors of backend rules in sync.** `isSkipped` mirrors `RESERVED_PARTS`, `RESERVED_FILENAMES` and `PART_SUFFIX` in `backend/app/uploads.py`. `isRecorded` mirrors `indexer.hidden_path` and `PART_SUFFIXES` (`.hugginghack-part`, `.hugginghack-s3-part`). Tests: `test/uploadPlan.test.mjs`.
@@ -179,7 +182,7 @@ Model-card assets (`/api/library/asset`) and avatars get the stricter `default-s
 - No external URLs of any kind: fonts, images, fetches, iframes. `connect-src 'self'` blocks them anyway. External *links* (`<a target="_blank" rel="noreferrer noopener">`) are fine.
 - Inline `style` attributes and CSS custom properties are allowed (`'unsafe-inline'`); the motion hooks depend on this.
 - Never use `dangerouslySetInnerHTML`. Render text through React, which escapes it. Don't turn free text from the address into a message; map it to fixed strings as `ssoError.ts` does.
-- All API calls go through `request()` or an `api.*` method, so CSRF, `credentials: 'same-origin'` and error handling stay uniform. A raw `fetch` for a write must set `X-CSRF-Token` itself, as `uploadResumable` does.
+- All API calls go through `request()` or an `api.*` method, so CSRF, `credentials: 'same-origin'` and error handling stay uniform. A raw `fetch` for a write must set `X-CSRF-Token` itself, as `uploadResumable` does. The one exception is `directUpload.ts`'s PUT to a bucket's signed link, which must send no cookies and no HuggingHack headers; the backend's CSP allows `connect-src` to exactly those bucket origins.
 - **Vite dev sends no CSP.** A CSP violation only shows on the build served by the backend on :7860.
 
 ## Air-gapped constraints

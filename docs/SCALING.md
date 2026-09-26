@@ -1,6 +1,6 @@
 # Scaling plan: direct-to-bucket transfers and multiple replicas
 
-Status: **phase 1 implemented; phases 2 and 3 planned.** Written 2026-09-26 against version 1.2.1. This is the
+Status: **phases 1, 2 and 3 implemented** (the Helm chart itself is still to be written). Written 2026-09-26 against version 1.2.1. This is the
 implementation brief for the production deployment: NetApp StorageGRID S3 behind a private CA,
 a 100 GbE network, PostgreSQL, and HuggingHack pods deployed with a Helm chart. Implement the
 phases in order; each one is shippable on its own and each later one assumes the earlier ones.
@@ -165,6 +165,27 @@ is green on PostgreSQL with 0 skipped and on SQLite.
 
 ## 4. Phase 2: direct uploads (multipart to the bucket)
 
+**Status: implemented.** Operator view: [SERVE_FROM_S3.md, "Direct uploads"](SERVE_FROM_S3.md#direct-uploads).
+Code: `UploadManager.begin_repository_file`/`begin_change_file` and friends, `S3ModelStorage`
+(`start_multipart`, `presigned_part`, `uploaded_parts`, `apply_uploaded_changes`,
+`publish_uploaded_repository`), `frontend/src/directUpload.ts`; tests in
+`backend/tests/test_direct_uploads.py` (each on SQLite and a fresh PostgreSQL database) and
+`frontend/test/directUpload.test.mjs`. Verified end to end in a browser against MinIO: the
+wizard and Upload changes with a reload mid-upload, zero upload bytes through HuggingHack, and
+`hf download` / `git clone` + LFS matching every hash. Where it differs from the plan below:
+
+- There is no `parts/done` step: `complete` reads the parts from the bucket (`ListParts`), so
+  the bucket's CORS policy only has to allow `PUT` (no exposed `ETag` needed).
+- `begin` is also the status call: it answers the parts the bucket has, and `{"direct": false}`
+  for storage that takes uploads through the server, so the browser needs no setting.
+- In-flight state is three tables: `upload_targets` (where an unfinished repository's files
+  go), `direct_change_sessions` and `direct_uploads` (one row per file, with its declared size).
+- `direct_uploads` defaults to off per bucket, like `direct_downloads`.
+- A direct commit describes the model again from the bucket (card, config, weight headers)
+  when it touches those files, so parameter count, license and task follow the change.
+- A new repository's finished files stay after a day of inactivity; only its unfinished
+  multipart uploads are given up.
+
 ### Flow
 
 1. `POST /api/uploads/repositories/files/begin` `{repo_id, path, size}` → the pod creates an
@@ -247,13 +268,11 @@ reload, and commits atomically; the pod's transfer volume for it is only control
 
 ## 5. Phase 3: multiple replicas
 
-**Status: 3a done (cluster infrastructure); 3b waits for phase 2.** Everything below except
-the upload paths is implemented and tested (`backend/app/cluster.py`,
+**Status: implemented.** Cluster infrastructure (`backend/app/cluster.py`,
 `backend/tests/test_cluster.py`, and a run of two real servers on one PostgreSQL database and
-one bucket). Uploads and change sessions still stage files on the server that receives them, so
-until phase 2 lands a cluster must not take uploads through more than one server
-(`uploads.py` and the upload paths of `storage.py` get `Database.cluster_lock` there, and
-cluster mode will then require `direct_uploads`).
+one bucket), plus the upload side with phase 2: cluster mode requires `direct_uploads` on
+every bucket, never offers a server's own disk for new repositories, answers 409 to chunk
+uploads, and takes `Database.cluster_lock` for repository names, finalize and commits.
 
 ### Running several replicas
 
@@ -266,6 +285,7 @@ that cannot share the library refuses to start and logs one sentence per reason:
 - New models would go to a server's own disk (`DEFAULT_STORAGE_TARGET` is `local`).
 - Profile pictures and git history would stay on one server (`SYSTEM_STORAGE_TARGET` is `local`).
 - A model is indexed on a server's own disk: move it to a bucket first (Admin → Storage).
+- A bucket without `direct_uploads`: its uploads would wait on one server's disk.
 - `HF_DOWNLOADS_ENABLED=true`: downloads are written to one server's disk.
 
 Every server answers every request. One server, the **leader**, also does the work that must

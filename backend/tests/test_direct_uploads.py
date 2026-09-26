@@ -363,7 +363,10 @@ def test_direct_upload_requests_check_who_asks_and_what_they_ask(direct):
 def test_a_change_uploads_to_its_own_area_and_the_bucket_copies_it_into_place(direct):
     fake = direct["fakes"]["grid"]
     owner = login("owner")
-    repo_id = publish_repository(direct, owner, "changing", {"config.json": CONFIG, "model.safetensors": WEIGHTS, "old.txt": b"old"})
+    repo_id = publish_repository(
+        direct, owner, "changing", {"config.json": CONFIG, "model.safetensors": WEIGHTS, "old.txt": b"old", "README.md": CARD}
+    )
+    assert direct["database"].get_local_model(repo_id)["license"] == "mit"
     new_weights = safetensors(99, 11 * MB)
 
     first = owner.post("/api/repos/changes", json={"repo_id": repo_id}).json()["id"]
@@ -383,10 +386,18 @@ def test_a_change_uploads_to_its_own_area_and_the_bucket_copies_it_into_place(di
     chunk = owner.put(f"{base}", params={"path": "x.bin"}, content=b"x", headers={"Upload-Offset": "0", "Upload-Length": "1"})
     assert chunk.status_code == 409
 
-    committed = owner.post(f"/api/repos/changes/{first}/commit", json={"message": "New weights", "deletions": ["old.txt"]})
+    committed = owner.post(
+        f"/api/repos/changes/{first}/commit", json={"message": "New weights", "deletions": ["old.txt", "README.md"]}
+    )
     assert committed.status_code == 200, committed.text
     assert fake.objects["models/owner/changing/model.safetensors"] == new_weights
     assert "models/owner/changing/old.txt" not in fake.objects
+    # The model is described again from what the bucket now holds: without the card,
+    # its license is gone and its task comes from the config.
+    model = direct["database"].get_local_model(repo_id)
+    assert (model["parameter_count"], model["license"], model["pipeline_tag"]) == (99, None, "llama")
+    manifest = json.loads(fake.objects["models/owner/changing/.hugginghack.json"])
+    assert manifest["parameter_count"] == 99 and "license" not in manifest
     assert (f"models/owner/changing/{CHANGES_DIRECTORY}/{first}/model.safetensors", "models/owner/changing/model.safetensors") in fake.copies
     assert not any(key.startswith(f"models/owner/changing/{CHANGES_DIRECTORY}/{first}/") for key in fake.objects)
     # The other session's upload survived this commit's cleanup, and commits too.

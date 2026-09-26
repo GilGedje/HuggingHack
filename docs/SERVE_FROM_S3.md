@@ -368,6 +368,86 @@ Check it: `curl -sI http://192.168.1.50:7860/owner/name/resolve/main/config.json
 `200`, and the same URL with `curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n'`
 answers `302` and a link to `public_endpoint_url`.
 
+### Direct uploads
+
+Uploads have the same bottleneck the other way: every byte goes from the browser to
+HuggingHack, which then copies the folder into the bucket. With **direct uploads**, the browser
+sends each file straight to the bucket as a multipart upload:
+
+1. The browser asks HuggingHack to begin a file. HuggingHack checks the uploader's rights,
+   starts an S3 multipart upload, and answers with the part size and the parts the bucket
+   already has.
+2. HuggingHack signs a short-lived link per part; the browser PUTs up to six parts at once
+   straight to the bucket.
+3. The browser asks HuggingHack to complete the file. HuggingHack checks every part with the
+   bucket (`ListParts`) and completes it.
+
+Nothing the browser says about its progress is trusted: a reload, a lost connection or another
+server behind a load balancer asks the bucket what arrived and sends only the rest.
+
+- **New models** (the upload wizard): files go to their final place in the bucket, but the
+  model does not exist until **Finalize** writes its manifest, so no scan, listing or pull
+  sees a half-uploaded model. Finalize reads the card, config and weight headers from the
+  bucket to describe it.
+- **Upload changes**: files go to `<model>/.hugginghack-changes/<change id>/` first, so pulls
+  keep getting the current version. **Commit** has the bucket copy them into place, then
+  publishes the new version and removes what the change deleted. Cancel removes the upload
+  area. Scans, listings, moves and other commits never touch these areas.
+- Uploads nobody touched for a day are given up at the next library scan: their parts are
+  aborted in the bucket, and a change's upload area is removed.
+- Buckets without `direct_uploads`, and the local disk, keep the upload through the server.
+
+Turn it on per bucket, next to direct downloads:
+
+```dotenv
+STORAGE_TARGETS_JSON=[{"id":"grid","name":"StorageGRID","bucket":"models","prefix":"models","endpoint_url":"https://s3.grid.internal","public_endpoint_url":"https://s3.grid.example","region":"us-east-1","addressing_style":"path","access_key_env":"GRID_KEY","secret_key_env":"GRID_SECRET","ca_bundle":"/data/internal-ca.pem","direct_downloads":true,"direct_uploads":true,"part_size_mb":64}]
+```
+
+or, for the single bucket configured with `S3_*`: `S3_DIRECT_UPLOADS=true`, `S3_PART_SIZE_MB`,
+`S3_UPLOAD_PRESIGN_TTL_SECONDS`.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `direct_uploads` | `false` | Browsers upload files straight to the bucket. |
+| `part_size_mb` | `64` (5–5120) | Size of each part. A file too large for 10,000 parts gets bigger parts automatically. |
+| `upload_presign_ttl_seconds` | `3600` (60–604800) | How long a part's link stays valid. A refused part is signed again and retried. |
+
+Before you turn it on:
+
+1. **Allow uploads from HuggingHack's page in the bucket's CORS policy.** The browser sends
+   parts to another address than the page it runs on, so the bucket must allow `PUT` from
+   `PUBLIC_URL`. HuggingHack reads what arrived from the bucket, so no response header needs to
+   be exposed. With the AWS CLI (StorageGRID accepts the same document in its tenant manager,
+   under the bucket's **CORS** settings):
+
+   ```bash
+   cat > cors.json <<'EOF'
+   {"CORSRules": [{
+     "AllowedOrigins": ["https://hub.example.internal"],
+     "AllowedMethods": ["PUT"],
+     "AllowedHeaders": ["*"],
+     "ExposeHeaders": ["ETag"],
+     "MaxAgeSeconds": 3600
+   }]}
+   EOF
+   aws s3api put-bucket-cors --endpoint-url https://s3.grid.example --bucket models --cors-configuration file://cors.json
+   ```
+
+   Use your `PUBLIC_URL` as the origin (scheme, host and port, no path). MinIO answers CORS for
+   every origin by default.
+2. **Browsers trust the bucket's certificate.** Uploading computers need the private root CA
+   in the operating system's trust store, as for downloads. Without it, the upload stops with
+   "The browser could not reach the storage at s3.grid.example. If it uses a private
+   certificate authority, this computer must trust it, and the bucket must allow uploads from
+   this site (CORS)." (a CORS rule that does not match the page looks the same to the browser).
+3. **HuggingHack's page may talk to the bucket.** The Content-Security-Policy's `connect-src`
+   lists the `public_endpoint_url` of each bucket with direct uploads, and nothing else; no
+   setting is needed.
+
+Check it: upload a small model with the browser's developer tools open. The file parts are
+`PUT` requests to `public_endpoint_url`; HuggingHack only sees `…/files/begin`, `…/files/parts`
+and `…/files/complete`.
+
 ## 10. Back up, restore, and upgrade
 
 **Back up** the two places that matter, on your usual schedule:

@@ -12,9 +12,9 @@ them through the Hub protocol (`HF_ENDPOINT` for vLLM, Transformers, `hf`) or `g
   [`frontend/CLAUDE.md`](frontend/CLAUDE.md) before changing it.
 - `docs/`: [GUIDE.md](docs/GUIDE.md) (every feature), [AIRGAPPED.md](docs/AIRGAPPED.md) (offline
   install, security settings, reverse proxy), [SERVE_FROM_S3.md](docs/SERVE_FROM_S3.md)
-  (S3 + PostgreSQL deployment), [SCALING.md](docs/SCALING.md) (the plan for direct-to-bucket
-  transfers and multiple replicas; not implemented yet). `README.md` is the public overview with
-  screenshots in `docs/images`.
+  (S3 + PostgreSQL deployment, direct downloads and uploads), [SCALING.md](docs/SCALING.md)
+  (direct-to-bucket transfers and several replicas: design and status). `README.md` is the
+  public overview with screenshots in `docs/images`.
 - `.env.example` lists every setting with its default; `docker-compose.yml` runs one service,
   `docker-compose.postgres.yml` adds PostgreSQL 17.
 
