@@ -373,6 +373,28 @@ work to another pod within a minute.
 | Phase 2 | — | Bucket speed, bounded by the client NIC | unchanged | Phase 1 config, bucket CORS |
 | Phase 3 | Metadata and API scale with pods | — | Rolling updates, pod loss survived | Phases 1–2 (otherwise replicas still carry bytes) |
 
+## 6a. Verified end to end (1.3.0, 2026-09-26)
+
+Against MinIO (NetApp StorageGRID speaks the same S3 API), two HuggingHack processes with
+`CLUSTER_MODE=true` sharing one PostgreSQL 17 database, `direct_downloads` and `direct_uploads`
+on, and the server started from this repository:
+
+| What | Result |
+| --- | --- |
+| Browser upload of Qwen/Qwen3-4B (3 shards, 8 GB) through the wizard, 1 GiB parts | 19 part PUTs straight to the bucket, 0 through the pod, committed in 47 s on a laptop |
+| vLLM 0.11 (`HF_ENDPOINT` = the *other* pod) serving that model | Every shard fetched through a 302 to the bucket; shards byte-identical; correct answers |
+| Browser upload of Qwen3-0.6B (1.5 GB); vLLM, `hf download`, `git clone` + LFS through the other pod | Hashes match; `resolve` HEAD 200, GET 302 |
+| Upload steps alternating pods: begin on A, parts on B, complete on A, finalize on B | Works; 6 GiB in six 1 GiB parts |
+| Change session adding a 6 GiB file, committed on the other pod | Server-side multipart copy (> 5 GB) in 12 s; downloaded hash matches |
+| Abort of a change session on the pod that did not start it | Change area and open multipart uploads removed |
+| Leader killed with `kill -9` | The other pod led after 1.3 s and kept serving pulls |
+| Bucket behind a private CA: pod with `ca_bundle` | Connects; `hf download` with `REQUESTS_CA_BUNDLE` and git-lfs with `http.sslCAInfo` pull through signed HTTPS links |
+| Same without `ca_bundle` / without client trust | Storage page: "The certificate of s3://… is not trusted…"; `hf` fails with an SSL error |
+| Browser upload to the HTTPS bucket, CA trusted / not trusted | Committed with 0 pod PUTs / "The browser could not reach the storage at … private certificate authority … (CORS)" |
+
+Not covered here: the Helm chart itself, and a real StorageGRID bucket's CORS policy (use the
+one in SERVE_FROM_S3.md).
+
 ## 7. Out of scope
 
 - `git push` (repositories stay read-only over git).
