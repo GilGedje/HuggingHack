@@ -68,7 +68,10 @@ docker load -i hugginghack-image.tar
 mirror.
 
 **Kubernetes or OpenShift:** push the loaded image to your internal registry instead, then
-install the [Helm chart](../helm/README.md) that comes with this repository folder. Add
+install the [Helm chart](../helm/README.md) that comes with this repository folder. For an
+amd64 cluster built from an ARM machine (a Mac), build with
+`docker buildx build --platform linux/amd64`; [`helm/ocp-images`](../helm/ocp-images/README.md)
+has the exact commands and a checked archive. Add
 `postgres:17-alpine` if the chart will run PostgreSQL for you:
 
 ```bash

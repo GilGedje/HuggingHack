@@ -1,4 +1,6 @@
-FROM node:22-alpine AS frontend-build
+# The web UI is plain JavaScript, the same on every platform: build it natively even when
+# the image targets another architecture (docker buildx build --platform linux/amd64).
+FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-build
 
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
@@ -23,12 +25,22 @@ COPY --from=frontend-build /frontend/dist ./static
 
 # Runs unprivileged by default. Bind-mounted /models and /data keep their host owner,
 # so they must be writable by uid 1000 (or set PUID/PGID; see docs/AIRGAPPED.md).
+# OpenShift runs the image under a random uid in group 0, so the folders it writes also
+# belong to group 0 and are group-writable (Red Hat's guidelines for arbitrary user ids).
 RUN groupadd --gid 1000 hugginghack \
     && useradd --uid 1000 --gid 1000 --no-create-home --home-dir /nonexistent \
        --shell /usr/sbin/nologin hugginghack \
     && mkdir -p /models /data \
-    && chown 1000:1000 /models /data
+    && chown 1000:0 /models /data \
+    && chmod 775 /models /data
 USER 1000:1000
+
+LABEL org.opencontainers.image.title="HuggingHack" \
+      org.opencontainers.image.description="Self-hosted Hugging Face-style model hub for air-gapped networks" \
+      org.opencontainers.image.source="https://github.com/GilGedje/HuggingHack" \
+      io.k8s.display-name="HuggingHack" \
+      io.openshift.tags="huggingface,model-hub,air-gapped" \
+      io.openshift.non-scalable="false"
 
 EXPOSE 7860
 

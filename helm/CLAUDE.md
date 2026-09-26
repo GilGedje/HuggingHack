@@ -23,6 +23,7 @@ guide is [`README.md`](README.md) here; the scaling design behind it is
 | `tests/cluster/deps.yaml` | MinIO and an external PostgreSQL for the live test (namespace `hh-helm-deps`) |
 | `tests/route-test.sh` + `route-browser.mjs` | the production topology: TLS route → 3 replicas, bucket behind its own route, real Chrome |
 | `tests/cluster/minio-route.yaml` | the bucket's route for `route-test.sh` |
+| `ocp-images/` | `README.md` with the build/load recipe for the linux/amd64 image; the `.tar.gz` archives are gitignored |
 | `tests/umbrella-fixture/` | TEST FIXTURE: a minimal umbrella in the user's pattern (values under `global`) |
 
 ## Commands (from the repo root)
@@ -123,6 +124,12 @@ assertion to `render-test.sh` when it changes what renders, mention it in `READM
 
 **New HuggingHack setting** — nothing to do here: settings go in the umbrella's ConfigMap or
 Secret. Update `README.md`'s "What goes where" table if it is secret or needed in production.
+
+**OpenShift image** — `docker buildx build --platform linux/amd64` from the repo root, then
+`docker save | gzip` into `ocp-images/` with a `.sha256` (exact commands in
+`ocp-images/README.md`). Before saving, run it as `--user <random>:0 --cap-drop ALL`, once with
+no volumes and once `--read-only` with tmpfs at `/data`, `/models`, `/tmp`; both must be healthy.
+The Dockerfile keeps `/data` and `/models` owned by group 0 and group-writable for this.
 
 **Release** — `appVersion` follows the app version (root `CLAUDE.md`: bump `config.py`,
 `frontend/package.json` and `Chart.yaml` together). Bump the chart `version` whenever the

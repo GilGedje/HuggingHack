@@ -6,6 +6,7 @@ Everything for running HuggingHack on Kubernetes or OpenShift lives in this fold
 helm/
 ├── README.md                 this file
 ├── CLAUDE.md                 maintainer guide: the rules the chart keeps, and how to test it
+├── ocp-images/               linux/amd64 image archives for OpenShift (built locally, not in git)
 ├── hugginghack/              the chart (a subchart of your umbrella)
 │   ├── README.md             short version, packaged with the chart (helm show readme)
 │   ├── Chart.yaml

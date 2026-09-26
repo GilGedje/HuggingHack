@@ -35,3 +35,7 @@ docker-compose.override.yml
 # Helm test fixture: built by helm dependency build
 helm/tests/umbrella-fixture/charts/
 helm/tests/umbrella-fixture/Chart.lock
+
+# Built image archives (helm/ocp-images/README.md); too large for git
+helm/ocp-images/*.tar.gz
+helm/ocp-images/*.tar.gz.sha256
