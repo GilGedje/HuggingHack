@@ -1,0 +1,12 @@
+# TEST FIXTURE ONLY: a minimal umbrella that mirrors the real one's pattern (it renders the
+# ConfigMap and Secret, the subchart consumes them by name). Used by helm/tests to check
+# the wiring and by the local-cluster test. Not meant to be deployed as-is.
+apiVersion: v2
+name: hugginghack-umbrella-fixture
+description: Test fixture for the hugginghack subchart (not for production).
+type: application
+version: 0.0.0
+dependencies:
+  - name: hugginghack
+    version: 0.1.0
+    repository: file://../../hugginghack

@@ -1,0 +1,87 @@
+# TEST ONLY: throwaway PostgreSQL and MinIO for the local-cluster test of the chart
+# (helm/tests/cluster-test.sh). Data lives in emptyDirs and is gone with the namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hh-helm-deps
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: hh-helm-deps
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: postgres}
+  template:
+    metadata:
+      labels: {app: postgres}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          env:
+            - {name: POSTGRES_DB, value: hugginghack}
+            - {name: POSTGRES_USER, value: hugginghack}
+            - {name: POSTGRES_PASSWORD, value: fixture-db-password}
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "hugginghack", "-d", "hugginghack"]
+            periodSeconds: 3
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/postgresql/data}
+      volumes:
+        - {name: data, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: hh-helm-deps
+spec:
+  selector: {app: postgres}
+  ports:
+    - port: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: hh-helm-deps
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: minio}
+  template:
+    metadata:
+      labels: {app: minio}
+    spec:
+      containers:
+        - name: minio
+          image: bitnamilegacy/minio:latest
+          env:
+            - {name: MINIO_ROOT_USER, value: fixtureadmin}
+            - {name: MINIO_ROOT_PASSWORD, value: fixture-minio-secret}
+            - {name: MINIO_DEFAULT_BUCKETS, value: models}
+          ports:
+            - containerPort: 9000
+          readinessProbe:
+            httpGet: {path: /minio/health/live, port: 9000}
+            periodSeconds: 3
+          volumeMounts:
+            - {name: data, mountPath: /bitnami/minio/data}
+      volumes:
+        - {name: data, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: hh-helm-deps
+spec:
+  selector: {app: minio}
+  ports:
+    - port: 9000

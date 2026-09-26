@@ -1,0 +1,216 @@
+# Default values for the hugginghack chart.
+#
+# This chart is meant to run as a subchart of an umbrella chart. The umbrella renders the
+# ConfigMap and the Secret that hold HuggingHack's settings (see helm/README.md for which
+# setting belongs where) and passes their names in below. Every setting reaches the
+# container through envFrom; this chart never writes settings of its own.
+
+# -- Name of an existing ConfigMap whose keys become environment variables
+# (envFrom.configMapRef). The umbrella sets it, for example "shared-config".
+# Empty: no configMapRef is rendered.
+envFromConfigMap: ""
+
+# -- Name of an existing Secret whose keys become environment variables
+# (envFrom.secretRef). The umbrella sets it, for example "shared-secrets".
+# Empty: no secretRef is rendered. With both empty there is no envFrom at all, and
+# HuggingHack starts with its built-in defaults (SQLite and a local model folder).
+envFromSecret: ""
+
+# -- Annotations added to the pod template. The umbrella owns the ConfigMap and Secret,
+# so this chart cannot checksum them; pass the checksum (or anything else) here so that
+# changed settings roll the pods. Values are rendered with `tpl`: plain strings pass
+# through unchanged, and a template string is evaluated in this chart's context, e.g.
+#   checksum/config: '{{ .Values.global.sharedData | toJson | sha256sum }}'
+# See helm/README.md, "Restart pods when settings change".
+podAnnotations: {}
+
+# -- Extra labels added to the pod template (the recommended labels are always there).
+podLabels: {}
+
+# -- Optional value for the app.kubernetes.io/part-of label, e.g. the umbrella's name.
+partOf: ""
+
+# -- Number of pods. More than one requires CLUSTER_MODE=true in the ConfigMap, with
+# PostgreSQL and S3 buckets (docs/SCALING.md, "Running several replicas").
+replicaCount: 1
+
+image:
+  # -- Image in your registry, e.g. registry.internal/hugginghack.
+  repository: hugginghack
+  # -- Image tag. Empty uses the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# -- Pull secrets for a private registry, e.g. [{name: registry-pull}].
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# -- The chart creates no ServiceAccount (HuggingHack never calls the Kubernetes API, and
+# its token is not mounted). Name an existing one here, or leave empty for "default".
+serviceAccount:
+  name: ""
+
+service:
+  type: ClusterIP
+  # -- Port the Service exposes. HF_ENDPOINT, git remotes and PUBLIC_URL use it (usually
+  # behind an Ingress or Route owned by the umbrella).
+  port: 7860
+  # -- Port the container listens on. HuggingHack's image serves on 7860; change it only
+  # together with the image.
+  targetPort: 7860
+
+# -- How pods are replaced on upgrade. The default starts the new pod before stopping an
+# old one, which is only safe with CLUSTER_MODE=true (several servers sharing one
+# PostgreSQL and the buckets). A single server without cluster mode should use
+#   strategy: {type: Recreate}
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+
+# -- Time for in-flight downloads and uploads to finish when a pod stops.
+terminationGracePeriodSeconds: 60
+
+# -- Container lifecycle hooks. The pre-stop pause keeps a stopping pod serving until the
+# Service has stopped sending it requests; without it a rolling update drops a few.
+# It must stay well below terminationGracePeriodSeconds.
+lifecycle:
+  preStop:
+    exec:
+      command: ["sleep", "10"]
+
+# -- Pod security context. OpenShift's restricted-v2 SCC assigns runAsUser, runAsGroup
+# and fsGroup from the namespace's range, so none is set here; on plain Kubernetes you may
+# add runAsUser: 1000 (the image's user) or any other non-root id.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container security context, compatible with OpenShift restricted-v2 and Kubernetes
+# Pod Security "restricted". Everything HuggingHack writes goes to the volumes below.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# -- Volumes for the paths HuggingHack writes. With CLUSTER_MODE (PostgreSQL and S3) they
+# only hold caches, so emptyDir is right. A single server that keeps SQLite and models on
+# disk needs persistent storage instead, e.g. data: {persistentVolumeClaim: {claimName: hh-data}}.
+volumes:
+  # DATA_DIR: SQLite (single server only) and a cache of git mirrors.
+  data:
+    emptyDir: {}
+  # MODEL_STORAGE: the local model folder (single server only).
+  models:
+    emptyDir: {}
+  # /tmp, also HF_HOME.
+  tmp:
+    emptyDir: {}
+
+# -- Mount a private root CA from an existing ConfigMap (the chart creates nothing), for an
+# S3 endpoint or OIDC provider with an internal certificate. The file appears at
+# <mountPath>/<key>; point the settings at it in the umbrella's ConfigMap, e.g. the
+# target's "ca_bundle", OIDC_CA_BUNDLE, S3_CA_BUNDLE. OpenShift's injected trusted-CA
+# ConfigMaps work too (key ca-bundle.crt).
+caBundle:
+  configMap: ""
+  key: ca.crt
+  mountPath: /etc/hugginghack/ca
+
+# -- Probes call /api/health. They send "Host: localhost", which ALLOWED_HOSTS always
+# accepts, so the probes keep working once ALLOWED_HOSTS lists your real host names.
+# Startup allows up to five minutes: joining a cluster and checking buckets happen before
+# the server answers.
+startupProbe:
+  httpGet:
+    path: /api/health
+    port: http
+    httpHeaders:
+      - name: Host
+        value: localhost
+  periodSeconds: 5
+  timeoutSeconds: 5
+  failureThreshold: 60
+readinessProbe:
+  httpGet:
+    path: /api/health
+    port: http
+    httpHeaders:
+      - name: Host
+        value: localhost
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+livenessProbe:
+  httpGet:
+    path: /api/health
+    port: http
+    httpHeaders:
+      - name: Host
+        value: localhost
+  periodSeconds: 20
+  timeoutSeconds: 10
+  failureThreshold: 6
+
+# -- Container resources, e.g. requests {cpu: 500m, memory: 512Mi}, limits {memory: 2Gi}.
+# With direct transfers the bytes go client ↔ bucket, so a pod needs little.
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# -- A PostgreSQL server run by this chart, for when you have none of your own.
+#
+# HuggingHack always connects with DATABASE_URL from the umbrella's Secret, on or off:
+#   off (default): DATABASE_URL points at your own PostgreSQL server; nothing more runs.
+#   on:  this chart also runs PostgreSQL (a StatefulSet with its own volume and a Service
+#        named <fullname>-postgresql). Point DATABASE_URL at it, e.g.
+#        postgresql://hugginghack:<password>@<release>-hugginghack-postgresql:5432/hugginghack
+#        The server takes its password from the key `passwordKey` in the same Secret
+#        (envFromSecret), so the password lives in one place; keep it equal to the one in
+#        DATABASE_URL.
+# One PostgreSQL pod, not a replicated database: for high availability use your own
+# server (an operator, a managed service) and leave this off.
+postgresql:
+  enabled: false
+  image:
+    # -- Mirror it into your registry for an air-gapped cluster.
+    repository: postgres
+    tag: "17-alpine"
+    pullPolicy: IfNotPresent
+  database: hugginghack
+  username: hugginghack
+  # -- Key in the envFromSecret Secret holding the password.
+  passwordKey: POSTGRES_PASSWORD
+  port: 5432
+  persistence:
+    # -- Off: an emptyDir, and the database is lost with the pod (tests only).
+    enabled: true
+    size: 20Gi
+    # -- Empty uses the cluster's default StorageClass.
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+  resources: {}
+  # -- Same OpenShift-friendly defaults as the application: no fixed user, and the
+  # database directory is created by whatever user the platform assigns.
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}

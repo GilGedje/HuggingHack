@@ -1,0 +1,15 @@
+# Patterns to ignore when building packages.
+.DS_Store
+# Version control
+.git/
+.gitignore
+# Editors
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+.project
+.idea/
+*.tmproj
+.vscode/

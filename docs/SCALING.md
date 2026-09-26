@@ -1,6 +1,6 @@
 # Scaling plan: direct-to-bucket transfers and multiple replicas
 
-Status: **phases 1, 2 and 3 implemented** (the Helm chart itself is still to be written). Written 2026-09-26 against version 1.2.1. This is the
+Status: **phases 1, 2 and 3 implemented**; the Helm chart is in [`helm/`](../helm/README.md). Written 2026-09-26 against version 1.2.1. This is the
 implementation brief for the production deployment: NetApp StorageGRID S3 behind a private CA,
 a 100 GbE network, PostgreSQL, and HuggingHack pods deployed with a Helm chart. Implement the
 phases in order; each one is shippable on its own and each later one assumes the earlier ones.
@@ -342,7 +342,7 @@ off. A local-disk target cannot be shared between pods and is refused. Each pod 
 Already safe across replicas: sessions, CSRF tokens, OIDC state (`oidc_states`), API tokens,
 the frontend (static files), the startup `setup_required` cache (only ever flips to false).
 
-### Deployment (Helm chart, built later with the user)
+### Deployment (Helm chart: [`helm/`](../helm/README.md))
 
 Values: `replicaCount`, image, `env` and `envFrom` secrets, a ConfigMap-mounted CA bundle wired
 to `ca_bundle`/`OIDC_CA_BUNDLE`, `PUBLIC_URL`, ingress with the four forwarded headers and
@@ -395,7 +395,7 @@ on, and the server started from this repository:
 | Same without `ca_bundle` / without client trust | Storage page: "The certificate of s3://… is not trusted…"; `hf` fails with an SSL error |
 | Browser upload to the HTTPS bucket, CA trusted / not trusted | Committed with 0 pod PUTs / "The browser could not reach the storage at … private certificate authority … (CORS)" |
 
-Not covered here: the Helm chart itself, and a real StorageGRID bucket's CORS policy (use the
+The Helm chart has its own live test (`helm/tests/cluster-test.sh`). Not covered here: a real StorageGRID bucket's CORS policy (use the
 one in SERVE_FROM_S3.md).
 
 ## 7. Out of scope

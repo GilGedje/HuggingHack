@@ -1,0 +1,57 @@
+# TEST FIXTURE ONLY. Settings for a two-server HuggingHack in cluster mode, with the chart's
+# own PostgreSQL (postgresql.enabled) and the MinIO in helm/tests/cluster/deps.yaml. The
+# live test can switch to the external PostgreSQL there instead (PG_MODE=external). The
+# shared values sit under `global` so the subchart can checksum them (see helm/README.md).
+global:
+  sharedData:
+    CLUSTER_MODE: "true"
+    ACCOUNTS_ENABLED: "true"
+    DEFAULT_STORAGE_TARGET: grid
+    SYSTEM_STORAGE_TARGET: grid
+    ALLOWED_HOSTS: hugginghack.example.internal,127.0.0.1
+    # MinIO inside the cluster for the servers; the port-forwarded address for clients,
+    # because a signed link names the host it was signed for.
+    STORAGE_TARGETS_JSON: >-
+      [{"id":"grid","name":"MinIO","bucket":"models","prefix":"models",
+      "endpoint_url":"http://minio.hh-helm-deps.svc:9000",
+      "public_endpoint_url":"http://127.0.0.1:9700",
+      "region":"us-east-1","addressing_style":"path","use_ssl":false,
+      "access_key_env":"GRID_KEY","secret_key_env":"GRID_SECRET",
+      "direct_downloads":true,"direct_uploads":true,"part_size_mb":16}]
+  sharedSecrets:
+    # The chart's own PostgreSQL (release "hh"); the same password feeds the server.
+    DATABASE_URL: postgresql://hugginghack:fixture-db-password@hh-hugginghack-postgresql:5432/hugginghack
+    POSTGRES_PASSWORD: fixture-db-password
+    GRID_KEY: fixtureadmin
+    GRID_SECRET: fixture-minio-secret
+
+hugginghack:
+  envFromConfigMap: shared-config
+  envFromSecret: shared-secrets
+  replicaCount: 2
+  postgresql:
+    enabled: true
+    # Pod Security "restricted" in the test namespace; OpenShift assigns these itself.
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 1000710001
+      runAsGroup: 0
+      fsGroup: 1000710001
+      seccompProfile:
+        type: RuntimeDefault
+  partOf: hugginghack-umbrella-fixture
+  podAnnotations:
+    checksum/config: '{{ .Values.global.sharedData | toJson | sha256sum }}'
+    checksum/secret: '{{ .Values.global.sharedSecrets | toJson | sha256sum }}'
+  image:
+    repository: hugginghack
+    tag: local
+    pullPolicy: Never
+  # Emulates OpenShift restricted-v2: an arbitrary high UID in group 0.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000710000
+    runAsGroup: 0
+    fsGroup: 1000710000
+    seccompProfile:
+      type: RuntimeDefault

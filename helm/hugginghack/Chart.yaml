@@ -1,0 +1,16 @@
+apiVersion: v2
+name: hugginghack
+description: >-
+  HuggingHack, a self-hosted Hugging Face-style model hub for air-gapped networks. Consumed
+  as a subchart: the umbrella chart owns the ConfigMap and Secret that configure it.
+type: application
+version: 0.1.0
+# The HuggingHack release this chart deploys by default (image.tag falls back to it).
+appVersion: "1.3.0"
+home: https://github.com/GilGedje/HuggingHack
+sources:
+  - https://github.com/GilGedje/HuggingHack
+keywords:
+  - huggingface
+  - model-hub
+  - air-gapped

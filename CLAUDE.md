@@ -15,6 +15,9 @@ them through the Hub protocol (`HF_ENDPOINT` for vLLM, Transformers, `hf`) or `g
   (S3 + PostgreSQL deployment, direct downloads and uploads), [SCALING.md](docs/SCALING.md)
   (direct-to-bucket transfers and several replicas: design and status). `README.md` is the
   public overview with screenshots in `docs/images`.
+- `helm/`: the Helm chart (`helm/hugginghack`, a subchart for an umbrella that owns the
+  ConfigMap and Secret) with its tests. Read [`helm/README.md`](helm/README.md) before changing
+  it; run `helm/tests/render-test.sh` after any change, and the live test on a local cluster only.
 - `.env.example` lists every setting with its default; `docker-compose.yml` runs one service,
   `docker-compose.postgres.yml` adds PostgreSQL 17.
 
@@ -77,8 +80,8 @@ sqlite3 data/hugginghack.sqlite3 ".backup $B/hugginghack.sqlite3" && cp -Rp data
 as `PUID:PGID` from `.env` (default and live: `1000:1000`), which must be able to write `data/`
 and the model folder. Afterwards, check that `curl -s localhost:7860/api/health` answers with the
 new version, and that the served bundle (`curl -s localhost:7860/ | grep -o 'assets/index-[^"]*\.js'`)
-matches `frontend/dist/assets`. The version lives in `backend/app/config.py` (`APP_VERSION`) and
-`frontend/package.json`; bump both together.
+matches `frontend/dist/assets`. The version lives in `backend/app/config.py` (`APP_VERSION`),
+`frontend/package.json` and `helm/hugginghack/Chart.yaml` (`appVersion`); bump them together.
 
 ## Conventions
 
