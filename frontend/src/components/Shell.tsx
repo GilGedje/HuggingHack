@@ -17,7 +17,7 @@ import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { ADMIN_CAPABILITIES, useAccess } from '../access'
 import { api } from '../api'
 import { useTabIndicator } from '../motion'
-import { announceThemePreference, type Theme } from '../theme'
+import { announceThemePreference, brandMark, type Theme } from '../theme'
 import type { User } from '../types'
 import { avatarUrl } from '../utils'
 import { Avatar } from './Avatar'
@@ -114,7 +114,7 @@ export default function Shell({ children, user, theme, onLogout }: ShellProps) {
       <header className="topbar">
         <div className="topbar-inner">
           <NavLink to="/models" className="brand" aria-label="HuggingHack home">
-            <img src="/hugginghack-mark.svg" alt="" className="brand-mark" />
+            <img src={brandMark(theme)} alt="" className="brand-mark" />
             <span className="brand-name">HuggingHack</span>
             <span className="brand-local">local</span>
           </NavLink>

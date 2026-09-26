@@ -39,7 +39,7 @@ import { ModelPage } from './pages/ModelPage'
 import { OrganizationPage, OrganizationsIndex } from './pages/OrganizationPage'
 import { TOAST_EXIT_MS, crossfade, useFadeOnChange } from './motion'
 import { useAppTheme } from './appTheme'
-import type { Theme } from './theme'
+import { brandMark, type Theme } from './theme'
 import { UploadProvider } from './uploads'
 import Shell from './components/Shell'
 import type {
@@ -647,7 +647,7 @@ export default function App() {
   if (!status) {
     return (
       <main className="app-loading">
-        <img src="/hugginghack-mark.svg" alt="" />
+        <img src={brandMark(theme)} alt="" />
         <LoaderCircle size={23} className="spin" />
         <span>Opening your model library…</span>
       </main>
@@ -668,6 +668,7 @@ export default function App() {
       )}
       {!shown && (
         <AuthScreen
+          theme={theme}
           setup={status.setup_required}
           oidc={status.oidc}
           notice={notice}

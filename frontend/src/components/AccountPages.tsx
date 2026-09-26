@@ -38,6 +38,7 @@ import { prefersReducedMotion, useFadeOnChange, useSlidingHighlight } from '../m
 import { ssoErrorMessage } from '../ssoError'
 import { focusAfterRemoval } from '../focus'
 import { LoadError } from './LoadError'
+import { brandMark, type Theme } from '../theme'
 
 type ToastHandler = (message: string, tone?: 'success' | 'error') => void
 
@@ -61,11 +62,13 @@ function currentPath(): string {
 }
 
 export function AuthScreen({
+  theme,
   setup,
   oidc,
   notice,
   onAuthenticated,
 }: {
+  theme: Theme
   setup: boolean
   oidc?: { enabled: boolean; name: string }
   /** Why they are here, such as a session that expired. */
@@ -99,7 +102,7 @@ export function AuthScreen({
   return (
     <main className="auth-layout">
       <section className="auth-story">
-        <img src="/hugginghack-mark.svg" alt="" />
+        <img src={brandMark(theme)} alt="" />
         <span className="eyebrow">Your model library, with a front door</span>
         <h1>{setup ? 'Create the owner account' : 'Welcome back'}</h1>
         <p>
