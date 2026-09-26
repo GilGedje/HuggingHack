@@ -161,7 +161,7 @@ metadata:
     haproxy.router.openshift.io/timeout: 10m    # uploads, commits and git pulls outlast 30 s
 spec:
   host: hub.example.internal
-  to: {kind: Service, name: <release>-hugginghack}
+  to: {kind: Service, name: <release>-hugginghack}    # the Service name `helm template` prints; a release named "hugginghack" makes it just "hugginghack"
   port: {targetPort: http}
   tls: {termination: edge, insecureEdgeTerminationPolicy: Redirect}
 ```

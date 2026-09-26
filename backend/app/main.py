@@ -3577,7 +3577,10 @@ def git_repo_id(owner: str, name: str) -> str:
 
 
 def git_file(owner: str, name: str, relative: str, request: Request) -> Response:
-    content = git_mirrors.read_file(git_repo_id(owner, name), relative, pull_user(request))
+    # Reading may bring the mirror up to date, which reads the model's files: hold a
+    # read lease like info/refs does, so a storage move never removes them meanwhile.
+    with reads.hold(git_repo_id(owner, name)):
+        content = git_mirrors.read_file(git_repo_id(owner, name), relative, pull_user(request))
     if content is None:
         raise HubError("EntryNotFound", "Git object not found.")
     return Response(
