@@ -10,7 +10,6 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/GilGedje/HuggingHack/actions/workflows/ci.yml"><img src="https://github.com/GilGedje/HuggingHack/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <img src="https://img.shields.io/badge/FastAPI-0.116-009688?logo=fastapi&logoColor=white" alt="FastAPI 0.116">
   <img src="https://img.shields.io/badge/React-18-20232A?logo=react&logoColor=61DAFB" alt="React 18">
   <img src="https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white" alt="PostgreSQL 17">

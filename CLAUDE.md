@@ -40,9 +40,11 @@ them through the Hub protocol (`HF_ENDPOINT` for vLLM, Transformers, `hf`) or `g
 ## Verify a change
 
 ```bash
-# Backend: SQLite and PostgreSQL (see backend/CLAUDE.md for the test database container)
+# Backend: SQLite and PostgreSQL (see backend/CLAUDE.md for the venv and the test database container;
+# test tools are in backend/requirements-dev.txt, requirements.txt is what the image installs)
 PYTHONPATH=backend TEST_POSTGRES_URL=postgresql://hugginghack:test-only-password@127.0.0.1:55432/hugginghack_test \
-  python -m pytest backend/tests -q
+  .venv/bin/python -m pytest backend/tests -q -rs
+PYTHONPATH=backend .venv/bin/python -m pytest backend/tests -q
 
 # Frontend: type-check + build, and unit tests
 cd frontend && npm run build && npm test
@@ -51,10 +53,8 @@ cd frontend && npm run build && npm test
 A change is done when the backend suite reports **0 skipped** with `TEST_POSTGRES_URL` set and
 `git` plus `git-lfs` on PATH (without them the PostgreSQL and clone tests skip).
 
-CI (`.github/workflows/ci.yml`) runs the same on every push to `main`: pytest against a
-PostgreSQL 17 service (failing if any test is skipped), then `npm ci`, `npm test`, and
-`npm run build`. Test tools live in `backend/requirements-dev.txt`; `requirements.txt` is what
-the image installs.
+This local run is the gate. `.github/workflows/ci.yml` describes the same steps but GitHub
+Actions does not run for this repository, so never treat a missing CI run as a check.
 
 For UI changes, also run the built app against a **copy** of the data (never the live `data/` or
 `models/`), for example with `ACCOUNTS_ENABLED=false` on another port, and check the pages you
@@ -62,11 +62,21 @@ touched in a browser at both widths and both themes.
 
 ## Deploy
 
-`docker compose up -d --build` rebuilds and restarts the service on port 7860. Afterwards, check
-`curl -s localhost:7860/api/health` answers and that the served bundle
-(`curl -s localhost:7860/ | grep -o 'assets/index-[^"]*\.js'`) matches `frontend/dist/assets`.
-`data/` and `models/` are the live installation's data: back them up before migrations and never
-point tests or experiments at them.
+`data/` and `models/` are the live installation's data: never point tests or experiments at them.
+Before a deploy that changes the schema or how files are stored, back up `data/` outside the repo
+while the site runs, with SQLite's own copy so the `-wal` file is included:
+
+```bash
+B=~/HuggingHack-backups/data-$(date +%Y%m%d-%H%M) && mkdir -p $B
+sqlite3 data/hugginghack.sqlite3 ".backup $B/hugginghack.sqlite3" && cp -Rp data/git-mirrors data/system data/avatars $B/
+```
+
+`docker compose up -d --build` rebuilds and restarts the service on port 7860. The container runs
+as `PUID:PGID` from `.env` (default and live: `1000:1000`), which must be able to write `data/`
+and the model folder. Afterwards, check that `curl -s localhost:7860/api/health` answers with the
+new version, and that the served bundle (`curl -s localhost:7860/ | grep -o 'assets/index-[^"]*\.js'`)
+matches `frontend/dist/assets`. The version lives in `backend/app/config.py` (`APP_VERSION`) and
+`frontend/package.json`; bump both together.
 
 ## Conventions
 

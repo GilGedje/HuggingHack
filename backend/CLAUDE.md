@@ -11,7 +11,7 @@ the UI.
 
 ```bash
 # requirements-dev.txt adds pytest to the runtime requirements.txt (the only file the image installs).
-python3.12 -m venv .venv && .venv/bin/pip install -r backend/requirements-dev.txt   # CI and Docker use Python 3.12
+python3.12 -m venv .venv && .venv/bin/pip install -r backend/requirements-dev.txt   # Docker uses Python 3.12
 # If `python3.12 -m venv` fails on ensurepip, `uv venv -p 3.12 .venv && uv pip install -p .venv/bin/python -r backend/requirements-dev.txt` works.
 
 # Dev server. The defaults /models and /data are absolute paths, so override them locally.
@@ -23,7 +23,7 @@ PYTHONPATH=backend MODEL_STORAGE=$PWD/models DATA_DIR=$PWD/data ACCOUNTS_ENABLED
 # Tests on SQLite only: PostgreSQL tests skip
 PYTHONPATH=backend .venv/bin/python -m pytest backend/tests -q
 
-# Tests on PostgreSQL, as CI runs them (.github/workflows/ci.yml, service postgres:17-alpine)
+# Tests on PostgreSQL 17, the production database
 docker run -d --name hh-pg-test -e POSTGRES_DB=hugginghack_test -e POSTGRES_USER=hugginghack \
   -e POSTGRES_PASSWORD=test-only-password -p 55432:5432 postgres:17-alpine
 PYTHONPATH=backend TEST_POSTGRES_URL=postgresql://hugginghack:test-only-password@127.0.0.1:55432/hugginghack_test \
@@ -40,7 +40,7 @@ PYTHONPATH=backend DATABASE_URL=postgresql://... .venv/bin/python -m app.migrate
 
 **Definition of done:** run the suite with `TEST_POSTGRES_URL` set, and with `git` and
 `git-lfs` on PATH, until it reports **0 skipped**. Without Postgres, 18 tests skip. Without
-git-lfs, the clone tests skip. SQLite passing alone is not enough. CI fails when anything is skipped.
+git-lfs, the clone tests skip. SQLite passing alone is not enough. GitHub Actions does not run for this repository, so this local run is the gate.
 
 ## Module map (`backend/app`)
 
@@ -290,4 +290,4 @@ Not in `config.py`: `FORWARDED_ALLOW_IPS` (read by uvicorn `--proxy-headers`, se
 ## Pointers
 
 `docs/AIRGAPPED.md` (install and operate offline), `docs/SERVE_FROM_S3.md` (S3 + PostgreSQL
-deployment and migration), root `CLAUDE.md`, `frontend/CLAUDE.md`, `.env.example`, `.github/workflows/ci.yml`.
+deployment and migration), root `CLAUDE.md`, `frontend/CLAUDE.md`, `.env.example`.
