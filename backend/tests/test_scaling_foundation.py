@@ -156,3 +156,18 @@ def test_cluster_lock_spans_processes_sharing_postgresql():
     finally:
         first.close()
         second.close()
+
+
+def test_an_untrusted_certificate_is_named_as_such(tmp_path: Path):
+    from botocore.exceptions import SSLError
+
+    storage = storage_for(tmp_path)
+    untrusted = SSLError(
+        endpoint_url="https://grid-internal:9000/models",
+        error="[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain",
+    )
+    sentence = storage.describe_error(untrusted)
+    assert sentence.startswith("The certificate of s3://models at http://grid-internal:9000 is not trusted.")
+    assert "ca_bundle" in sentence
+    other = storage.describe_error(SSLError(endpoint_url="https://grid-internal:9000", error="wrong version number"))
+    assert other.startswith("The TLS connection to s3://models")

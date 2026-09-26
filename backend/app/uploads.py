@@ -435,6 +435,10 @@ class UploadManager:
         try:
             return storage.has_objects(repo_id)
         except Exception as error:
+            logger.error(
+                "Checking %s in %s failed: %s",
+                repo_id, storage.id, storage.describe_error(error) + " " + storage.redact(str(error) or error.__class__.__name__),
+            )
             raise StorageUnavailableError(
                 "The storage location could not be reached. Try again later."
             ) from error

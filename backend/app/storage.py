@@ -77,9 +77,9 @@ def content_disposition(filename: str) -> str:
     return f"attachment; filename=\"{plain}\"; filename*=UTF-8''{quote(name, safe='')}"
 
 try:
-    from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
+    from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, SSLError
 except ImportError:  # boto3 is only needed for S3 targets
-    BotoCoreError = ClientError = NoCredentialsError = None  # type: ignore[assignment,misc]
+    BotoCoreError = ClientError = NoCredentialsError = SSLError = None  # type: ignore[assignment,misc]
 # Errors a bucket raises when it fails or cannot be reached.
 BOTO_ERRORS: tuple[type[Exception], ...] = tuple(
     error for error in (BotoCoreError, ClientError) if error is not None
@@ -711,6 +711,13 @@ class S3ModelStorage(FilesystemModelStorage):
             return f"{where} answered with an error ({code})."
         if NoCredentialsError is not None and isinstance(error, NoCredentialsError):
             return f"No credentials are configured for {where}."
+        if SSLError is not None and isinstance(error, SSLError):
+            if "CERTIFICATE_VERIFY_FAILED" in str(error) or "certificate verify failed" in str(error):
+                return (
+                    f"The certificate of {where} is not trusted. If it comes from a private "
+                    "certificate authority, set ca_bundle to that root CA's PEM file."
+                )
+            return f"The TLS connection to {where} failed. Check the endpoint's certificate and use_ssl."
         if BotoCoreError is not None and isinstance(error, BotoCoreError):
             return f"Cannot reach {where}. Check the endpoint and that the storage server is running."
         return self.redact(str(error).strip() or f"Could not read {where} ({error.__class__.__name__}).")

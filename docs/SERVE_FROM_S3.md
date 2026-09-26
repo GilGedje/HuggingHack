@@ -352,7 +352,9 @@ Before you turn it on:
      (or `SSL_CERT_FILE`).
    - git-lfs: `git config --global http.sslCAInfo /etc/ssl/internal-ca.pem`.
    - Browsers: add the CA to the operating system's trust store.
-   - HuggingHack itself: mount the PEM file and name it in `ca_bundle`.
+   - HuggingHack itself: mount the PEM file and name it in `ca_bundle`. Without it, the Storage
+     page shows "The certificate of s3://… is not trusted" for that bucket, and nothing is
+     sent to it.
 3. **The bucket stays private.** No anonymous read or list permission. The signed links are
    the only way in for clients; HuggingHack signs them with its own key, which never leaves
    the server, and no link or signature is ever written to its log.
