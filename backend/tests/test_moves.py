@@ -2,6 +2,8 @@ import hashlib
 import json
 import threading
 import time
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -216,6 +218,37 @@ def test_a_scan_during_a_move_indexes_neither_half_copy(mover):
     models = {model["repo_id"]: model["storage_target"] for model in main.database.list_local_models()}
     assert models["acme/big"] == "local"
     assert not any("hugginghack-moves" in repo for repo in models)
+
+
+def test_signed_links_to_the_old_bucket_copy_are_honoured_until_they_expire(mover):
+    """Links handed out before the switch point at the old bucket and never show up as
+    reads here; the old copy stays until the last of them has expired, even across
+    a restart (the switch time is in the database)."""
+    client, manager = mover["client"], mover["manager"]
+    source = mover["registry"].get("bucket-a")
+    source.direct_downloads = True
+    source.target = replace(source.target, direct_downloads=True, presign_ttl_seconds=600)
+    a = mover["clients"]["bucket-a"]
+    publish(a, "models", "acme/linked", {"config.json": b"{}", "w.safetensors": WEIGHTS[:1_000_000]})
+    main.refresh_model_index()
+
+    move_id = start(client, "acme/linked", "bucket-b").json()["id"]
+    waiting = wait_for(manager, move_id, {"draining", "done", "failed"})
+    deadline = time.monotonic() + 5
+    while "links" not in (waiting.get("message") or "") and time.monotonic() < deadline:
+        time.sleep(0.02)
+        waiting = main.database.get_move(move_id)
+    assert waiting["status"] == "draining", waiting
+    assert waiting["message"] == "Waiting about 10 minutes for download links to the old copy to expire"
+    assert a.objects["models/acme/linked/w.safetensors"] == WEIGHTS[:1_000_000]
+    assert main.database.get_local_model("acme/linked")["storage_target"] == "bucket-b"
+
+    # Ten minutes later, as far as the record goes.
+    earlier = datetime.now(timezone.utc) - timedelta(seconds=601)
+    main.database.update_move(move_id, switched_at=earlier.isoformat())
+    manager._wake.set()
+    assert wait_for(manager, move_id, {"done", "failed"})["status"] == "done"
+    assert not [key for key in a.objects if "/acme/linked/" in key]
 
 
 def test_keeping_the_local_copy_needs_no_wait(mover):

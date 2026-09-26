@@ -39,7 +39,7 @@ PYTHONPATH=backend DATABASE_URL=postgresql://... .venv/bin/python -m app.migrate
 ```
 
 **Definition of done:** run the suite with `TEST_POSTGRES_URL` set, and with `git` and
-`git-lfs` on PATH, until it reports **0 skipped**. Without Postgres, 18 tests skip. Without
+`git-lfs` on PATH, until it reports **0 skipped**. Without Postgres, 19 tests skip. Without
 git-lfs, the clone tests skip. SQLite passing alone is not enough. GitHub Actions does not run for this repository, so this local run is the gate.
 
 ## Module map (`backend/app`)
@@ -180,6 +180,18 @@ mirrored in `frontend/src/uploadPlan.ts` `isRecorded`, so change both together.
   frozen database answers in seconds.
 - Upload paths go through `validate_upload_path`, and repo paths through
   `config.repository_path`, which refuses to escape `MODEL_STORAGE`.
+- **Direct downloads** (`direct_downloads` on a target): `main.repository_file_response`
+  answers a `GET` for a file that exists only in such a bucket with `302` to
+  `HubRepositories.direct_link` (`S3ModelStorage.presigned_get`, signed offline by
+  `signing_client` for `public_endpoint_url`), plus `X-Linked-Size`/`X-Linked-Etag`. `HEAD`
+  always answers `200` itself (a bucket refuses `HEAD` on a GET-signed link). A local copy
+  wins and streams. The access check always runs first: never sign a link before it.
+  `git_lfs_batch` hands out signed hrefs (`direct_lfs_links`, `authenticated: false`);
+  `/api/library/file` redirects only above `DIRECT_LINK_MIN_BYTES` (8 MB), with the filename in
+  the signed `response-content-disposition`. A move out of such a bucket keeps the old copy
+  until `presign_ttl_seconds` after the switch (`MoveManager._links_outstanding`, from the
+  `switched_at` column, so it survives restarts). Signed links never go into logs or
+  responses other than the redirect: `redact()` strips `SIGNED_QUERY`.
 
 **HTTP security (main.py)**
 - `reject_cross_site_writes`: a POST/PUT/PATCH/DELETE carrying a foreign `Origin` gets 403.
@@ -266,6 +278,8 @@ safetensors/GGUF headers with bounded sizes. Pickle-family files are only flagge
 | `UPLOAD_CHUNK_MB` / `MAX_UPLOAD_SIZE_GB` | `8` / `1024` | Upload chunking and cap |
 | `S3_BUCKET` `S3_PREFIX`(`models`) `S3_ENDPOINT_URL` `S3_REGION` `S3_ACCESS_KEY_ID` `S3_SECRET_ACCESS_KEY` `S3_SESSION_TOKEN` `S3_USE_SSL`(`true`) `S3_VERIFY_SSL`(`true`) `S3_ADDRESSING_STYLE`(`auto`) `S3_STORAGE_CLASS` | — | Legacy single bucket. Keys can come from boto3's chain (`AWS_*`) instead. |
 | `S3_MAX_CONCURRENCY` / `S3_MULTIPART_CHUNK_MB` | `4` / `64` | boto3 transfer tuning (applies to all targets) |
+| `S3_CA_BUNDLE` `S3_DIRECT_DOWNLOADS`(`false`) `S3_PUBLIC_ENDPOINT_URL` `S3_PRESIGN_TTL_SECONDS`(`900`) | — | Private CA for the endpoint; direct downloads through signed links (per target: `ca_bundle`, `direct_downloads`, `public_endpoint_url`, `presign_ttl_seconds`). The upload counterparts (`S3_DIRECT_UPLOADS`, `S3_PART_SIZE_MB`, `S3_UPLOAD_PRESIGN_TTL_SECONDS`) are read but not used yet (docs/SCALING.md phase 2). |
+| `CLUSTER_MODE` / `INSTANCE_ID` | `false` / hostname | Several processes sharing one database (docs/SCALING.md phase 3) |
 | `STORAGE_TARGETS_JSON` / `DEFAULT_STORAGE_TARGET` | `[]` / auto | Extra buckets (`parse_storage_targets`; credentials named via `access_key_env`/`secret_key_env`) / where new repos go |
 | `SYSTEM_STORAGE_TARGET` / `SYSTEM_STORAGE_PREFIX` | `local` / `<prefix>/_system` | Where avatars and git mirrors live |
 | `OIDC_ISSUER` `OIDC_CLIENT_ID` `OIDC_CLIENT_SECRET` | empty | SSO is on when accounts are enabled and issuer + client id are set |

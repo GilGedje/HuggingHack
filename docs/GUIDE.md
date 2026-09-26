@@ -392,6 +392,12 @@ git clone http://NAS-IP:7860/owner/model-name
 
 - Files stream from the model folder, or directly from S3 for S3-only models, with byte-range
   support for resumed and parallel downloads.
+- With [direct downloads](SERVE_FROM_S3.md#direct-downloads) on for a bucket, clients fetch
+  its files from the bucket itself through short-lived signed links. They then need to reach
+  the bucket's address and trust its certificate: for a private CA set
+  `REQUESTS_CA_BUNDLE=/path/to/ca.pem` (vLLM, Transformers, `hf`), run
+  `git config --global http.sslCAInfo /path/to/ca.pem` (git-lfs), and add the CA to the
+  operating system for browsers.
 - `git clone` is served from a read-only mirror. Weights become Git LFS pointers whose SHA-256
   is computed once per file and cached, so the first clone of a large model waits while it is
   hashed. Weights are never copied into the mirror.

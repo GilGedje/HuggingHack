@@ -316,6 +316,20 @@ class HubRepositories:
             raise HubError("EntryNotFound", f"{entry.path} is not available.")
         return resolved
 
+    def direct_link(
+        self, snapshot: RepoSnapshot, entry: RepoEntry, *, filename: str | None = None
+    ) -> str | None:
+        """A short-lived signed link that lets the client fetch the file from its bucket
+        itself, or None when this server should send it: the file is on local disk or
+        cached here (a local copy wins), or its bucket does not hand out direct links.
+        Callers check access first; holding the link is all a client needs."""
+        if snapshot.local_root is not None:
+            return None
+        storage = self.storages.for_model(snapshot.model)
+        if not getattr(storage, "direct_downloads", False):
+            return None
+        return storage.presigned_get(snapshot.repo_id, entry.path, filename=filename)
+
     def iter_bytes(
         self, snapshot: RepoSnapshot, entry: RepoEntry, start: int = 0, end: int | None = None
     ) -> Iterator[bytes]:

@@ -1802,6 +1802,11 @@ def library_file(
     return leased(repo_id, lambda: _library_file(request, user, repo_id, path))
 
 
+# Files larger than this are handed to the browser as a signed bucket link when the
+# model's bucket allows direct downloads; smaller ones (cards, configs) come from here.
+DIRECT_LINK_MIN_BYTES = 8 * 1024 * 1024
+
+
 def _library_file(request: Request, user: dict[str, Any], repo_id: str, path: str) -> Response:
     model = visible_model(repo_id, user["id"])
     snapshot = hub_repositories.snapshot_for_model(model)
@@ -1822,6 +1827,10 @@ def _library_file(request: Request, user: dict[str, Any], repo_id: str, path: st
                 f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{quote(name, safe="")}'
             )
         },
+        # The page's `download` attribute does not apply to another origin, so the
+        # signed link carries the name the browser saves the file under.
+        direct=entry.size > DIRECT_LINK_MIN_BYTES,
+        filename=name,
     )
 
 
@@ -3239,6 +3248,9 @@ def repository_file_response(
     snapshot: RepoSnapshot,
     entry: RepoEntry,
     headers: dict[str, str],
+    *,
+    direct: bool = True,
+    filename: str | None = None,
 ) -> Response:
     headers = {**headers, "Accept-Ranges": "bytes"}
     local = hub_repositories.local_file(snapshot, entry)
@@ -3249,11 +3261,22 @@ def repository_file_response(
             parse_range(request.headers["range"], entry.size)
         return FileResponse(local, headers=headers, media_type="application/octet-stream")
     if request.method == "HEAD":
+        # Metadata only, never a redirect: a bucket refuses HEAD on a link signed for
+        # GET, and Hub clients read the size and ETag from this answer.
         return Response(
             headers={**headers, "Content-Length": str(entry.size)},
             media_type="application/octet-stream",
         )
     byte_range = parse_range(request.headers.get("range"), entry.size)
+    if direct and (link := hub_repositories.direct_link(snapshot, entry, filename=filename)):
+        # The client fetches the bytes from the bucket itself (docs/SERVE_FROM_S3.md,
+        # "Direct downloads"). Hub clients take the size and ETag from these headers
+        # and send their Range to the bucket; they drop Authorization on the way.
+        linked = {key: value for key, value in headers.items() if key != "Content-Disposition"}
+        if "ETag" in headers:
+            linked["X-Linked-Etag"] = headers["ETag"]
+        linked["X-Linked-Size"] = str(entry.size)
+        return RedirectResponse(link, status_code=302, headers=linked)
     start, end = byte_range or (0, entry.size - 1)
     status_code = 200
     if byte_range:
@@ -3355,6 +3378,28 @@ def ensure_mirror(repo_id: str, user: dict[str, Any] | None) -> Any:
         return git_mirrors.ensure(repo_id, user)
 
 
+def direct_lfs_links(
+    repo_id: str, mirror: Any, user: dict[str, Any] | None, oids: list[str]
+) -> dict[str, tuple[str, int]]:
+    """Signed bucket links, by oid, for the requested LFS objects of a repository whose
+    bucket hands them out; empty when the weights come from this server. The caller
+    has already passed `ensure_mirror`, the same access check as every pull."""
+    wanted = [oid for oid in oids if oid in mirror.lfs]
+    if not wanted:
+        return {}
+    snapshot = hub_repositories.snapshot(repo_id, user)
+    storage = storages.for_model(snapshot.model)
+    if snapshot.local_root is not None or not getattr(storage, "direct_downloads", False):
+        return {}
+    links: dict[str, tuple[str, int]] = {}
+    for oid in wanted:
+        entry = snapshot.entry(mirror.lfs[oid])
+        link = hub_repositories.direct_link(snapshot, entry) if entry else None
+        if link:
+            links[oid] = (link, storage.target.presign_ttl_seconds)
+    return links
+
+
 @app.post("/{owner}/{name}/info/lfs/objects/batch")
 async def git_lfs_batch(owner: str, name: str, request: Request) -> Response:
     repo_id = git_repo_id(owner, name)
@@ -3370,6 +3415,10 @@ async def git_lfs_batch(owner: str, name: str, request: Request) -> Response:
         )
     user = await run_in_threadpool(pull_user, request)
     mirror = await run_in_threadpool(ensure_mirror, repo_id, user)
+    requested = [
+        str(item.get("oid") or "") for item in (payload.get("objects") or [])[:10000] if isinstance(item, dict)
+    ]
+    direct = await run_in_threadpool(direct_lfs_links, repo_id, mirror, user, requested)
     # Authenticated clones must present the same credentials for the weights.
     download_header = (
         {"Authorization": request.headers["Authorization"]}
@@ -3385,7 +3434,18 @@ async def git_lfs_batch(owner: str, name: str, request: Request) -> Response:
             continue
         oid = str(item.get("oid") or "")
         size = item.get("size")
-        if oid in mirror.lfs:
+        if oid in direct:
+            link, expires_in = direct[oid]
+            # A signed bucket link, fetched without credentials.
+            objects.append(
+                {
+                    "oid": oid,
+                    "size": size,
+                    "authenticated": False,
+                    "actions": {"download": {"href": link, "expires_in": expires_in}},
+                }
+            )
+        elif oid in mirror.lfs:
             objects.append(
                 {
                     "oid": oid,

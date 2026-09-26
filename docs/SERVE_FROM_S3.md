@@ -192,7 +192,10 @@ Notes:
   stops the server at start, on purpose, so pictures and git history never land somewhere
   unexpected.
 - With `use_ssl: true` and a private certificate authority, copy the CA's PEM file to
-  `./data/internal-ca.pem` and set `AWS_CA_BUNDLE=/data/internal-ca.pem`.
+  `./data/internal-ca.pem` and add `"ca_bundle":"/data/internal-ca.pem"` to the target
+  (`S3_CA_BUNDLE` for the single `S3_*` bucket). `AWS_CA_BUNDLE` also works, for every target
+  at once.
+- To let clients download straight from the bucket, see [Direct downloads](#direct-downloads).
 - HuggingHack keeps up to `DATABASE_POOL_SIZE` (default 10) PostgreSQL connections open
   and reuses them. Keep it below the server's `max_connections`, less what other clients
   need.
@@ -303,6 +306,67 @@ For a private model, create a read token under **Account → API tokens** and al
 `HF_TOKEN=hht_…`. The same `HF_ENDPOINT` works for the `hf` CLI and Transformers;
 `git clone http://192.168.1.50:7860/owner/name` works with `git-lfs` installed. Each model's
 **Use this model** button shows these commands with the right address filled in.
+
+### Direct downloads
+
+By default every byte of a pull passes through HuggingHack, which then streams it from the
+bucket. On a fast network the server becomes the bottleneck. With **direct downloads**,
+HuggingHack checks who is asking, then hands the client a short-lived signed link, and the
+client fetches the file from the bucket itself, at the bucket's speed:
+
+- `hf`, vLLM, Transformers (`resolve`): a `GET` answers `302` to the signed link, with the
+  headers Hub clients read (`X-Linked-Size`, `X-Linked-Etag`, `ETag`, `X-Repo-Commit`). A `HEAD`
+  answers `200` with the same metadata and no redirect, because a bucket refuses `HEAD` on a
+  link signed for `GET`. Range requests and resumed downloads go to the bucket.
+- `git clone`: the Git LFS batch answer points each weight at a signed link
+  (`authenticated: false`), so git-lfs fetches it without sending any credentials to the bucket.
+- The web UI's download button: files over 8 MB redirect to a signed link that names the saved
+  file. Smaller files (model cards, configs) still come from HuggingHack.
+
+Models that also have a local copy on the server (not evicted) keep streaming from it, and so
+does any bucket without `direct_downloads`. Direct downloads are off unless you turn them on.
+
+Turn them on per bucket in `STORAGE_TARGETS_JSON`:
+
+```dotenv
+STORAGE_TARGETS_JSON=[{"id":"grid","name":"StorageGRID","bucket":"models","prefix":"models","endpoint_url":"https://s3.grid.internal","public_endpoint_url":"https://s3.grid.example","region":"us-east-1","addressing_style":"path","access_key_env":"GRID_KEY","secret_key_env":"GRID_SECRET","ca_bundle":"/data/internal-ca.pem","direct_downloads":true,"presign_ttl_seconds":900}]
+```
+
+or, for the single bucket configured with `S3_*`: `S3_DIRECT_DOWNLOADS=true`,
+`S3_PUBLIC_ENDPOINT_URL`, `S3_CA_BUNDLE`, `S3_PRESIGN_TTL_SECONDS`.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `direct_downloads` | `false` | Hand out signed links instead of streaming. |
+| `public_endpoint_url` | `endpoint_url` | The bucket address clients use. Links are signed for it, so it must be a name on the endpoint's TLS certificate, not an IP address the certificate does not list. |
+| `presign_ttl_seconds` | `900` (60–604800) | How long a link stays valid. A download that has started keeps going after it expires; a resume asks HuggingHack for a fresh link. |
+| `ca_bundle` | unset | PEM file HuggingHack uses to verify the endpoint's certificate, for a private CA. A missing file stops the server at start. |
+
+Before you turn it on:
+
+1. **Every puller can reach the bucket.** Machines that pull models now connect to
+   `public_endpoint_url` directly, not only to HuggingHack. Check DNS and firewalls from a GPU
+   host: `curl -sI https://s3.grid.example` must answer.
+2. **Clients trust the bucket's certificate.** With a private root CA:
+   - huggingface_hub, and so `hf`, vLLM and Transformers: `export REQUESTS_CA_BUNDLE=/etc/ssl/internal-ca.pem`
+     (or `SSL_CERT_FILE`).
+   - git-lfs: `git config --global http.sslCAInfo /etc/ssl/internal-ca.pem`.
+   - Browsers: add the CA to the operating system's trust store.
+   - HuggingHack itself: mount the PEM file and name it in `ca_bundle`.
+3. **The bucket stays private.** No anonymous read or list permission. The signed links are
+   the only way in for clients; HuggingHack signs them with its own key, which never leaves
+   the server, and no link or signature is ever written to its log.
+4. **Know what revocation means.** Revoking a token, disabling an account or making a model
+   private stops new links at once. A link already handed out stays valid until it expires,
+   so keep `presign_ttl_seconds` short.
+
+Storage moves out of a bucket with direct downloads wait for the links issued before the
+switch to expire before removing the old copy (the Storage page says "Waiting about N minutes
+for download links to the old copy to expire").
+
+Check it: `curl -sI http://192.168.1.50:7860/owner/name/resolve/main/config.json` answers
+`200`, and the same URL with `curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n'`
+answers `302` and a link to `public_endpoint_url`.
 
 ## 10. Back up, restore, and upgrade
 

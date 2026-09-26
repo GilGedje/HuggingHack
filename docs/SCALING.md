@@ -1,6 +1,6 @@
 # Scaling plan: direct-to-bucket transfers and multiple replicas
 
-Status: **plan, not implemented.** Written 2026-09-26 against version 1.2.1. This is the
+Status: **phase 1 implemented; phases 2 and 3 planned.** Written 2026-09-26 against version 1.2.1. This is the
 implementation brief for the production deployment: NetApp StorageGRID S3 behind a private CA,
 a 100 GbE network, PostgreSQL, and HuggingHack pods deployed with a Helm chart. Implement the
 phases in order; each one is shippable on its own and each later one assumes the earlier ones.
@@ -63,6 +63,21 @@ ranges). Large bytes move client ↔ bucket directly.
   database).
 
 ## 3. Phase 1: direct downloads (presigned redirects)
+
+**Implemented.** Operator documentation: [SERVE_FROM_S3.md, "Direct downloads"](SERVE_FROM_S3.md#direct-downloads).
+Verified end to end against MinIO with `snapshot_download`, `hf_hub_download` (with and without
+a token on a private repository), `hf download`, `git clone` + git-lfs (token as password) and a
+ranged `curl -L`: hashes match and the server answered every weight request with a redirect.
+Deviations from the plan below, both decided after testing real clients:
+
+- `HEAD` on `resolve` answers `200` with the metadata instead of `302`. A bucket refuses `HEAD`
+  on a link signed for `GET`, which broke `curl -IL`-style probes; `huggingface_hub` and `hf`
+  work with `HEAD` 200 + `GET` 302. The redirect carries `X-Linked-Size`/`X-Linked-Etag`.
+- `direct_downloads` defaults to `false` (opt-in per target), so an existing S3 installation
+  does not suddenly send clients to a bucket they may not reach.
+- A move out of a direct bucket keeps the old copy for `presign_ttl_seconds` after the switch
+  (not TTL + a maximum download time): a download that started before expiry continues, and a
+  resume asks HuggingHack for a fresh link to the new location.
 
 ### Behaviour
 

@@ -411,6 +411,16 @@ class MoveManager:
         source = self.storages.get(move["source_target"])
         staging, previous, root = self._paths(move)
         removes_files = source.remote or not move["keep_local"]
+        if source.remote and (left := self._links_outstanding(move, source)) > 0:
+            # Clients may still hold signed links to the old copy, handed out before
+            # the switch and never seen by the read tracker; they stay valid until
+            # their lifetime runs out. The switch time is in the database, so a
+            # restart keeps waiting for the rest of it.
+            minutes = max(1, round(left / 60))
+            message = f"Waiting about {minutes} minute{'s' if minutes != 1 else ''} for download links to the old copy to expire"
+            if message != move.get("message") or move["status"] != "draining":
+                self.database.update_move(move["id"], status="draining", message=message, updated_at=_now())
+            return False
         # After the switch no read goes to the source bucket, so only reads that
         # began before it matter; a local cache is read until it is gone.
         started_before = self._switched.get(move["id"], self._started) if source.remote else None
@@ -451,6 +461,20 @@ class MoveManager:
         self._switched.pop(move["id"], None)
         self.database.update_move(move["id"], status="done", message="Moved", updated_at=_now(), finished_at=_now())
         return True
+
+    @staticmethod
+    def _links_outstanding(move: dict[str, Any], source: Any) -> float:
+        """Seconds until the last signed link to the source bucket's copy, issued at
+        the latest when the model switched away from it, expires; 0 when it has, or
+        when that bucket never hands out links."""
+        if not getattr(source, "direct_downloads", False) or not move.get("switched_at"):
+            return 0.0
+        try:
+            switched = datetime.fromisoformat(move["switched_at"])
+        except (TypeError, ValueError):
+            return 0.0
+        elapsed = (datetime.now(timezone.utc) - switched).total_seconds()
+        return max(0.0, source.target.presign_ttl_seconds - elapsed)
 
     def _discard_copy(self, move: dict[str, Any]) -> None:
         """Remove whatever a move that did not switch left at its destination."""
