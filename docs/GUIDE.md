@@ -302,6 +302,23 @@ DEFAULT_STORAGE_TARGET=minio-main
 - If the same repository exists in two locations, the earlier target wins and the Storage page
   reports the conflict.
 
+**Parallel transfers.** When the server itself sends a file to a bucket or fetches one, it moves
+several parts of that file at once. That happens when it moves a model into a bucket, restores
+one to the working cache, or stores an upload that came through the server. The Storage page
+shows how many parts, and administrators can change it with **Parallel transfers → Change**,
+from 1 to 64. The next transfer uses the new value, on every server of a cluster within a few
+seconds.
+
+- `S3_MAX_CONCURRENCY` (default 4) is the starting value. Once an administrator saves a value,
+  it wins over the environment, including a Helm or `.env` change, until **Use the default** is
+  chosen.
+- A move into a bucket holds one part per parallel transfer in memory. Parts are
+  `S3_MULTIPART_CHUNK_MB` (64 MB), so 64 parallel transfers can hold about 4 GB. Leave room for
+  that in the pod's memory limit.
+- Pulls with direct downloads and browser uploads with direct uploads go between the client and
+  the bucket, so this setting does not change them. A move still reads the file it copies as one
+  stream, so a higher value speeds up writing the copy, not reading the original.
+
 ### Site data in S3
 
 The site's own files, profile pictures and the git history behind `git clone` and `git pull`,

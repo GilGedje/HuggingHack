@@ -14,6 +14,9 @@ RESERVED_NAMESPACES = frozenset({"api", "assets", "static", "orgs", "models", "a
 # Organizations may not be called "admin" either. Accounts may, since it is the name
 # many owners pick for themselves, and existing sign-ins must keep working.
 RESERVED_ORGANIZATION_NAMES = RESERVED_NAMESPACES | {"admin"}
+# The most parts of one file the server moves to or from a bucket at once, for
+# S3_MAX_CONCURRENCY and the Storage page's setting alike.
+S3_CONCURRENCY_LIMIT = 64
 
 
 def validate_namespace(name: str) -> str:
@@ -67,7 +70,7 @@ def _optional_boolean(name: str) -> bool | None:
 @dataclass(frozen=True)
 class Settings:
     app_name: str = os.getenv("APP_NAME", "HuggingHack")
-    app_version: str = os.getenv("APP_VERSION", "1.3.1")
+    app_version: str = os.getenv("APP_VERSION", "1.4.0")
     model_storage: Path = Path(os.getenv("MODEL_STORAGE", "/models")).expanduser().resolve()
     model_storage_backend: str = os.getenv("MODEL_STORAGE_BACKEND", "filesystem").strip().lower()
     data_dir: Path = Path(os.getenv("DATA_DIR", "/data")).expanduser().resolve()
@@ -114,7 +117,8 @@ class Settings:
     s3_direct_uploads: bool = _boolean("S3_DIRECT_UPLOADS", False)
     s3_part_size_mb: int = _bounded_int("S3_PART_SIZE_MB", 64, 5, 5120)
     s3_upload_presign_ttl_seconds: int = _bounded_int("S3_UPLOAD_PRESIGN_TTL_SECONDS", 3600, 60, 604800)
-    s3_max_concurrency: int = _positive_int("S3_MAX_CONCURRENCY", 4, 32)
+    # The default; an administrator can change it on the Storage page (main.transfer_concurrency).
+    s3_max_concurrency: int = _positive_int("S3_MAX_CONCURRENCY", 4, S3_CONCURRENCY_LIMIT)
     s3_multipart_chunk_mb: int = _positive_int("S3_MULTIPART_CHUNK_MB", 64, 512)
     storage_targets_json: str = os.getenv("STORAGE_TARGETS_JSON", "[]")
     default_storage_target: str | None = (os.getenv("DEFAULT_STORAGE_TARGET") or "").strip() or None

@@ -159,7 +159,9 @@ livenessProbe:
   failureThreshold: 6
 
 # -- Container resources, e.g. requests {cpu: 500m, memory: 512Mi}, limits {memory: 2Gi}.
-# With direct transfers the bytes go client ↔ bucket, so a pod needs little.
+# With direct transfers the bytes go client ↔ bucket, so a pod needs little. Moves are the
+# exception: a move into a bucket holds one S3_MULTIPART_CHUNK_MB part per parallel transfer
+# (Admin -> Storage -> Parallel transfers) in memory, so add about 4Gi for 64 x 64 MB.
 resources: {}
 
 nodeSelector: {}

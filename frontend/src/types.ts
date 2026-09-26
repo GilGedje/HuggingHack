@@ -504,6 +504,20 @@ export interface StorageOverview {
   conflicts: Array<{ repo_id: string; kept_target: string; skipped_target: string }>
   /** The site's own folder (profile pictures, git mirrors) and whether it answered. */
   system: { target: string; name: string; location: string; remote: boolean; ok: boolean; error?: string | null }
+  transfers: TransferSettings
+}
+
+/** Parts of one file the server sends to or fetches from a bucket at once (moves into a
+ * bucket, restores to the working cache, uploads through the server). */
+export interface TransferSettings {
+  max_concurrency: number
+  /** S3_MAX_CONCURRENCY, used when no administrator has set a value. */
+  default: number
+  limit: number
+  part_size_mb: number
+  source: 'admin' | 'environment'
+  updated_at: string | null
+  updated_by: string | null
 }
 
 export interface StorageOption {

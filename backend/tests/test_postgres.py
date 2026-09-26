@@ -813,3 +813,21 @@ def test_postgresql_pooled_connections_commit_roll_back_and_close():
         with database.connect() as connection:
             connection.execute("DELETE FROM users WHERE id IN (?, ?)", (kept, dropped))
         database.close()
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="TEST_POSTGRES_URL is not configured")
+def test_postgresql_server_settings():
+    database = Database(POSTGRES_URL or "")
+    database.initialize()
+    name = f"test-{uuid.uuid4().hex}"
+    try:
+        assert database.server_setting(name) is None
+        database.set_server_setting(name, 16, "2026-09-27T10:00:00+00:00", "admin")
+        database.set_server_setting(name, 64, "2026-09-27T11:00:00+00:00", None)
+        assert database.server_setting(name) == {
+            "name": name, "value": 64, "updated_at": "2026-09-27T11:00:00+00:00", "updated_by": None,
+        }
+    finally:
+        database.delete_server_setting(name)
+    assert database.server_setting(name) is None
+    database.close()

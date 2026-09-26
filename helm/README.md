@@ -40,7 +40,7 @@ through `envFrom`.
 # umbrella/Chart.yaml
 dependencies:
   - name: hugginghack
-    version: 0.1.1
+    version: 0.1.2
     repository: file://../hugginghack        # or your chart repository
 
 # umbrella/values.yaml
@@ -50,7 +50,7 @@ hugginghack:
   replicaCount: 3                            # >1 needs CLUSTER_MODE=true (below)
   image:
     repository: registry.internal/hugginghack
-    tag: "1.3.1"
+    tag: "1.4.0"
   imagePullSecrets:
     - name: registry-pull
   caBundle:

@@ -52,6 +52,7 @@ TABLES = (
     "revision_aliases",
     "storage_grants",
     "config_revisions",
+    "server_settings",
 )
 
 

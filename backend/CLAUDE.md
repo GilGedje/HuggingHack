@@ -185,6 +185,16 @@ mirrored in `frontend/src/uploadPlan.ts` `isRecorded`, so change both together.
 - Anywhere else, `StorageUnavailableError` and any botocore error become **503** with a fixed
   sentence (app exception handlers), and an unreachable PostgreSQL (`database_unreachable`:
   pool timeout, connection errors) becomes **503** "The database is not reachable."
+- **Parallel transfers.** `S3ModelStorage._transfer_options` builds a boto3 `TransferConfig` for
+  every transfer from `self.concurrency()`, which `StorageRegistry.use_concurrency` points at
+  `main.transfer_concurrency`: the `server_settings` row `s3_max_concurrency` (set with
+  `PUT /api/storage/transfers`, `storage.manage`), else `S3_MAX_CONCURRENCY`, cached 5 s per
+  process so cluster peers follow within seconds, and the last value kept if the database is
+  unreachable. `max_in_memory_upload_chunks` follows it too: `upload_fileobj` of a stream (moves
+  into a bucket) holds each part in flight in memory and boto3 stops at 10 otherwise. `client`
+  keeps `S3_CONCURRENCY_LIMIT` (64) pooled connections, so parts beyond botocore's default 10 do
+  not each open and drop a connection. `server_settings` is the table for any setting an
+  administrator changes at runtime (`Database.server_setting`/`set_server_setting`).
 - `S3ModelStorage` has three clients: `client` (patient retries: transfers, streaming GETs,
   manifests, commits), `read_client` (2 attempts, 5 s reads: listings, HEAD, small reads and the
   system folder, where someone is waiting) and `health_client`. The PostgreSQL pool waits
@@ -309,7 +319,7 @@ safetensors/GGUF headers with bounded sizes. Pickle-family files are only flagge
 | `MAX_CONCURRENT_DOWNLOADS` / `DOWNLOAD_WORKERS_PER_JOB` | `2` / `4` | Download pool sizes |
 | `UPLOAD_CHUNK_MB` / `MAX_UPLOAD_SIZE_GB` | `8` / `1024` | Upload chunking and cap |
 | `S3_BUCKET` `S3_PREFIX`(`models`) `S3_ENDPOINT_URL` `S3_REGION` `S3_ACCESS_KEY_ID` `S3_SECRET_ACCESS_KEY` `S3_SESSION_TOKEN` `S3_USE_SSL`(`true`) `S3_VERIFY_SSL`(`true`) `S3_ADDRESSING_STYLE`(`auto`) `S3_STORAGE_CLASS` | — | Legacy single bucket. Keys can come from boto3's chain (`AWS_*`) instead. |
-| `S3_MAX_CONCURRENCY` / `S3_MULTIPART_CHUNK_MB` | `4` / `64` | boto3 transfer tuning (applies to all targets) |
+| `S3_MAX_CONCURRENCY` / `S3_MULTIPART_CHUNK_MB` | `4` (1–64) / `64` | boto3 transfer tuning (applies to all targets). `S3_MAX_CONCURRENCY` is only the default: a value saved on the Storage page (`server_settings`) wins |
 | `S3_CA_BUNDLE` `S3_DIRECT_DOWNLOADS`(`false`) `S3_PUBLIC_ENDPOINT_URL` `S3_PRESIGN_TTL_SECONDS`(`900`) | — | Private CA for the endpoint; direct downloads through signed links (per target: `ca_bundle`, `direct_downloads`, `public_endpoint_url`, `presign_ttl_seconds`) |
 | `S3_DIRECT_UPLOADS`(`false`) `S3_PART_SIZE_MB`(`64`) `S3_UPLOAD_PRESIGN_TTL_SECONDS`(`3600`) | — | Direct uploads from the browser (per target: `direct_uploads`, `part_size_mb`, `upload_presign_ttl_seconds`); the bucket's CORS must allow `PUT` from `PUBLIC_URL` |
 | `CLUSTER_MODE` / `INSTANCE_ID` | `false` / hostname | Several processes sharing one database (docs/SCALING.md phase 3) |
@@ -318,7 +328,7 @@ safetensors/GGUF headers with bounded sizes. Pickle-family files are only flagge
 | `OIDC_ISSUER` `OIDC_CLIENT_ID` `OIDC_CLIENT_SECRET` | empty | SSO is on when accounts are enabled and issuer + client id are set |
 | `OIDC_SCOPES` `OIDC_PROVIDER_NAME` `OIDC_DEFAULT_ROLE`(`viewer`) `OIDC_ALLOWED_GROUPS` `OIDC_GROUPS_CLAIM`(`groups`) `OIDC_USERNAME_CLAIM`(`preferred_username`) `OIDC_REDIRECT_URL` `OIDC_CA_BUNDLE` `OIDC_VERIFY_SSL`(`true`) | see config | SSO details |
 | `RUNTIME_TARGETS_JSON` / `RUNTIME_WORKERS` / `RUNTIME_API_TOKEN` | `[]` / `2` / empty | Ollama and vLLM-agent targets / pool / bearer for the runtime endpoints |
-| `APP_NAME` / `APP_VERSION` | HuggingHack / `1.3.1` | Shown in health and the UI |
+| `APP_NAME` / `APP_VERSION` | HuggingHack / `1.4.0` | Shown in health and the UI |
 
 Not in `config.py`: `FORWARDED_ALLOW_IPS` (read by uvicorn `--proxy-headers`, set it to the proxy IP, never `*`), `AWS_*`/`AWS_CA_BUNDLE` (boto3), and `VLLM_AGENT_*` (`vllm_agent.py`).
 

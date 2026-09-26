@@ -11,11 +11,11 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from uuid import uuid4
 from urllib.parse import quote, urlsplit, urlunsplit
 
-from .config import Settings, repository_path, validate_repo_id
+from .config import S3_CONCURRENCY_LIMIT, Settings, repository_path, validate_repo_id
 from .indexer import (
     LEGACY_S3_TARGET_ID,
     LOCAL_TARGET_ID,
@@ -401,6 +401,7 @@ class S3ModelStorage(FilesystemModelStorage):
         client: Any | None = None,
         transfer_config: Any | None = None,
         target: S3TargetConfig | None = None,
+        concurrency: Callable[[], int] | None = None,
     ):
         super().__init__(settings)
         target = target or S3TargetConfig.from_settings(settings)
@@ -419,6 +420,10 @@ class S3ModelStorage(FilesystemModelStorage):
         self.prefix = target.prefix
         self.endpoint = target.endpoint_url
         self._lock = threading.RLock()
+        # Parts of one file in flight at once. Asked on every transfer, so a change on
+        # the Storage page applies to the next one (StorageRegistry.use_concurrency).
+        self.concurrency: Callable[[], int] = concurrency or (lambda: settings.s3_max_concurrency)
+        self._transfer_config_for: Callable[[int], Any] | None = None
         if client is None:
             try:
                 import boto3
@@ -445,6 +450,9 @@ class S3ModelStorage(FilesystemModelStorage):
                     read_timeout=10,
                     retries={"max_attempts": 5, "mode": "standard"},
                     s3={"addressing_style": target.addressing_style},
+                    # botocore keeps 10 connections by default; parallel parts beyond
+                    # that would open a new connection each and throw it away.
+                    max_pool_connections=S3_CONCURRENCY_LIMIT,
                 ),
             }
             if target.endpoint_url:
@@ -498,12 +506,21 @@ class S3ModelStorage(FilesystemModelStorage):
                 }
             )
             chunk_bytes = settings.s3_multipart_chunk_mb * 1024**2
-            transfer_config = TransferConfig(
-                multipart_threshold=chunk_bytes,
-                multipart_chunksize=chunk_bytes,
-                max_concurrency=settings.s3_max_concurrency,
-                use_threads=True,
-            )
+
+            def transfer_config_for(parallel: int) -> Any:
+                config = TransferConfig(
+                    multipart_threshold=chunk_bytes,
+                    multipart_chunksize=chunk_bytes,
+                    max_concurrency=parallel,
+                    use_threads=True,
+                )
+                # A stream upload (a move into this bucket) holds each part in flight in
+                # memory, and boto3 allows only 10 of them unless told otherwise. It is
+                # not a constructor argument, only an attribute its upload code reads.
+                config.max_in_memory_upload_chunks = parallel
+                return config
+
+            self._transfer_config_for = transfer_config_for
         self.client = client
         if not hasattr(self, "health_client"):
             self.health_client = client
@@ -652,7 +669,10 @@ class S3ModelStorage(FilesystemModelStorage):
 
     def _transfer_options(self) -> dict[str, Any]:
         options: dict[str, Any] = {}
-        if self.transfer_config is not None:
+        if self._transfer_config_for is not None:
+            parallel = max(1, min(int(self.concurrency()), S3_CONCURRENCY_LIMIT))
+            options["Config"] = self._transfer_config_for(parallel)
+        elif self.transfer_config is not None:
             options["Config"] = self.transfer_config
         return options
 
@@ -1506,6 +1526,11 @@ class StorageRegistry:
         if isinstance(storage, S3ModelStorage):
             return cls(settings, [storage])
         return cls(settings, local=storage)
+
+    def use_concurrency(self, concurrency: Callable[[], int]) -> None:
+        """Have every bucket ask `concurrency` for its parts in flight per file."""
+        for remote in self.remotes:
+            remote.concurrency = concurrency
 
     @property
     def default(self) -> FilesystemModelStorage:

@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import secrets
 import threading
+import time
 from datetime import datetime, timedelta
 import json
 import logging
@@ -46,7 +47,7 @@ from .auth import (
 from .avatars import MAX_AVATAR_BYTES, AvatarStore, avatar_url
 from .system import SystemStoreError, create_system_store, ensure_readme, migrate_local_data
 from .catalog import HARDWARE, LocalCatalog, model_task, nominal_parameters, search_catalog
-from .config import settings, validate_namespace, validate_repo_id
+from .config import S3_CONCURRENCY_LIMIT, settings, validate_namespace, validate_repo_id
 from .database import INTEGRITY_ERRORS, Database, database_unreachable
 from .downloads import DownloadManager
 from .git_mirror import GitMirrors
@@ -113,6 +114,8 @@ uploads.mirror_forget = git_mirrors.forget
 # Several servers sharing the library (CLUSTER_MODE); otherwise this one leads.
 cluster = Cluster(settings, database)
 moves.is_leader = cluster.is_leader
+# Buckets ask for the Storage page's value on every transfer (transfer_concurrency).
+storages.use_concurrency(lambda: transfer_concurrency())
 
 
 # Repositories found in more than one storage target during the last scan.
@@ -2636,7 +2639,64 @@ async def storage_targets(_: StorageViewer) -> dict:
         "targets": targets,
         "conflicts": scan_state()["conflicts"],
         "system": system,
+        "transfers": await run_in_threadpool(transfer_settings),
     }
+
+
+# Parts of one file the server sends to or fetches from a bucket at once: moves into a
+# bucket, restores to the working cache, and uploads that come through the server.
+# S3_MAX_CONCURRENCY is the default; an administrator may override it on the Storage
+# page. Transfers ask often, so the answer is kept a few seconds; other servers in a
+# cluster follow a change within that time.
+TRANSFER_CONCURRENCY = "s3_max_concurrency"
+TRANSFER_CONCURRENCY_TTL = 5.0
+_transfer_concurrency: dict[str, Any] = {"value": None, "read_at": 0.0}
+
+
+def transfer_settings() -> dict[str, Any]:
+    stored = database.server_setting(TRANSFER_CONCURRENCY)
+    value = stored["value"] if stored else None
+    if not isinstance(value, int) or not 1 <= value <= S3_CONCURRENCY_LIMIT:
+        stored, value = None, settings.s3_max_concurrency
+    return {
+        "max_concurrency": value,
+        "default": settings.s3_max_concurrency,
+        "limit": S3_CONCURRENCY_LIMIT,
+        "part_size_mb": settings.s3_multipart_chunk_mb,
+        "source": "admin" if stored else "environment",
+        "updated_at": stored["updated_at"] if stored else None,
+        "updated_by": stored["updated_by"] if stored else None,
+    }
+
+
+def transfer_concurrency() -> int:
+    cached = _transfer_concurrency
+    if cached["value"] is not None and time.monotonic() - cached["read_at"] < TRANSFER_CONCURRENCY_TTL:
+        return cached["value"]
+    try:
+        value = transfer_settings()["max_concurrency"]
+    except Exception:
+        # A transfer under way never fails over this: keep the last value read.
+        logger.warning("Could not read the transfer setting; using the last known value.", exc_info=True)
+        value = cached["value"] or settings.s3_max_concurrency
+    cached.update(value=value, read_at=time.monotonic())
+    return value
+
+
+class TransferSettingsRequest(BaseModel):
+    # null returns to S3_MAX_CONCURRENCY.
+    max_concurrency: int | None = Field(ge=1, le=S3_CONCURRENCY_LIMIT)
+
+
+@app.put("/api/storage/transfers")
+def update_storage_transfers(payload: TransferSettingsRequest, user: StorageManager) -> dict:
+    """Set how many parts of one file the server moves to or from a bucket at once."""
+    if payload.max_concurrency is None:
+        database.delete_server_setting(TRANSFER_CONCURRENCY)
+    else:
+        database.set_server_setting(TRANSFER_CONCURRENCY, payload.max_concurrency, utc_iso(), user["username"])
+    _transfer_concurrency.update(value=None, read_at=0.0)
+    return transfer_settings()
 
 
 class MoveRequest(BaseModel):

@@ -43,6 +43,7 @@ import type {
   StorageGrant,
   StorageOption,
   StorageOverview,
+  TransferSettings,
   User,
   Visibility,
 } from './types'
@@ -303,6 +304,9 @@ export const api = {
     ),
   storageTargets: () => request<StorageOverview>('/api/storage/targets'),
   storageMoves: () => request<{ items: StorageMove[] }>('/api/storage/moves'),
+  /** null goes back to the server's default (S3_MAX_CONCURRENCY). */
+  updateStorageTransfers: (payload: { max_concurrency: number | null }) =>
+    request<TransferSettings>('/api/storage/transfers', { method: 'PUT', body: JSON.stringify(payload) }),
   startStorageMove: (payload: { repo_id: string; destination: string; confirmation: string; keep_local: boolean }) =>
     request<StorageMove>('/api/storage/moves', { method: 'POST', body: JSON.stringify(payload) }),
   cancelStorageMove: (moveId: string) =>

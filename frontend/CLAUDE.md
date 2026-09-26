@@ -57,7 +57,7 @@ Paths below are relative to `frontend/` unless marked *(repo root)*.
 - `useModel.ts`: "Use this model" snippets (vLLM pip/docker, git clone, hf CLI), `resolveServerUrl`.
 - `gguf.ts`: GGUF header inspection. It lazy-imports `@huggingface/gguf` and fetches byte ranges only through `/api/library/gguf-range`.
 - `listingFields.ts`, `listingPreview.ts`: listing overrides, and what an upload sends so the server can preview its listing. The ceilings mirror `backend/app/listing.py`.
-- `configCompare.ts`: compares config-revision results. `storageMoves.ts`: storage-move progress. `modelTree.ts`: lineage wording. `pagination.ts`: `pageList`. `dropFiles.ts`: folder drag-and-drop. `avatarImage.ts`: square 256 px WebP avatars. `utils.ts`: `formatBytes`, `relativeTime`, `describeDevice`, `avatarUrl`…
+- `configCompare.ts`: compares config-revision results. `storageMoves.ts`: storage-move progress. `transfers.ts`: the Storage page's parallel-transfer input (`parseParallel`) and the memory it implies. `modelTree.ts`: lineage wording. `pagination.ts`: `pageList`. `dropFiles.ts`: folder drag-and-drop. `avatarImage.ts`: square 256 px WebP avatars. `utils.ts`: `formatBytes`, `relativeTime`, `describeDevice`, `avatarUrl`…
 
 **`src/components/`**
 - `Shell.tsx`: top bar, primary nav (sliding underline), phone menu, theme toggle, account chip.

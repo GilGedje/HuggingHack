@@ -3022,6 +3022,26 @@ a.model-tree-name:hover { text-decoration: underline; text-underline-offset: 3px
   .system-strip > .status-pill { grid-column: 2; justify-self: start; }
 }
 
+/* Parallel transfers, under the site-data strip. */
+.system-strip + .transfer-strip { margin-top: -12px; }
+.transfer-strip > .secondary-button { align-self: center; }
+.transfer-form { margin-top: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; animation: fade-in 200ms var(--ease-out) backwards; }
+.transfer-form label { color: var(--text-secondary); font-size: 12px; font-weight: 600; }
+.transfer-form input {
+  width: 84px; height: 32px; padding: 0 10px;
+  border: 1px solid var(--border-strong); border-radius: 6px; background: var(--canvas); color: var(--text); font-size: 13px;
+}
+.transfer-form input[aria-invalid='true'] { border-color: var(--danger); }
+.transfer-form .text-link { padding: 0; border: 0; background: none; cursor: pointer; font-size: 12px; }
+.transfer-form .field-hint { margin: 0; flex-basis: 100%; }
+.transfer-form .inline-error { flex-basis: 100%; }
+@media (max-width: 640px) {
+  .transfer-strip > .secondary-button { grid-column: 2; justify-self: start; }
+}
+@media (pointer: coarse) {
+  .transfer-form input { font-size: 16px; }
+}
+
 /* ==== Frontend fixes: callouts, optional hints, runtime checks (start) ==== */
 /* An optional field's hint sits on the label's line, as in the upload wizard. */
 .account-form label > span small { margin-left: 4px; }

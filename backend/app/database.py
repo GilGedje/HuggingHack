@@ -648,6 +648,13 @@ class Database:
                     CHECK ((user_id IS NULL) <> (organization_id IS NULL))
                 );
 
+                CREATE TABLE IF NOT EXISTS server_settings (
+                    name TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    updated_by TEXT
+                );
+
                 CREATE TABLE IF NOT EXISTS storage_moves (
                     id TEXT PRIMARY KEY,
                     repo_id TEXT NOT NULL,
@@ -2924,6 +2931,34 @@ class Database:
                 [(target_id, user_id, None, created_at) for user_id in user_ids]
                 + [(target_id, None, org_id, created_at) for org_id in organization_ids],
             )
+
+    # Settings an administrator changes while the server runs. The environment holds
+    # their defaults; a missing row means the default applies.
+
+    def server_setting(self, name: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT name, value_json, updated_at, updated_by FROM server_settings WHERE name = ?",
+                (name,),
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["value"] = json.loads(result.pop("value_json"))
+        return result
+
+    def set_server_setting(self, name: str, value: Any, updated_at: str, updated_by: str | None) -> None:
+        with self._write_lock, self.connect() as connection:
+            connection.execute(
+                "INSERT INTO server_settings (name, value_json, updated_at, updated_by) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (name) DO UPDATE SET value_json = excluded.value_json, "
+                "updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+                (name, json.dumps(value), updated_at, updated_by),
+            )
+
+    def delete_server_setting(self, name: str) -> None:
+        with self._write_lock, self.connect() as connection:
+            connection.execute("DELETE FROM server_settings WHERE name = ?", (name,))
 
     # Organizations share one namespace with usernames.
 

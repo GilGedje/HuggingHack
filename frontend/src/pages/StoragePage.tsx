@@ -8,6 +8,7 @@ import {
   Cloud,
   Database,
   FolderCog,
+  Gauge,
   HardDrive,
   LoaderCircle,
   LockKeyhole,
@@ -24,8 +25,9 @@ import { formatLabels } from '../components/RepositoryRows'
 import { MoveModelDialog } from '../components/MoveModelDialog'
 import { useFadeOnChange } from '../motion'
 import { MOVE_STEPS, moveCancellable, movePercent, moveStep, moveUnfinished } from '../storageMoves'
-import type { StorageGrant, StorageModel, StorageMove, StorageOverview, StorageTarget } from '../types'
+import type { StorageGrant, StorageModel, StorageMove, StorageOverview, StorageTarget, TransferSettings } from '../types'
 import { formatBytes, formatNumber, relativeTime } from '../utils'
+import { parseParallel, transferMemoryBytes } from '../transfers'
 import { visibilityLabel } from '../visibility'
 import { RowSkeletons, StorageSkeleton } from '../components/Skeletons'
 import { LoadError } from '../components/LoadError'
@@ -206,6 +208,124 @@ function UploadAccess({
         </button>
       </div>
     </div>
+  )
+}
+
+function transferSource(transfers: TransferSettings): string {
+  if (transfers.source === 'environment') return "The server's default, from S3_MAX_CONCURRENCY."
+  const who = transfers.updated_by || 'an administrator'
+  // relativeTime says "now" for the moment just past, which reads oddly after "Set by gil".
+  const ago = transfers.updated_at ? relativeTime(transfers.updated_at) : ''
+  const when = ago ? ` ${ago === 'now' ? 'just now' : ago}` : ''
+  return `Set by ${who}${when}. The server's default is ${transfers.default}; it applies again after “Use the default”.`
+}
+
+/** How many parts of one file the server sends to or fetches from a bucket at once.
+ * Clients pulling with direct downloads, and browsers uploading straight to a bucket,
+ * talk to the bucket themselves and are not affected. */
+function TransferSettingsStrip({
+  transfers,
+  canManage,
+  onSaved,
+  onToast,
+}: {
+  transfers: TransferSettings
+  canManage: boolean
+  onSaved: () => void
+  onToast: ToastHandler
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(String(transfers.max_concurrency))
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const parsed = parseParallel(draft, transfers.limit)
+  const shown = parsed ?? transfers.max_concurrency
+  const inputId = 'transfer-parallel'
+
+  function start() {
+    setDraft(String(transfers.max_concurrency))
+    setError('')
+    setEditing(true)
+  }
+
+  async function save(next: number | null) {
+    setSaving(true)
+    setError('')
+    try {
+      const saved = await api.updateStorageTransfers({ max_concurrency: next })
+      setEditing(false)
+      onSaved()
+      onToast(
+        next === null
+          ? `Parallel transfers are back to the default of ${saved.max_concurrency} parts per file.`
+          : `Parallel transfers set to ${saved.max_concurrency} parts per file.`,
+      )
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not save parallel transfers.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <section className="system-strip transfer-strip" aria-label="Parallel transfers">
+      <Gauge size={18} />
+      <div>
+        <strong>
+          Parallel transfers · {transfers.max_concurrency} part{transfers.max_concurrency === 1 ? '' : 's'} per file
+        </strong>
+        <small>
+          How many parts of one file the server sends to or fetches from a bucket at once: when it moves a model
+          into a bucket, restores one to the working cache, or stores an upload that came through it. Pulls with
+          direct downloads and direct uploads go between clients and the bucket, and are not affected.
+        </small>
+        <code>{transferSource(transfers)}</code>
+        {editing && (
+          <div className="transfer-form">
+            <label htmlFor={inputId}>Parts per file</label>
+            <input
+              id={inputId}
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={transfers.limit}
+              step={1}
+              value={draft}
+              autoFocus
+              aria-invalid={parsed === null}
+              aria-describedby={`${inputId}-hint`}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && parsed !== null) save(parsed)
+                if (event.key === 'Escape') setEditing(false)
+              }}
+            />
+            <button type="button" className="download-button compact" onClick={() => parsed !== null && save(parsed)} disabled={saving || parsed === null}>
+              {saving ? <LoaderCircle size={14} className="spin" /> : <Check size={14} />} Save
+            </button>
+            <button type="button" className="secondary-button compact" onClick={() => setEditing(false)} disabled={saving}>
+              Cancel
+            </button>
+            {transfers.source === 'admin' && (
+              <button type="button" className="text-link" onClick={() => save(null)} disabled={saving}>
+                Use the default ({transfers.default})
+              </button>
+            )}
+            <p className="field-hint" id={`${inputId}-hint`}>
+              {parsed === null
+                ? `Enter a whole number from 1 to ${transfers.limit}.`
+                : `A move into a bucket holds one ${transfers.part_size_mb} MB part per transfer in memory: up to ${formatBytes(transferMemoryBytes(shown, transfers.part_size_mb))} at ${shown}.`}
+            </p>
+            {error && <div className="inline-error">{error}</div>}
+          </div>
+        )}
+      </div>
+      {canManage && !editing && (
+        <button type="button" className="secondary-button compact" onClick={start}>
+          Change
+        </button>
+      )}
+    </section>
   )
 }
 
@@ -557,6 +677,13 @@ export function StoragePage({ onToast }: { onToast: ToastHandler }) {
               {overview.system.ok ? (overview.system.remote ? 'In S3' : 'Local disk') : 'Offline'}
             </span>
           </section>
+
+          <TransferSettingsStrip
+            transfers={overview.transfers}
+            canManage={can('storage.manage')}
+            onSaved={load}
+            onToast={onToast}
+          />
 
           {overview.conflicts.length > 0 && (
             <div className="security-note warning storage-conflicts">
