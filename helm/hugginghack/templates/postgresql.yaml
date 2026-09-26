@@ -42,7 +42,7 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "hugginghack.serviceAccountName" . }}
       automountServiceAccountToken: false
-      {{- with $pg.podSecurityContext }}
+      {{- with (include "hugginghack.postgresql.podSecurityContext" . | fromYaml) }}
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}

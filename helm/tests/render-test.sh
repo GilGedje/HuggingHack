@@ -77,5 +77,15 @@ labels = pg_pod["metadata"]["labels"]
 assert not all(labels.get(k) == v for k, v in app_svc["spec"]["selector"].items()), "app Service would select the database"
 '
 if helm template t "$chart" --set postgresql.enabled=true >/dev/null 2>&1; then echo "postgresql.enabled without envFromSecret rendered"; exit 1; fi
+# The wait runs on HuggingHack's own (non-root) image, not PostgreSQL's.
+echo "$pg" | grep -A1 'name: wait-for-postgresql' | grep -q 'image: "hugginghack:'
+# PostgreSQL's user: the image's own (70) on Kubernetes, none on OpenShift, yours if you set one.
+pg_ctx() { helm template t "$chart" --set postgresql.enabled=true --set envFromSecret=s --show-only templates/postgresql.yaml "$@" | "$python" -c '
+import sys, yaml
+print(yaml.safe_load(sys.stdin.read().split("---")[-1])["spec"]["template"]["spec"]["securityContext"].get("runAsUser"))'; }
+[ "$(pg_ctx)" = 70 ]
+[ "$(pg_ctx --api-versions security.openshift.io/v1)" = None ]
+[ "$(pg_ctx --set postgresql.podSecurityContext.runAsUser=999)" = 999 ]
 echo "ok  postgresql on/off: StatefulSet + Service + wait only when on, password from the Secret, refuses without one"
+echo "ok  postgresql user: 70 on Kubernetes, assigned by OpenShift, explicit values win"
 echo "All render checks passed."

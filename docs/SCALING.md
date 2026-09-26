@@ -344,13 +344,15 @@ the frontend (static files), the startup `setup_required` cache (only ever flips
 
 ### Deployment (Helm chart: [`helm/`](../helm/README.md))
 
-Values: `replicaCount`, image, `env` and `envFrom` secrets, a ConfigMap-mounted CA bundle wired
-to `ca_bundle`/`OIDC_CA_BUNDLE`, `PUBLIC_URL`, ingress with the four forwarded headers and
-`FORWARDED_ALLOW_IPS` set to the ingress's pod CIDR, readiness probe on `/api/health`,
-`terminationGracePeriodSeconds: 60` (the compose `stop_grace_period`),
-`PodDisruptionBudget` (`minAvailable: 1`), rolling update `maxUnavailable: 0`, `runAsUser: 1000`,
-`readOnlyRootFilesystem` with an `emptyDir` at `/tmp` (`HF_HOME`). No persistent volume: in
-cluster mode the pod writes nothing it needs to keep.
+Built as `helm/hugginghack`, a subchart whose umbrella owns the ConfigMap and Secret; see
+[`helm/README.md`](../helm/README.md) for its values and what it was tested against. In short:
+settings arrive through `envFrom`; OpenShift restricted-v2 defaults (no fixed UID, read-only
+root filesystem, emptyDirs for `/data`, `/models`, `/tmp`); probes on `/api/health` with
+`Host: localhost`; rolling updates with `maxUnavailable: 0` and a 10 s pre-stop pause;
+`terminationGracePeriodSeconds: 60`; an optional private-CA mount; and an optional in-chart
+PostgreSQL. The umbrella provides the Ingress or Route, `FORWARDED_ALLOW_IPS` (the router's pod
+network) and, if wanted, a PodDisruptionBudget. In cluster mode the application pods write
+nothing they need to keep.
 
 ### Tests
 

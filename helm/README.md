@@ -6,6 +6,7 @@ Everything for running HuggingHack on Kubernetes or OpenShift lives in this fold
 helm/
 ├── README.md                 this file
 ├── hugginghack/              the chart (a subchart of your umbrella)
+│   ├── README.md             short version, packaged with the chart (helm show readme)
 │   ├── Chart.yaml
 │   ├── values.yaml
 │   ├── .helmignore
@@ -101,6 +102,8 @@ HuggingHack always connects with `DATABASE_URL` from the umbrella's Secret.
   HuggingHack's pods wait for it to answer before starting. It is one pod, not a replicated
   database; for high availability run your own and leave this off. Mirror
   `postgres:17-alpine` into your registry (`postgresql.image`) for an air-gapped cluster.
+  Its volume (PVC `data-<release>-hugginghack-postgresql-0`) is kept by `helm uninstall`, so
+  the data survives a reinstall; delete the PVC yourself to start over.
 
 ### Restart pods when settings change
 
@@ -143,6 +146,11 @@ The defaults follow the restricted-v2 SCC and Kubernetes Pod Security "restricte
 - No `runAsUser`, `runAsGroup` or `fsGroup` is set; OpenShift assigns them from the
   namespace's range. Both HuggingHack and the chart's PostgreSQL run under such a random
   UID (tested with UID 1000710000, group 0).
+- On plain Kubernetes the defaults work as they are: HuggingHack's image runs as its own
+  non-root user (1000), and for the chart's PostgreSQL, whose official image would start as
+  root, the chart fills in the image's `postgres` user (70) unless it detects OpenShift
+  (`security.openshift.io/v1`) or you set the user yourself. `helm template` cannot see the
+  cluster, so pass `--api-versions security.openshift.io/v1` when rendering for OpenShift.
 - `runAsNonRoot`, `seccompProfile: RuntimeDefault`, `allowPrivilegeEscalation: false`,
   `capabilities: drop [ALL]`, `readOnlyRootFilesystem: true`. Everything HuggingHack writes
   goes to emptyDirs at `/data`, `/models` and `/tmp`; PostgreSQL writes to its volume,
@@ -182,6 +190,11 @@ helm/tests/render-test.sh                                    # offline
 KUBE_CONTEXT=docker-desktop LOAD_IMAGE_INTO=desktop-control-plane helm/tests/cluster-test.sh
 KUBE_CONTEXT=docker-desktop PG_MODE=external helm/tests/cluster-test.sh
 ```
+
+The chart's defaults were also installed as they are (no security overrides) in a
+"restricted" namespace: standalone with no `envFrom`, and with `postgresql.enabled` (HuggingHack
+as uid 1000 creating its tables in the chart's PostgreSQL running as uid 70), plus the
+private-CA mount (read-only at `/etc/hugginghack/ca/ca.crt`).
 
 The live test only touches the namespaces `hh-helm-test` and `hh-helm-deps` and deletes them
 afterwards (`KEEP=1` leaves them). Always name a local context; never point it at a shared

@@ -199,8 +199,9 @@ postgresql:
     accessModes:
       - ReadWriteOnce
   resources: {}
-  # -- Same OpenShift-friendly defaults as the application: no fixed user, and the
-  # database directory is created by whatever user the platform assigns.
+  # -- Same OpenShift-friendly defaults as the application. On OpenShift the platform
+  # assigns the user; elsewhere the chart fills in the image's postgres user (70) for
+  # runAsUser, runAsGroup and fsGroup unless you set them here.
   podSecurityContext:
     runAsNonRoot: true
     seccompProfile:

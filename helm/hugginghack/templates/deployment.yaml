@@ -40,14 +40,22 @@ spec:
       {{- if .Values.postgresql.enabled }}
       # The in-chart PostgreSQL may still be starting; HuggingHack needs it at startup.
       initContainers:
+        # HuggingHack's own image (non-root, no second image to pull): wait until the
+        # database accepts connections.
         - name: wait-for-postgresql
-          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
-          imagePullPolicy: {{ .Values.postgresql.image.pullPolicy }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
-            - sh
+            - python
             - -c
-            # -U: under a platform-assigned UID there is no passwd entry to take a default user from.
-            - until pg_isready -q -h {{ include "hugginghack.postgresql.fullname" . }} -p {{ .Values.postgresql.port }} -U {{ .Values.postgresql.username | quote }}; do sleep 2; done
+            - |
+              import socket, time
+              while True:
+                  try:
+                      socket.create_connection(({{ include "hugginghack.postgresql.fullname" . | quote }}, {{ .Values.postgresql.port }}), timeout=3).close()
+                      break
+                  except OSError:
+                      time.sleep(2)
           {{- with .Values.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}

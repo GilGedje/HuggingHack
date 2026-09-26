@@ -83,3 +83,21 @@ app.kubernetes.io/component: database
 app.kubernetes.io/part-of: {{ . | quote }}
 {{- end }}
 {{- end }}
+
+{{/*
+The PostgreSQL pod's security context. The official image starts as root, which "runAsNonRoot"
+refuses, so outside OpenShift the image's own postgres user (70) is filled in, with its group
+owning the volume. OpenShift (detected by its security API) assigns these from the
+namespace's range and must not be given fixed ones. Values set explicitly always win.
+*/}}
+{{- define "hugginghack.postgresql.podSecurityContext" -}}
+{{- $context := deepCopy (.Values.postgresql.podSecurityContext | default dict) }}
+{{- if not (.Capabilities.APIVersions.Has "security.openshift.io/v1") }}
+{{- range $key := list "runAsUser" "runAsGroup" "fsGroup" }}
+{{- if not (hasKey $context $key) }}
+{{- $_ := set $context $key 70 }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- toYaml $context }}
+{{- end }}
