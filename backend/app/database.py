@@ -400,6 +400,11 @@ class Database:
         return connection
 
     def initialize(self) -> None:
+        # Servers starting together would otherwise both add the same column.
+        with self.cluster_lock("schema"):
+            self._initialize()
+
+    def _initialize(self) -> None:
         if self.path is not None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self._migrate_users()
@@ -517,7 +522,10 @@ class Database:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     completed_at TEXT,
-                    user_id TEXT REFERENCES users(id) ON DELETE SET NULL
+                    user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+                    worker_id TEXT,
+                    heartbeat_at TEXT,
+                    cancel_requested INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_runtime_jobs_created
@@ -657,11 +665,28 @@ class Database:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     switched_at TEXT,
-                    finished_at TEXT
+                    finished_at TEXT,
+                    worker_id TEXT,
+                    heartbeat_at TEXT,
+                    cancel_requested INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_storage_moves_repo
                     ON storage_moves(repo_id, created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS login_attempts (
+                    attempt_key TEXT NOT NULL,
+                    attempted_at BIGINT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_login_attempts_key
+                    ON login_attempts(attempt_key, attempted_at);
+
+                CREATE TABLE IF NOT EXISTS cluster_state (
+                    name TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
 
                 CREATE TABLE IF NOT EXISTS revision_aliases (
                     repo_id TEXT NOT NULL,
@@ -760,6 +785,17 @@ class Database:
                     "ALTER TABLE owned_repositories ADD COLUMN organization_id TEXT "
                     "REFERENCES organizations(id) ON DELETE RESTRICT"
                 )
+            # Which server runs a job or move, when it last said so, and whether
+            # someone asked another server to stop it (docs/SCALING.md, phase 3).
+            for table in ("runtime_jobs", "storage_moves"):
+                existing = self._column_names(connection, table)
+                for column in ("worker_id", "heartbeat_at"):
+                    if column not in existing:
+                        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+                if "cancel_requested" not in existing:
+                    connection.execute(
+                        f"ALTER TABLE {table} ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0"
+                    )
             session_columns = self._column_names(connection, "sessions")
             for column in ("id", "user_agent", "ip", "last_seen_at"):
                 if column not in session_columns:
@@ -1480,6 +1516,7 @@ class Database:
         return [self._decode_row(row) for row in rows]
 
     def create_runtime_job(self, record: dict[str, Any]) -> dict[str, Any]:
+        record = {"worker_id": None, "heartbeat_at": None, **record}
         with self._write_lock, self.connect() as connection:
             connection.execute(
                 """
@@ -1487,12 +1524,12 @@ class Database:
                     id, target_id, target_name, target_kind, repo_id,
                     runtime_model_name, source_file, status, total_bytes,
                     processed_bytes, progress, message, error, created_at,
-                    updated_at, completed_at, user_id
+                    updated_at, completed_at, user_id, worker_id, heartbeat_at
                 ) VALUES (
                     :id, :target_id, :target_name, :target_kind, :repo_id,
                     :runtime_model_name, :source_file, :status, :total_bytes,
                     :processed_bytes, :progress, :message, :error, :created_at,
-                    :updated_at, :completed_at, :user_id
+                    :updated_at, :completed_at, :user_id, :worker_id, :heartbeat_at
                 )
                 """,
                 record,
@@ -1500,8 +1537,11 @@ class Database:
         return self.get_runtime_job(record["id"])
 
     def update_runtime_job(
-        self, job_id: str, **changes: Any
+        self, job_id: str, *, unless_cancelled: bool = False, **changes: Any
     ) -> dict[str, Any] | None:
+        """Change a job. With `unless_cancelled`, a job someone cancelled (perhaps
+        through another server) keeps its cancelled state; the worker's progress
+        is dropped instead."""
         safe_changes = {
             key: value for key, value in changes.items() if key in RUNTIME_JOB_FIELDS
         }
@@ -1509,9 +1549,10 @@ class Database:
             return self.get_runtime_job(job_id)
         assignments = ", ".join(f"{key} = :{key}" for key in safe_changes)
         safe_changes["id"] = job_id
+        guard = " AND status <> 'cancelled'" if unless_cancelled else ""
         with self._write_lock, self.connect() as connection:
             connection.execute(
-                f"UPDATE runtime_jobs SET {assignments} WHERE id = :id",
+                f"UPDATE runtime_jobs SET {assignments} WHERE id = :id{guard}",
                 safe_changes,
             )
         return self.get_runtime_job(job_id)
@@ -1574,7 +1615,10 @@ class Database:
             ).fetchone()
         return self._decode_row(row)
 
-    def fail_unfinished_runtime_jobs(self, updated_at: str) -> None:
+    def fail_unfinished_runtime_jobs(self, updated_at: str, worker_id: str | None = None) -> None:
+        """After a restart: jobs still marked as running cannot be. With `worker_id`,
+        only that server's own jobs (other servers may still be running theirs)."""
+        mine = " AND worker_id = ?" if worker_id is not None else ""
         with self._write_lock, self.connect() as connection:
             connection.execute(
                 """
@@ -1585,8 +1629,8 @@ class Database:
                     updated_at = ?,
                     completed_at = ?
                 WHERE status IN ('queued', 'preparing', 'transferring', 'loading')
-                """,
-                (updated_at, updated_at),
+                """ + mine,
+                (updated_at, updated_at, *((worker_id,) if worker_id is not None else ())),
             )
 
     def upsert_local_model(self, record: dict[str, Any]) -> None:
@@ -2255,7 +2299,142 @@ class Database:
             return None
         move = dict(row)
         move["keep_local"] = bool(move["keep_local"])
+        if "cancel_requested" in move:
+            move["cancel_requested"] = bool(move["cancel_requested"])
         return move
+
+    # Several servers (docs/SCALING.md, phase 3): each job and move names the server
+    # running it, which says so every few seconds; another server's cancel is a flag
+    # the running one picks up; work whose server went quiet is taken over.
+
+    def claim_move(self, move_id: str, worker_id: str, now: str, stale_before: str) -> bool:
+        """Take a move for this server, unless another server is running it."""
+        with self._write_lock, self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE storage_moves SET worker_id = ?, heartbeat_at = ? WHERE id = ? "
+                "AND (worker_id IS NULL OR worker_id = ? OR heartbeat_at IS NULL OR heartbeat_at < ?)",
+                (worker_id, now, move_id, worker_id, stale_before),
+            )
+            return cursor.rowcount > 0
+
+    def heartbeat(self, worker_id: str, now: str) -> None:
+        """This server is still running its unfinished jobs and moves."""
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE runtime_jobs SET heartbeat_at = ? WHERE worker_id = ? "
+                "AND status IN ('queued', 'preparing', 'transferring', 'loading')",
+                (now, worker_id),
+            )
+            connection.execute(
+                "UPDATE storage_moves SET heartbeat_at = ? WHERE worker_id = ? "
+                "AND status NOT IN ('done', 'failed', 'cancelled')",
+                (now, worker_id),
+            )
+
+    def request_runtime_cancel(self, job_id: str, updated_at: str) -> dict[str, Any] | None:
+        """Mark an active job cancelled, and ask its server to stop sending it."""
+        with self._write_lock, self.connect() as connection:
+            connection.execute(
+                "UPDATE runtime_jobs SET status = 'cancelled', message = 'Cancelled', error = NULL, "
+                "updated_at = ?, completed_at = ?, cancel_requested = 1 WHERE id = ? "
+                "AND status IN ('queued', 'preparing', 'transferring', 'loading')",
+                (updated_at, updated_at, job_id),
+            )
+        return self.get_runtime_job(job_id)
+
+    def runtime_cancel_requests(self, worker_id: str) -> list[str]:
+        """This server's jobs that someone cancelled, perhaps through another server."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT id FROM runtime_jobs WHERE worker_id = ? AND cancel_requested = 1",
+                (worker_id,),
+            ).fetchall()
+        return [row["id"] for row in rows]
+
+    def clear_runtime_cancel(self, job_id: str) -> None:
+        with self.connect() as connection:
+            connection.execute("UPDATE runtime_jobs SET cancel_requested = 0 WHERE id = ?", (job_id,))
+
+    def fail_stale_runtime_jobs(self, stale_before: str, updated_at: str) -> int:
+        """Jobs whose server stopped saying it runs them; they cannot finish now."""
+        with self._write_lock, self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE runtime_jobs
+                SET status = 'failed',
+                    error = 'The HuggingHack server running this job stopped before it finished. Load the model again.',
+                    message = 'Interrupted',
+                    updated_at = ?,
+                    completed_at = ?
+                WHERE status IN ('queued', 'preparing', 'transferring', 'loading')
+                  AND (heartbeat_at IS NULL OR heartbeat_at < ?)
+                """,
+                (updated_at, updated_at, stale_before),
+            )
+            return max(0, cursor.rowcount)
+
+    def request_move_cancel(self, move_id: str) -> None:
+        with self._write_lock, self.connect() as connection:
+            connection.execute(
+                "UPDATE storage_moves SET cancel_requested = 1 WHERE id = ?", (move_id,)
+            )
+
+    def move_cancel_requests(self, worker_id: str) -> list[str]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT id FROM storage_moves WHERE worker_id = ? AND cancel_requested = 1 "
+                "AND status IN ('copying', 'verifying')",
+                (worker_id,),
+            ).fetchall()
+        return [row["id"] for row in rows]
+
+    # Failed sign-ins, shared by every server (AuthService, in cluster mode).
+
+    def count_login_failures(self, key: str, since_ms: int) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM login_attempts WHERE attempt_key = ? AND attempted_at >= ?",
+                (key, since_ms),
+            ).fetchone()
+        return int(row["count"])
+
+    def add_login_failures(self, keys: Sequence[str], now_ms: int, forget_before_ms: int) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM login_attempts WHERE attempted_at < ?", (forget_before_ms,))
+            for key in keys:
+                connection.execute(
+                    "INSERT INTO login_attempts (attempt_key, attempted_at) VALUES (?, ?)",
+                    (key, now_ms),
+                )
+
+    def clear_login_failures(self, key: str) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM login_attempts WHERE attempt_key = ?", (key,))
+
+    # What the last library scan found, for every server to show.
+
+    def set_cluster_state(self, name: str, value: Any, updated_at: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO cluster_state (name, value_json, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT (name) DO UPDATE SET value_json = excluded.value_json, "
+                "updated_at = excluded.updated_at",
+                (name, json.dumps(value), updated_at),
+            )
+
+    def get_cluster_state(self, name: str) -> Any:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT value_json FROM cluster_state WHERE name = ?", (name,)
+            ).fetchone()
+        return json.loads(row["value_json"]) if row else None
+
+    def open_session(self) -> Any:
+        """A PostgreSQL connection of its own, outside the pools, for a session-level
+        lock held as long as the process lives (the cluster's leader lock)."""
+        if psycopg is None:
+            raise RuntimeError("PostgreSQL support requires the 'psycopg[binary,pool]' dependency.")
+        return psycopg.connect(self._database_url, autocommit=True, **CONNECTION_OPTIONS)
 
     def set_local_model_location(
         self, repo_id: str, storage_backend: str, storage_target: str, remote_uri: str | None, cached: bool

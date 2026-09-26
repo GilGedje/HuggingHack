@@ -22,7 +22,7 @@ from typing import Any, Callable, Iterable, Iterator
 
 from .config import Settings, repository_path, validate_repo_id
 from .database import Database
-from .reads import ReadTracker
+from .reads import STALE_LEASE_SECONDS, ReadTracker
 from .storage import LOCAL_TARGET_ID, MANIFEST_NAME, StorageRegistry, repository_files
 
 logger = logging.getLogger("hugginghack.moves")
@@ -33,6 +33,13 @@ PRE_SWITCH = ("queued", "copying", "verifying", "switching")
 POST_SWITCH = ("draining", "cleaning")
 PROGRESS_SECONDS = 0.5
 DRAIN_POLL_SECONDS = 1.0
+# Several servers (CLUSTER_MODE): the leader runs moves and looks for new ones this
+# often; a move whose server has not said it is running it for this long is taken
+# over; and an old copy is kept this long after the switch, since downloads that
+# other servers are sending cannot be counted from here.
+CLUSTER_POLL_SECONDS = 2.0
+CLUSTER_STALE_SECONDS = 30.0
+CLUSTER_DRAIN_SECONDS = STALE_LEASE_SECONDS
 
 
 def _now() -> str:
@@ -102,6 +109,8 @@ class MoveManager:
         # old copy can still be running, so the manager's start time stands in.
         self._switched: dict[str, float] = {}
         self._started = time.monotonic()
+        # In a cluster only the leader runs moves (main.py sets this).
+        self.is_leader: Callable[[], bool] = lambda: True
 
     # ---- public -----------------------------------------------------------------
 
@@ -132,6 +141,8 @@ class MoveManager:
             raise ValueError("Only models stored as owner/name folders can be moved.")
         source = self.storages.for_model(model)
         target = self.storages.get(destination)
+        if self.settings.cluster_mode and not target.remote:
+            raise ValueError("Servers sharing the library (CLUSTER_MODE) keep models in buckets only; choose a bucket.")
         if target.id == source.id:
             raise ValueError(f"{validated} is already stored in {target.name}.")
         if not target.health().get("connected"):
@@ -165,7 +176,8 @@ class MoveManager:
                 "updated_at": timestamp,
             }
         )
-        self._ensure_worker()
+        if self.is_leader():
+            self._ensure_worker()
         self._wake.set()
         return move
 
@@ -178,15 +190,43 @@ class MoveManager:
                 move_id, status="cancelled", message="Cancelled before it started", updated_at=_now(), finished_at=_now()
             )
         if move["status"] in ("copying", "verifying"):
+            if move.get("worker_id") not in (None, self.settings.instance_id):
+                # Another server runs it; it stops at its next check.
+                self.database.request_move_cancel(move_id)
+                return move
             with self._lock:
                 self._cancelled.add(move_id)
             return move
         raise ValueError("This move is past the point where it can be cancelled.")
 
-    def recover(self) -> None:
-        """After a restart: undo moves that had not switched, finish those that had."""
+    def stop_cancelled(self) -> list[str]:
+        """Stop this server's moves that were cancelled through another server."""
+        requested = self.database.move_cancel_requests(self.settings.instance_id)
+        with self._lock:
+            self._cancelled.update(requested)
+        return requested
+
+    def _claim(self, move: dict[str, Any], *, others_only: bool = False) -> bool:
+        """Whether this server may work on a move. In a cluster the move must be
+        unclaimed, this server's own, or left by a server that went quiet."""
+        if not self.settings.cluster_mode:
+            return True
+        if others_only and move.get("worker_id") == self.settings.instance_id:
+            return False
+        now = datetime.now(timezone.utc)
+        stale_before = datetime.fromtimestamp(now.timestamp() - CLUSTER_STALE_SECONDS, timezone.utc)
+        return self.database.claim_move(
+            move["id"], self.settings.instance_id, now.isoformat(), stale_before.isoformat()
+        )
+
+    def recover(self, *, others_only: bool = False) -> None:
+        """After a restart: undo moves that had not switched, finish those that had.
+        In a cluster the leader does this for moves whose server went quiet; with
+        `others_only` it leaves this server's own running moves alone."""
         for move in self.database.unfinished_moves():
             if move["status"] in ("copying", "verifying", "switching"):
+                if not self._claim(move, others_only=others_only):
+                    continue
                 model = self.database.get_local_model(move["repo_id"]) or {}
                 if move["status"] == "switching" and model.get("storage_target") == move["destination_target"]:
                     self.database.update_move(move["id"], status="draining", message="Resuming after a restart", updated_at=_now())
@@ -210,19 +250,29 @@ class MoveManager:
             self._thread.start()
 
     def _loop(self) -> None:
+        cluster = self.settings.cluster_mode
         while True:
+            if not self.is_leader():
+                # Another server runs moves until this one is elected.
+                self._wake.wait(timeout=CLUSTER_POLL_SECONDS)
+                self._wake.clear()
+                continue
             pending = self.database.unfinished_moves()
             # Switched moves wait for their old copy's downloads without holding up
             # the next move; each pass tries to finish them.
             for move in pending:
-                if move["status"] in POST_SWITCH:
+                if move["status"] in POST_SWITCH and self._claim(move):
                     self._guarded(self._finish, move)
-            queued = next((item for item in pending if item["status"] == "queued"), None)
+            queued = next(
+                (item for item in pending if item["status"] == "queued" and self._claim(item)), None
+            )
             if queued is not None:
                 self._guarded(self._run, queued)
                 continue
             waiting = any(item["status"] in POST_SWITCH for item in pending)
-            self._wake.wait(timeout=DRAIN_POLL_SECONDS if waiting else 30)
+            # Other servers queue moves too, and cannot wake this one.
+            idle = CLUSTER_POLL_SECONDS if cluster else 30
+            self._wake.wait(timeout=DRAIN_POLL_SECONDS if waiting else idle)
             self._wake.clear()
 
     def _guarded(self, step: Callable[[dict[str, Any]], Any], move: dict[str, Any]) -> None:
@@ -414,7 +464,17 @@ class MoveManager:
         # After the switch no read goes to the source bucket, so only reads that
         # began before it matter; a local cache is read until it is gone.
         started_before = self._switched.get(move["id"], self._started) if source.remote else None
-        if removes_files and not self.tracker.try_begin_removal(repo_id, started_before):
+        cluster = self.settings.cluster_mode
+        if removes_files and cluster:
+            # Reads other servers are sending cannot be counted here: keep the old
+            # copy for as long as a download may take.
+            keep_until = self._keep_until(move)
+            if keep_until is not None:
+                message = f"Keeping the old copy until {keep_until} for downloads that may still be reading it"
+                if move["status"] != "draining" or move.get("message") != message:
+                    self.database.update_move(move["id"], status="draining", message=message, updated_at=_now())
+                return False
+        elif removes_files and not self.tracker.try_begin_removal(repo_id, started_before):
             active = self.tracker.active(repo_id, started_before)
             if active != move.get("active_reads") or move["status"] != "draining":
                 self.database.update_move(
@@ -446,11 +506,23 @@ class MoveManager:
             )
             return True
         finally:
-            if removes_files:
+            if removes_files and not cluster:
                 self.tracker.end_removal(repo_id)
         self._switched.pop(move["id"], None)
         self.database.update_move(move["id"], status="done", message="Moved", updated_at=_now(), finished_at=_now())
         return True
+
+    @staticmethod
+    def _keep_until(move: dict[str, Any]) -> str | None:
+        """When a cluster may remove a switched move's old copy, or None once it may."""
+        try:
+            switched = datetime.fromisoformat(move.get("switched_at") or "")
+        except ValueError:
+            switched = datetime.now(timezone.utc)
+        until = switched.timestamp() + CLUSTER_DRAIN_SECONDS
+        if time.time() >= until:
+            return None
+        return datetime.fromtimestamp(until, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     def _discard_copy(self, move: dict[str, Any]) -> None:
         """Remove whatever a move that did not switch left at its destination."""

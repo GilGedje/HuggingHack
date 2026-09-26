@@ -39,8 +39,16 @@ export interface Health {
   max_upload_size_bytes?: number
   runtime_target_count?: number
   runtime_api_token_configured?: boolean
+  cluster?: ClusterHealth
   hub_api_enabled?: boolean
   public_url?: string | null
+}
+
+/** Several servers sharing the library (CLUSTER_MODE); `leader` runs moves and scans. */
+export interface ClusterHealth {
+  enabled: boolean
+  instance_id: string
+  leader: boolean
 }
 
 export type Role = 'admin' | 'member' | 'viewer'
