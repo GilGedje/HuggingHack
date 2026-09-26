@@ -67,6 +67,17 @@ docker load -i hugginghack-image.tar
 `docker compose up --build` on the offline server if it has an internal npm and PyPI
 mirror.
 
+**Kubernetes or OpenShift:** push the loaded image to your internal registry instead, then
+install the [Helm chart](../helm/README.md) that comes with this repository folder. Add
+`postgres:17-alpine` if the chart will run PostgreSQL for you:
+
+```bash
+docker tag hugginghack:local registry.internal/hugginghack:1.3.0
+docker push registry.internal/hugginghack:1.3.0
+docker tag postgres:17-alpine registry.internal/postgres:17-alpine   # only with postgresql.enabled
+docker push registry.internal/postgres:17-alpine
+```
+
 ## 3. Configure
 
 Create `.env` from the example once:

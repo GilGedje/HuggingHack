@@ -16,7 +16,7 @@ them through the Hub protocol (`HF_ENDPOINT` for vLLM, Transformers, `hf`) or `g
   (direct-to-bucket transfers and several replicas: design and status). `README.md` is the
   public overview with screenshots in `docs/images`.
 - `helm/`: the Helm chart (`helm/hugginghack`, a subchart for an umbrella that owns the
-  ConfigMap and Secret) with its tests. Read [`helm/README.md`](helm/README.md) before changing
+  ConfigMap and Secret) with its tests. Read [`helm/CLAUDE.md`](helm/CLAUDE.md) before changing
   it; run `helm/tests/render-test.sh` after any change, and the live test on a local cluster only.
 - `.env.example` lists every setting with its default; `docker-compose.yml` runs one service,
   `docker-compose.postgres.yml` adds PostgreSQL 17.

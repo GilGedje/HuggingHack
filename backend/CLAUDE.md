@@ -339,4 +339,6 @@ Not in `config.py`: `FORWARDED_ALLOW_IPS` (read by uvicorn `--proxy-headers`, se
 ## Pointers
 
 `docs/AIRGAPPED.md` (install and operate offline), `docs/SERVE_FROM_S3.md` (S3 + PostgreSQL
-deployment and migration), root `CLAUDE.md`, `frontend/CLAUDE.md`, `.env.example`.
+deployment and migration), `docs/SCALING.md`, root `CLAUDE.md`, `frontend/CLAUDE.md`,
+`helm/CLAUDE.md` (the Helm chart: the probes rely on `AllowedHosts` admitting loopback Host
+headers, and settings reach pods only through `envFrom`), `.env.example`.

@@ -17,6 +17,7 @@ are step-by-step installs. Every setting named here is also listed, with its def
 - [Single sign-on (OpenID Connect)](#single-sign-on-openid-connect)
 - [Hugging Face downloads on a connected server](#hugging-face-downloads-on-a-connected-server)
 - [Run it on a NAS](#run-it-on-a-nas)
+- [Run it on Kubernetes or OpenShift](#run-it-on-kubernetes-or-openshift)
 - [Security](#security)
 - [Data ownership and backups](#data-ownership-and-backups)
 
@@ -557,6 +558,44 @@ cannot write to them. See [the air-gapped guide](AIRGAPPED.md#3-configure).
 
 Then run `docker compose up --build -d` from the project folder and open `http://NAS-IP:7860`
 from another computer on the LAN.
+
+## Run it on Kubernetes or OpenShift
+
+The Helm chart in [`helm/hugginghack`](../helm/README.md) runs HuggingHack as a subchart of
+your own umbrella chart. The umbrella renders one ConfigMap and one Secret with HuggingHack's
+settings (the same names as in `.env.example`) and passes their names to the chart, which
+reads them through `envFrom`. It never creates a ConfigMap or Secret itself.
+
+```yaml
+# umbrella values
+hugginghack:
+  envFromConfigMap: shared-config     # CLUSTER_MODE, STORAGE_TARGETS_JSON, PUBLIC_URL, …
+  envFromSecret: shared-secrets       # DATABASE_URL, bucket keys, OIDC_CLIENT_SECRET, …
+  replicaCount: 3
+  image:
+    repository: registry.internal/hugginghack
+  caBundle:
+    configMap: internal-root-ca       # optional: your private root CA, mounted read-only
+  postgresql:
+    enabled: false                    # true: the chart also runs PostgreSQL 17
+```
+
+- **Several replicas** need `CLUSTER_MODE=true`, PostgreSQL, and buckets for all storage
+  (see [Scaling](SCALING.md#running-several-replicas)). With direct downloads and uploads on,
+  the bytes go between clients and the bucket, so the pods need little CPU and memory.
+- **PostgreSQL:** HuggingHack always connects with `DATABASE_URL` from the Secret. Leave
+  `postgresql.enabled` off to use your own server; turn it on and the chart also runs one
+  PostgreSQL pod with its own volume, whose password comes from `POSTGRES_PASSWORD` in the
+  same Secret.
+- **OpenShift:** the defaults fit the restricted-v2 SCC: no fixed user, a read-only root
+  filesystem, all capabilities dropped. They also work unchanged on plain Kubernetes.
+- **Restarts on settings changes:** pass checksums in `podAnnotations`; the chart's README
+  shows three ways, depending on how your umbrella holds its values.
+- **Air-gapped:** push `hugginghack` (and `postgres:17-alpine` if the chart runs PostgreSQL)
+  to your internal registry; see [the air-gapped guide](AIRGAPPED.md#2-move-hugginghack-onto-the-offline-network).
+
+The chart's [README](../helm/README.md) has the full values, what goes in the ConfigMap and
+what in the Secret, and the tests it passed.
 
 ## Security
 

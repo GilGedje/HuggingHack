@@ -9,6 +9,12 @@ Follow the steps in order. Each step ends with a check; do not go on until it pa
 For everything else about running HuggingHack offline (accounts, organizations, SSO,
 pulling models), see the [air-gapped setup guide](AIRGAPPED.md).
 
+**On Kubernetes or OpenShift**, the [Helm chart](../helm/README.md) runs this same setup, with
+as many servers as you like. Steps 4 and 5 (the bucket and PostgreSQL) still apply; the
+settings of step 6 go into your umbrella chart's ConfigMap and Secret instead of `.env`, and
+the chart replaces steps 3 and 7 (push the image to your registry; the chart's probes check
+health). The chart can also run PostgreSQL for you (`postgresql.enabled`).
+
 - [1. What lives where](#1-what-lives-where)
 - [2. Before you start](#2-before-you-start)
 - [3. Carry the images across](#3-carry-the-images-across)

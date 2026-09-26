@@ -175,6 +175,7 @@ commands the site shows use the address other machines reach.
 | Let clients pull and upload straight to the bucket, and run several servers behind one address | [Scaling](docs/SCALING.md) |
 | Switch from SQLite to PostgreSQL, or move an existing install | [Guide → PostgreSQL](docs/GUIDE.md#postgresql) |
 | Run it on a Synology, TrueNAS, or QNAP | [Guide → Run it on a NAS](docs/GUIDE.md#run-it-on-a-nas) |
+| Run it on Kubernetes or OpenShift with Helm, as a subchart of your umbrella | [Helm chart](helm/README.md) |
 | Sign in with Authentik, Keycloak, Entra ID, or another OIDC provider | [Guide → Single sign-on](docs/GUIDE.md#single-sign-on-openid-connect) |
 | Load models into Ollama or a vLLM rig from the web page | [Guide → Send models to Ollama or vLLM](docs/GUIDE.md#send-models-to-ollama-or-vllm) |
 | Understand roles, organizations, visibility, uploads, and configs | [Guide](docs/GUIDE.md) |
@@ -230,7 +231,8 @@ change without internet access.
 backend/app/     FastAPI server: API, Hub protocol, git, storage, accounts
 backend/tests/   pytest suite (SQLite, plus PostgreSQL when TEST_POSTGRES_URL is set)
 frontend/src/    React + TypeScript single-page app
-docs/            Guide, air-gapped setup, S3 and PostgreSQL
+docs/            Guide, air-gapped setup, S3 and PostgreSQL, scaling
+helm/            Helm chart for Kubernetes and OpenShift, with its tests
 ```
 
 ## License
