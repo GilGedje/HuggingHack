@@ -39,7 +39,7 @@ PYTHONPATH=backend DATABASE_URL=postgresql://... .venv/bin/python -m app.migrate
 ```
 
 **Definition of done:** run the suite with `TEST_POSTGRES_URL` set, and with `git` and
-`git-lfs` on PATH, until it reports **0 skipped**. Without Postgres, 40 tests skip. Without
+`git-lfs` on PATH, until it reports **0 skipped**. Without Postgres, 41 tests skip. Without
 git-lfs, the clone tests skip. SQLite passing alone is not enough. GitHub Actions does not run for this repository, so this local run is the gate.
 
 ## Module map (`backend/app`)

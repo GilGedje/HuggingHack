@@ -108,7 +108,8 @@ KUBE_CONTEXT=docker-desktop helm/tests/route-test.sh     # route + TLS + 3 repli
 - What only the route test caught: `git clone` through several replicas failed ("Unable to
   find <object>"), because git read `info/refs` from one pod and objects from another that had
   no mirror yet. `GitMirrors.read_file` now refreshes the mirror from the system folder when an
-  object is missing (only when mirrors are shared). Keep a multi-replica git clone in the tests.
+  object is missing (only when mirrors are shared), under a read lease like `info/refs`. Keep a
+  multi-replica git clone in the tests.
 - Traps met while writing the tests: a previous run's namespace still `Terminating` breaks the
   next install (the script waits for it); background port-forwards must be `kubectl` itself,
   not a shell function, or the trap cannot kill them; zsh does not split `$VAR` into words, so
