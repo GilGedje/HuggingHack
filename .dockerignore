@@ -31,3 +31,4 @@ docker-compose.override.yml
 docs
 *.md
 helm
+demo

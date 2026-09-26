@@ -39,3 +39,7 @@ helm/tests/umbrella-fixture/Chart.lock
 # Built image archives (helm/ocp-images/README.md); too large for git
 helm/ocp-images/*.tar.gz
 helm/ocp-images/*.tar.gz.sha256
+
+# Demo recordings (demo/README.md)
+demo/*.mp4
+demo/*.webm
