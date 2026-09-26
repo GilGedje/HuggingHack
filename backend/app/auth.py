@@ -143,6 +143,8 @@ class AuthService:
         display_name: str,
         password: str,
         role: str = "member",
+        *,
+        first: bool = False,
     ) -> dict[str, Any]:
         normalized = normalize_username(username)
         if normalized in RESERVED_NAMESPACES:
@@ -162,7 +164,8 @@ class AuthService:
                 "role": role,
                 "created_at": timestamp,
                 "updated_at": timestamp,
-            }
+            },
+            first=first,
         )
 
     def create_owner(
@@ -171,7 +174,7 @@ class AuthService:
         with self._setup_lock:
             if self.database.count_users() != 0:
                 raise ValueError("The owner account already exists.")
-            return self.create_user(username, display_name, password, role="admin")
+            return self.create_user(username, display_name, password, role="admin", first=True)
 
     def authenticate(self, username: str, password: str, client: str) -> dict[str, Any] | None:
         """The account these credentials sign in to, or None. `client` is the
@@ -187,9 +190,12 @@ class AuthService:
         if not user or not verify_password(password, user["password_hash"]):
             self._record_failure(*keys)
             return None
-        with self._attempt_lock:
-            # The address keeps its count, so a success cannot reset a spray.
-            self._attempts.pop(keys[0], None)
+        # The address keeps its count, so a success cannot reset a spray.
+        if self.settings.cluster_mode:
+            self.database.clear_login_failures(keys[0])
+        else:
+            with self._attempt_lock:
+                self._attempts.pop(keys[0], None)
         if user.get("disabled"):
             raise PermissionError("This account is disabled. Ask an administrator to enable it.")
         return user
@@ -414,6 +420,15 @@ class AuthService:
 
     def _check_rate_limit(self, account_key: str, address_key: str) -> None:
         cutoff = utc_now().timestamp() - ATTEMPT_WINDOW_SECONDS
+        if self.settings.cluster_mode:
+            # Every server counts the same failures, so more servers allow no more tries.
+            since = int(cutoff * 1000)
+            if (
+                self.database.count_login_failures(account_key, since) >= MAX_FAILURES_PER_ACCOUNT
+                or self.database.count_login_failures(address_key, since) >= MAX_FAILURES_PER_ADDRESS
+            ):
+                raise ValueError("Too many sign-in attempts. Try again in a few minutes.")
+            return
         with self._attempt_lock:
             if (
                 self._recent(account_key, cutoff) >= MAX_FAILURES_PER_ACCOUNT
@@ -423,6 +438,11 @@ class AuthService:
 
     def _record_failure(self, *keys: str) -> None:
         now = utc_now().timestamp()
+        if self.settings.cluster_mode:
+            self.database.add_login_failures(
+                keys, int(now * 1000), int((now - ATTEMPT_WINDOW_SECONDS) * 1000)
+            )
+            return
         with self._attempt_lock:
             if len(self._attempts) + len(keys) > MAX_TRACKED_KEYS:
                 self._prune(now - ATTEMPT_WINDOW_SECONDS)

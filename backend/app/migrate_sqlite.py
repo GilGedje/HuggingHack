@@ -25,6 +25,8 @@ from .database import Database
 
 
 # Parents before children so foreign keys are satisfied while copying.
+# login_attempts and cluster_state are left out: they only hold minutes-old sign-in
+# failures and the last scan's errors, which the new server rebuilds.
 TABLES = (
     "users",
     "sessions",

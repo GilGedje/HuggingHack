@@ -247,6 +247,53 @@ reload, and commits atomically; the pod's transfer volume for it is only control
 
 ## 5. Phase 3: multiple replicas
 
+**Status: 3a done (cluster infrastructure); 3b waits for phase 2.** Everything below except
+the upload paths is implemented and tested (`backend/app/cluster.py`,
+`backend/tests/test_cluster.py`, and a run of two real servers on one PostgreSQL database and
+one bucket). Uploads and change sessions still stage files on the server that receives them, so
+until phase 2 lands a cluster must not take uploads through more than one server
+(`uploads.py` and the upload paths of `storage.py` get `Database.cluster_lock` there, and
+cluster mode will then require `direct_uploads`).
+
+### Running several replicas
+
+Set on every server: `CLUSTER_MODE=true`, the same `DATABASE_URL` (PostgreSQL),
+`DEFAULT_STORAGE_TARGET` and `SYSTEM_STORAGE_TARGET` naming buckets, and a distinct
+`INSTANCE_ID` (the host name by default, which is the pod name under Kubernetes). A server
+that cannot share the library refuses to start and logs one sentence per reason:
+
+- `DATABASE_URL` is SQLite.
+- New models would go to a server's own disk (`DEFAULT_STORAGE_TARGET` is `local`).
+- Profile pictures and git history would stay on one server (`SYSTEM_STORAGE_TARGET` is `local`).
+- A model is indexed on a server's own disk: move it to a bucket first (Admin → Storage).
+- `HF_DOWNLOADS_ENABLED=true`: downloads are written to one server's disk.
+
+Every server answers every request. One server, the **leader**, also does the work that must
+happen once: it recovers interrupted moves when it is elected, scans the library at startup,
+runs storage moves, and fails runtime jobs and takes over moves whose server stopped sending
+heartbeats (30 s). Leadership is a session-level advisory lock on a connection of its own; when
+the leader dies or loses the database, another server takes over within seconds (measured:
+under a second after `kill -9`). `/api/health` for `settings.view` reports
+`cluster: {enabled, instance_id, leader}`.
+
+What each server does on its own, every 2 s: it sends a heartbeat for its runtime jobs and
+moves (every 10 s), and stops the ones someone cancelled through another server. A cancel
+marks the job cancelled at once, so every server shows it; the running server's progress
+never overwrites it.
+
+Differences from a single server:
+- The local model cache is off: restore and evict answer 409 with a sentence and the buttons
+  are hidden (the capability is turned off). Loading a model into a runtime needs that cache,
+  so it is refused in cluster mode until runtimes read from the bucket.
+- Moves go between buckets only. The old copy is kept for 24 h after the switch, because
+  downloads other servers are sending cannot be counted from the leader.
+- The sign-in throttle counts failures in the `login_attempts` table, so the limit is the same
+  however many servers there are.
+- The last scan's errors and conflicts, and whether a scan finished, live in `cluster_state`.
+- Each server keeps git mirrors under its `DATA_DIR` as a cache and refreshes them from the
+  system folder in the bucket before building, so every server serves the same commits. Give
+  `/data` an `emptyDir`.
+
 ### Cluster mode
 
 `CLUSTER_MODE=true` (Helm sets it when `replicaCount > 1`). Startup refuses, with one clear

@@ -49,6 +49,7 @@ from .config import settings, validate_namespace, validate_repo_id
 from .database import INTEGRITY_ERRORS, Database, database_unreachable
 from .downloads import DownloadManager
 from .git_mirror import GitMirrors
+from .cluster import STALE_SECONDS, Cluster, startup_problems, utc_iso as utc_iso_ago
 from .deploy_configs import METRICS, ConfigRevisions
 from .history import RepoHistory, public_commit
 from .oidc import OidcClient, OidcError, claim_groups, pkce_pair
@@ -108,6 +109,9 @@ moves = MoveManager(
 )
 uploads.move_guard = moves.moving
 uploads.mirror_forget = git_mirrors.forget
+# Several servers sharing the library (CLUSTER_MODE); otherwise this one leads.
+cluster = Cluster(settings, database)
+moves.is_leader = cluster.is_leader
 
 
 # Repositories found in more than one storage target during the last scan.
@@ -116,6 +120,41 @@ storage_errors: dict[str, str] = {}
 # Whether a scan has finished since the server started, so a finished upload that
 # is not in the index is known to be missing rather than not yet scanned.
 index_state = {"scanned": False}
+SCAN_STATE = "library-scan"
+
+
+def scan_state() -> dict[str, Any]:
+    """What the last scan found. In a cluster it may have run on another server,
+    so it is read from the database; otherwise it is this process's own."""
+    if settings.cluster_mode:
+        shared = database.get_cluster_state(SCAN_STATE) or {}
+        return {
+            "scanned": bool(shared.get("scanned")),
+            "errors": dict(shared.get("errors") or {}),
+            "conflicts": list(shared.get("conflicts") or []),
+        }
+    return {"scanned": index_state["scanned"], "errors": storage_errors, "conflicts": storage_conflicts}
+
+
+def record_scan_state(conflicts: list[dict[str, str]], errors: dict[str, str]) -> None:
+    storage_conflicts[:] = conflicts
+    storage_errors.clear()
+    storage_errors.update(errors)
+    index_state["scanned"] = True
+    if settings.cluster_mode:
+        database.set_cluster_state(
+            SCAN_STATE, {"scanned": True, "errors": errors, "conflicts": conflicts}, utc_iso()
+        )
+
+
+def forget_scan_error(target_id: str) -> None:
+    """A bucket that answers again no longer shows the last scan's failure."""
+    storage_errors.pop(target_id, None)
+    if settings.cluster_mode:
+        state = scan_state()
+        if target_id in state["errors"]:
+            state["errors"].pop(target_id)
+            database.set_cluster_state(SCAN_STATE, state, utc_iso())
 
 
 def record_history(model: dict[str, Any], entries: list[RepoEntry] | None = None) -> None:
@@ -127,7 +166,14 @@ def record_history(model: dict[str, Any], entries: list[RepoEntry] | None = None
 
 
 def refresh_model_index() -> dict[str, Any]:
-    result = indexer.scan()
+    # One scan at a time across every server sharing the library.
+    with database.cluster_lock("library-scan"):
+        return _refresh_model_index()
+
+
+def _refresh_model_index() -> dict[str, Any]:
+    # In a cluster each server's own disk is private to it, so only buckets count.
+    result = {"count": 0, "scanned_at": utc_iso()} if settings.cluster_mode else indexer.scan()
     owners = {model["repo_id"]: model["storage_target"] for model in database.list_local_models()}
     conflicts: list[dict[str, str]] = []
     errors: dict[str, str] = {}
@@ -169,10 +215,7 @@ def refresh_model_index() -> dict[str, Any]:
     for model in database.list_local_models():
         if model["storage_target"] == storages.local.id:
             record_history(model)
-    storage_conflicts[:] = conflicts
-    storage_errors.clear()
-    storage_errors.update(errors)
-    index_state["scanned"] = True
+    record_scan_state(conflicts, errors)
     models = database.list_local_models()
     return {
         "count": len(models),
@@ -188,6 +231,36 @@ def refresh_model_index() -> dict[str, Any]:
 def log_startup_scan(task: "asyncio.Task[Any]") -> None:
     if not task.cancelled() and task.exception():
         logger.error("Startup library scan failed", exc_info=task.exception())
+
+
+def start_cluster() -> None:
+    """Refuse to share the library in a setup that cannot, then join the cluster.
+    The leader recovers interrupted moves, scans the library and runs moves; every
+    server keeps its own jobs alive and stops those cancelled elsewhere."""
+    problems = startup_problems(settings, database, storages, system_store().remote)
+    if problems:
+        for problem in problems:
+            logger.error(problem)
+        raise RuntimeError(problems[0])
+    # A restart under the same INSTANCE_ID: its own unfinished jobs cannot be running.
+    database.fail_unfinished_runtime_jobs(utc_iso(), worker_id=settings.instance_id)
+
+    def elected() -> None:
+        moves.recover()
+        moves._ensure_worker()
+        refresh_model_index()
+
+    def tick(leader: bool) -> None:
+        runtimes.stop_cancelled()
+        moves.stop_cancelled()
+        if leader:
+            stale_before = utc_iso_ago(STALE_SECONDS)
+            database.fail_stale_runtime_jobs(stale_before, utc_iso())
+            moves.recover(others_only=True)
+
+    cluster.when_elected(elected)
+    cluster.every_tick(tick)
+    cluster.start()
 
 
 def prepare_system_folder() -> None:
@@ -217,18 +290,24 @@ async def lifespan(_: FastAPI):
                 error,
             )
         raise
-    database.fail_unfinished_runtime_jobs(utc_iso())
+    if settings.cluster_mode:
+        await run_in_threadpool(start_cluster)
+    else:
+        database.fail_unfinished_runtime_jobs(utc_iso())
     auth.ensure_local_user()
-    # Before the first scan: undo moves cut short, and finish those that switched.
-    await run_in_threadpool(moves.recover)
+    if not settings.cluster_mode:
+        # Before the first scan: undo moves cut short, and finish those that switched.
+        await run_in_threadpool(moves.recover)
     await run_in_threadpool(prepare_system_folder)
-    # Index in the background so the server answers immediately, even when a
-    # bucket is offline or a large library records its first history.
-    startup_scan = asyncio.create_task(run_in_threadpool(refresh_model_index))
-    startup_scan.add_done_callback(log_startup_scan)
+    if not settings.cluster_mode:
+        # Index in the background so the server answers immediately, even when a
+        # bucket is offline or a large library records its first history.
+        startup_scan = asyncio.create_task(run_in_threadpool(refresh_model_index))
+        startup_scan.add_done_callback(log_startup_scan)
     if settings.hf_downloads_enabled:
         downloads.resume_unfinished()
     yield
+    cluster.stop()
     downloads.shutdown()
     runtimes.shutdown()
     oidc.close()
@@ -548,9 +627,23 @@ def require_session(request: Request) -> None:
         )
 
 
+# Why a turned-off feature answers as it does: (status, sentence).
+DISABLED_FEATURES = {
+    "hub.download": (404, "Downloading from Hugging Face is turned off on this server (HF_DOWNLOADS_ENABLED)."),
+    "library.cache": (
+        409,
+        "Servers sharing the library (CLUSTER_MODE) keep models in buckets only, "
+        "so there is no local copy to restore or remove.",
+    ),
+}
+
+
 def disabled_capabilities() -> frozenset[str]:
     """Capabilities for features this server has turned off."""
-    return frozenset() if settings.hf_downloads_enabled else frozenset({"hub.download"})
+    disabled = set() if settings.hf_downloads_enabled else {"hub.download"}
+    if settings.cluster_mode:
+        disabled.add("library.cache")
+    return frozenset(disabled)
 
 
 def user_capabilities(user: dict[str, Any] | None) -> frozenset[str]:
@@ -564,10 +657,8 @@ def requires(capability: str, *, write: bool = False, session_only: bool = False
     # A default-value Depends, because string annotations cannot see `base`.
     def dependency(request: Request, user: dict = Depends(base)) -> dict[str, Any]:  # noqa: B008
         if capability in disabled_capabilities():
-            raise HTTPException(
-                status_code=404,
-                detail="Downloading from Hugging Face is turned off on this server (HF_DOWNLOADS_ENABLED).",
-            )
+            status_code, detail = DISABLED_FEATURES[capability]
+            raise HTTPException(status_code=status_code, detail=detail)
         if session_only:
             require_session(request)
         if not can(user, capability):
@@ -718,6 +809,7 @@ def health(request: Request) -> dict:
         "hf_endpoint": settings.hf_endpoint,
         "runtime_target_count": len(runtimes.targets),
         "runtime_api_token_configured": bool(settings.runtime_api_token),
+        "cluster": cluster.status(),
     }
 
 
@@ -2392,7 +2484,7 @@ async def storage_targets(_: StorageViewer) -> dict:
     for storage, health_result in zip(storages.all(), healths):
         if health_result.get("connected"):
             # The last scan's failure is over once the bucket answers again.
-            storage_errors.pop(storage.id, None)
+            forget_scan_error(storage.id)
         items = [
             storage_model_summary(model)
             for model in models
@@ -2403,7 +2495,7 @@ async def storage_targets(_: StorageViewer) -> dict:
             **storage.describe(),
             "default": storage.id == storages.default_id,
             "connected": bool(health_result.get("connected")),
-            "error": storage_errors.get(storage.id) or health_result.get("error"),
+            "error": scan_state()["errors"].get(storage.id) or health_result.get("error"),
             "model_count": len(items),
             "total_bytes": sum(item["size_bytes"] for item in items),
             "cached_count": sum(1 for item in items if item["cached"]),
@@ -2430,7 +2522,7 @@ async def storage_targets(_: StorageViewer) -> dict:
             "model_bytes": sum(int(model.get("size_bytes") or 0) for model in cached),
         },
         "targets": targets,
-        "conflicts": storage_conflicts,
+        "conflicts": scan_state()["conflicts"],
         "system": system,
     }
 
@@ -2987,6 +3079,7 @@ def list_upload_repositories(user: UploadLister) -> dict:
     """Repositories this user can upload to (their own and writable organizations'),
     each with the role that decides which actions the Uploads page offers."""
     items = []
+    scanned = scan_state()["scanned"]
     for repository in database.list_owned_repositories(user["id"]):
         role = uploads.access(repository, user["id"])
         indexed = bool(repository.pop("indexed", True))
@@ -2998,7 +3091,7 @@ def list_upload_repositories(user: UploadLister) -> dict:
                     "my_role": role,
                     # Finished, but its files were not found by the last scan: for
                     # example after restoring the database without the model folder.
-                    "missing": repository["status"] == "ready" and index_state["scanned"] and not indexed,
+                    "missing": repository["status"] == "ready" and scanned and not indexed,
                     "listing_overrides": database.listing_overrides(repository["repo_id"]),
                 }
             )

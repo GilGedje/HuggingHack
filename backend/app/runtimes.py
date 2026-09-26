@@ -274,14 +274,17 @@ class RuntimeManager:
 
     def cancel(self, job_id: str) -> dict[str, Any]:
         """Stop an active job at once. A request already sent is abandoned; the
-        runtime may keep what it received so far."""
+        runtime may keep what it received so far. A job another server runs is
+        marked cancelled here and stopped by that server within seconds."""
         job = self.database.get_runtime_job(job_id)
         if not job:
             raise FileNotFoundError("Runtime job not found.")
         if job["status"] not in ACTIVE_STATUSES:
             raise ValueError("This runtime job has already finished.")
-        self._cancel_event(job_id).set()
         timestamp = utc_iso()
+        if job.get("worker_id") not in (None, self.settings.instance_id):
+            return self.database.request_runtime_cancel(job_id, timestamp) or job
+        self._cancel_event(job_id).set()
         return self.database.update_runtime_job(
             job_id,
             status="cancelled",
@@ -290,6 +293,15 @@ class RuntimeManager:
             updated_at=timestamp,
             completed_at=timestamp,
         ) or job
+
+    def stop_cancelled(self) -> list[str]:
+        """Stop this server's jobs that were cancelled through another server."""
+        stopped = []
+        for job_id in self.database.runtime_cancel_requests(self.settings.instance_id):
+            self._cancel_event(job_id).set()
+            self.database.clear_runtime_cancel(job_id)
+            stopped.append(job_id)
+        return stopped
 
     def _call(self, job_id: str, send: Callable[[], httpx.Response]) -> httpx.Response:
         """Send one request on a helper thread, so Cancel takes effect at once even
@@ -329,6 +341,11 @@ class RuntimeManager:
         if not target:
             raise ValueError("Runtime target not found.")
         repo_id = validate_repo_id(model["repo_id"])
+        if self.settings.cluster_mode:
+            raise ValueError(
+                "Loading into a runtime needs a local copy of the model, which servers "
+                "sharing the library (CLUSTER_MODE) do not keep. Load it from a single server."
+            )
         if not model.get("cached"):
             raise ValueError("Restore this model to the local cache before loading it.")
         root = repository_path(repo_id, self.settings.model_storage)
@@ -372,6 +389,9 @@ class RuntimeManager:
                     "updated_at": timestamp,
                     "completed_at": None,
                     "user_id": user_id,
+                    # The server running the job; it says so every few seconds.
+                    "worker_id": self.settings.instance_id,
+                    "heartbeat_at": timestamp,
                 }
             )
         except INTEGRITY_ERRORS as error:
@@ -386,7 +406,12 @@ class RuntimeManager:
             # Progress from a request still finishing must not undo the cancel.
             raise JobCancelled()
         changes["updated_at"] = utc_iso()
-        return self.database.update_runtime_job(job_id, **changes)
+        job = self.database.update_runtime_job(job_id, unless_cancelled=True, **changes)
+        if job and job["status"] == "cancelled":
+            # Cancelled through another server before this one heard about it.
+            self._cancel_event(job_id).set()
+            raise JobCancelled()
+        return job
 
     @staticmethod
     def _response_error(response: httpx.Response) -> str:
@@ -623,13 +648,16 @@ class RuntimeManager:
                 )
             else:
                 detail = (str(error).strip() or error.__class__.__name__)[:1000]
-            self._update(
-                job_id,
-                status="failed",
-                message="Runtime load failed",
-                error=detail,
-                completed_at=completed,
-            )
+            try:
+                self._update(
+                    job_id,
+                    status="failed",
+                    message="Runtime load failed",
+                    error=detail,
+                    completed_at=completed,
+                )
+            except JobCancelled:
+                return
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=False)
