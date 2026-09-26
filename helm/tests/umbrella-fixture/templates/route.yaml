@@ -1,0 +1,56 @@
+{{- /*
+TEST FIXTURE: the umbrella owns the way in. On OpenShift an edge-terminated Route, anywhere
+else an Ingress; both send one host name to the hugginghack Service (every replica serves
+the web UI, the API, the Hub protocol and git). The same file is the model for a real
+umbrella: uploads need no body-size limit and long timeouts.
+*/}}
+{{- if .Values.route.enabled }}
+{{- $service := printf "%s-hugginghack" .Release.Name }}
+{{- if .Capabilities.APIVersions.Has "route.openshift.io/v1" }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ $service }}
+  annotations:
+    # Chunked uploads, commits and git pulls can run longer than the router's 30 s default.
+    haproxy.router.openshift.io/timeout: 10m
+spec:
+  host: {{ .Values.route.host | quote }}
+  to:
+    kind: Service
+    name: {{ $service }}
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+{{- else }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $service }}
+  annotations:
+    # nginx refuses request bodies over 1 MB by default: every upload chunk would get 413.
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+spec:
+  ingressClassName: {{ .Values.route.ingressClassName | quote }}
+  tls:
+    - hosts:
+        - {{ .Values.route.host | quote }}
+      secretName: {{ .Values.route.tlsSecret | quote }}
+  rules:
+    - host: {{ .Values.route.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $service }}
+                port:
+                  name: http
+{{- end }}
+{{- end }}

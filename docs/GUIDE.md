@@ -580,6 +580,10 @@ hugginghack:
     enabled: false                    # true: the chart also runs PostgreSQL 17
 ```
 
+- **The way in** is one Route (or Ingress) with your host name and TLS, pointing at the
+  `hugginghack` Service: every replica serves the web UI, the API, the Hub protocol and git,
+  and any replica can answer any request. With direct transfers the bucket's
+  `public_endpoint_url` must be reachable by clients as well. The chart's README has the Route.
 - **Several replicas** need `CLUSTER_MODE=true`, PostgreSQL, and buckets for all storage
   (see [Scaling](SCALING.md#running-several-replicas)). With direct downloads and uploads on,
   the bytes go between clients and the bucket, so the pods need little CPU and memory.

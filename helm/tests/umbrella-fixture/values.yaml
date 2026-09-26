@@ -55,3 +55,11 @@ hugginghack:
     fsGroup: 1000710000
     seccompProfile:
       type: RuntimeDefault
+
+# The way in, owned by the umbrella (templates/route.yaml): a Route on OpenShift, an Ingress
+# elsewhere. Off for the plain cluster test; route-test.sh turns it on.
+route:
+  enabled: false
+  host: ""
+  ingressClassName: nginx
+  tlsSecret: hub-tls

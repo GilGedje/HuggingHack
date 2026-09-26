@@ -19,7 +19,10 @@ helm/
 └── tests/
     ├── render-test.sh        offline checks (helm + python, no cluster)
     ├── cluster-test.sh       live test on a throwaway local cluster
+    ├── route-test.sh         live test of the production topology: route → replicas, bucket route
+    ├── route-browser.mjs     the real-browser half of route-test.sh
     ├── cluster/deps.yaml     MinIO and an external PostgreSQL for the live test
+    ├── cluster/minio-route.yaml  the bucket's own route (route-test.sh)
     └── umbrella-fixture/     a minimal umbrella in your pattern, for the tests only
 ```
 
@@ -140,6 +143,42 @@ helm template hub helm/hugginghack --set envFromSecret=shared-secrets \
 helm/tests/render-test.sh                                            # all of the above, asserted
 ```
 
+## The way in: a Route to the Service
+
+HuggingHack has no separate frontend: every replica serves the web UI, the API, the Hub
+protocol (`resolve`, `/api/models`) and git, from one port. So the umbrella needs **one host
+name** routed to the `hugginghack` Service, and nothing inside the cluster calls anything else:
+the browser loads the UI and calls `/api` on the same origin. Any replica can answer any
+request: sessions, upload progress and git mirrors live in PostgreSQL and the bucket.
+
+```yaml
+# umbrella/templates/route.yaml (OpenShift)
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: hub
+  annotations:
+    haproxy.router.openshift.io/timeout: 10m    # uploads, commits and git pulls outlast 30 s
+spec:
+  host: hub.example.internal
+  to: {kind: Service, name: <release>-hugginghack}
+  port: {targetPort: http}
+  tls: {termination: edge, insecureEdgeTerminationPolicy: Redirect}
+```
+
+With it, set in the ConfigMap: `PUBLIC_URL=https://hub.example.internal`,
+`ALLOWED_HOSTS=hub.example.internal`, and `FORWARDED_ALLOW_IPS` to the router's pod network
+(so client addresses and `https` come from the router's forwarded headers). On an Ingress
+controller such as nginx, remove the request-body limit
+(`nginx.ingress.kubernetes.io/proxy-body-size: "0"`); nginx's default 1 MB refuses every upload
+part. The test fixture's `templates/route.yaml` renders the Route on OpenShift and such an
+Ingress elsewhere.
+
+**Direct transfers need the bucket reachable too.** Browsers and pull clients fetch and upload
+bytes at the bucket's `public_endpoint_url`, so that address needs its own route (or the
+StorageGRID endpoint itself), with no body-size limit, a certificate the clients trust, and a
+host name equal to `public_endpoint_url` (signatures cover the host and port).
+
 ## OpenShift
 
 The defaults follow the restricted-v2 SCC and Kubernetes Pod Security "restricted":
@@ -190,7 +229,18 @@ The defaults follow the restricted-v2 SCC and Kubernetes Pod Security "restricte
 helm/tests/render-test.sh                                    # offline
 KUBE_CONTEXT=docker-desktop LOAD_IMAGE_INTO=desktop-control-plane helm/tests/cluster-test.sh
 KUBE_CONTEXT=docker-desktop PG_MODE=external helm/tests/cluster-test.sh
+KUBE_CONTEXT=docker-desktop helm/tests/route-test.sh          # the production topology
 ```
+
+`route-test.sh` runs three replicas behind a TLS route (ingress-nginx standing in for the
+OpenShift router), with MinIO behind its own route, and real host names
+(`hub.127.0.0.1.nip.io`, `s3.127.0.0.1.nip.io`) and a test CA. It checks: the session cookie
+is `Secure` (the forwarded `https` is believed); sessions record the client's address, not the
+router's; a cross-site write is refused; signed-in requests spread over all replicas and all
+succeed; a real Chrome signs in, creates an organization and uploads a model straight to the
+bucket's route (no bytes through the hub, no CSP errors); after every pod is replaced the same
+browser is still signed in and can write; `snapshot_download` and `git clone` + `git lfs pull`
+through the route get identical weights.
 
 The chart's defaults were also installed as they are (no security overrides) in a
 "restricted" namespace: standalone with no `envFrom`, and with `postgresql.enabled` (HuggingHack

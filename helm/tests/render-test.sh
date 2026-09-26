@@ -59,6 +59,11 @@ echo "$one" | check shared-config shared-secrets
 [ "$(echo "$one" | grep checksum/config)" != "$(echo "$two" | grep checksum/config)" ]
 [ "$(echo "$one" | grep checksum/secret)" = "$(echo "$two" | grep checksum/secret)" ]
 echo "ok  umbrella fixture: names flow into envFrom, checksum/config follows the ConfigMap"
+route() { helm template f "$fixture" --set route.enabled=true --set route.host=hub.example.internal --show-only templates/route.yaml "$@"; }
+route | grep -q '^kind: Ingress' && route | grep -q 'proxy-body-size: "0"'
+route --api-versions route.openshift.io/v1 | grep -q '^kind: Route'
+route --api-versions route.openshift.io/v1 | grep -q 'termination: edge'
+echo "ok  umbrella fixture route: an Ingress without a body limit, or an edge Route on OpenShift"
 
 # PostgreSQL switch: off renders no database; on adds a StatefulSet, its Service and a wait
 # in the application pod; the password comes from the umbrella's Secret; the database pods

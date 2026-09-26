@@ -315,10 +315,19 @@ class GitMirrors:
     def read_file(
         self, repo_id: str, relative: str, user: dict[str, Any] | None = None
     ) -> bytes | None:
-        """Read one dumb-protocol file from an already built mirror."""
+        """Read one dumb-protocol file from this server's mirror. Behind several servers,
+        git can learn the commit from one (info/refs) and ask another for its objects; a
+        server that lacks one brings its mirror up to date from the system folder, where
+        every server keeps the same commits, and looks again."""
         if relative not in {"HEAD", "info/refs", "objects/info/packs"} and not OBJECT_PATTERN.fullmatch(relative):
             return None
-        mirror = self.existing(repo_id, user)
+        content = self._read(self.existing(repo_id, user), relative)
+        if content is None and self._remote() is not None:
+            content = self._read(self.ensure(repo_id, user), relative)
+        return content
+
+    @staticmethod
+    def _read(mirror: Mirror | None, relative: str) -> bytes | None:
         if mirror is None:
             return None
         try:

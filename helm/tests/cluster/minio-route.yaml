@@ -1,0 +1,29 @@
+# TEST ONLY: the bucket's own way in for route-test.sh. With direct transfers, browsers and
+# pull clients talk to the bucket at its public address (public_endpoint_url), so it needs a
+# route of its own, with no body-size limit for upload parts.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: minio
+  namespace: hh-helm-deps
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["s3.127.0.0.1.nip.io"]
+      secretName: s3-tls
+  rules:
+    - host: s3.127.0.0.1.nip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: minio
+                port:
+                  number: 9000

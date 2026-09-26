@@ -28,6 +28,7 @@ from app.history import RepoHistory
 from app.hub_api import HubRepositories, RepoEntry
 from app.indexer import LocalModelIndexer
 from app.runtimes import RuntimeManager
+from app.system import LocalSystemStore
 from app.storage import StorageRegistry, create_storage_registry
 
 POSTGRES_URL = os.getenv("TEST_POSTGRES_URL")
@@ -280,6 +281,36 @@ def test_two_servers_build_one_git_mirror(shared_url, tmp_path: Path, monkeypatc
         results = together(*(lambda mirror=mirror: mirror.ensure("acme/mirrored") for mirror in mirrors))
         assert built == ["acme/mirrored"]
         assert results[0].commit == results[1].commit
+    finally:
+        first.close()
+        second.close()
+
+
+@needs_postgres
+def test_a_server_serves_objects_of_a_mirror_another_server_built(shared_url, tmp_path: Path):
+    # Behind one Service, git reads info/refs from one pod and objects from another. Each
+    # pod has its own disk; the mirrors meet in the system folder (a bucket in a cluster).
+    (settings_a, first), (settings_b, second) = (
+        server(shared_url, tmp_path, "a", cluster_mode=True), server(shared_url, tmp_path, "b", cluster_mode=True)
+    )
+    bucket = LocalSystemStore(dataclasses.replace(settings_a, data_dir=tmp_path / "bucket"))
+    bucket.remote = True
+    folder = settings_a.model_storage / "acme" / "spread"
+    folder.mkdir(parents=True)
+    (folder / "config.json").write_text('{"model_type": "llama"}')
+    LocalModelIndexer(settings_a, first).scan()
+    try:
+        pod_a, pod_b = (
+            GitMirrors(HubRepositories(settings, database, StorageRegistry.wrap(None, settings)), system=lambda: bucket)
+            for settings, database in ((settings_a, first), (settings_b, second))
+        )
+        built = pod_a.ensure("acme/spread")
+        refs = pod_a.read_file("acme/spread", "info/refs").decode()
+        assert built.commit in refs
+        commit_object = f"objects/{built.commit[:2]}/{built.commit[2:]}"
+        # Pod B never saw a pull of this repository: it fetches the mirror and answers.
+        assert pod_b.read_file("acme/spread", commit_object) == (built.root / commit_object).read_bytes()
+        assert pod_b.read_file("acme/spread", "objects/00/" + "0" * 38) is None
     finally:
         first.close()
         second.close()

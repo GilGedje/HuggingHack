@@ -54,7 +54,7 @@ git-lfs, the clone tests skip. SQLite passing alone is not enough. GitHub Action
 | `cluster.py` | `Cluster`: leader election (session advisory lock on its own connection) and the per-server tick (heartbeats, cancels from other servers); `startup_problems` for `CLUSTER_MODE` |
 | `oidc.py` | `OidcClient`: Authorization Code flow with PKCE. It fetches discovery lazily on the first SSO sign-in and validates ID tokens with PyJWT. |
 | `hub_api.py` | Hub protocol: `HubRepositories` (`model`, `model_info`, `tree`, `resolve`), `HubError`, `local_entries`/`remote_entries`, `parse_range` |
-| `git_mirror.py` | `GitMirrors`: pure-Python bare repos served over git's dumb HTTP. Weights become LFS pointers and are streamed from the library. Mirrors persist in the system folder. |
+| `git_mirror.py` | `GitMirrors`: pure-Python bare repos served over git's dumb HTTP. Weights become LFS pointers and are streamed from the library. Mirrors persist in the system folder; with several servers, `read_file` refreshes this server's mirror from there when git asks it for an object another server's `info/refs` named. |
 | `storage.py` | `FilesystemModelStorage`, `S3ModelStorage` (boto3), `StorageRegistry` (local plus `STORAGE_TARGETS_JSON` targets), `StorageUnavailableError` |
 | `uploads.py` | `UploadManager`: repo create/rename/delete, resumable chunk uploads, `finalize`, change sessions (`start_change` → `change_chunk` → `commit_change`), direct uploads to a bucket (`begin_*_file` → `*_part_links` → `complete_*_file`, `sweep_stale_uploads`), `can_manage`/`can_edit` |
 | `indexer.py` | `LocalModelIndexer.scan`/`index_path`/`index_remote`, `hidden_path`, safetensors/GGUF header parsing (bytes only), `upload_is_registered` |

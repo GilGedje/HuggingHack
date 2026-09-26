@@ -21,6 +21,8 @@ guide is [`README.md`](README.md) here; the scaling design behind it is
 | `tests/render-test.sh` | offline assertions (helm + the repo `.venv` python with PyYAML) |
 | `tests/cluster-test.sh` | live test on a **local** cluster |
 | `tests/cluster/deps.yaml` | MinIO and an external PostgreSQL for the live test (namespace `hh-helm-deps`) |
+| `tests/route-test.sh` + `route-browser.mjs` | the production topology: TLS route → 3 replicas, bucket behind its own route, real Chrome |
+| `tests/cluster/minio-route.yaml` | the bucket's route for `route-test.sh` |
 | `tests/umbrella-fixture/` | TEST FIXTURE: a minimal umbrella in the user's pattern (values under `global`) |
 
 ## Commands (from the repo root)
@@ -34,6 +36,7 @@ helm template hub helm/hugginghack --api-versions security.openshift.io/v1 ...  
 # Live, on the local Docker Desktop cluster only (see "Live testing" below)
 KUBE_CONTEXT=docker-desktop LOAD_IMAGE_INTO=desktop-control-plane helm/tests/cluster-test.sh
 KUBE_CONTEXT=docker-desktop PG_MODE=external helm/tests/cluster-test.sh
+KUBE_CONTEXT=docker-desktop helm/tests/route-test.sh     # route + TLS + 3 replicas + browser
 ```
 
 ## Invariants — do not break
@@ -98,6 +101,14 @@ KUBE_CONTEXT=docker-desktop PG_MODE=external helm/tests/cluster-test.sh
 - The fixture emulates OpenShift by setting a random high UID with group 0; the chart's own
   defaults (no UID) must also be installed as they are now and then (standalone, and with
   `postgresql.enabled`) because the fixture's overrides hide default-only failures.
+- `route-test.sh` uses `*.127.0.0.1.nip.io` (Python cannot resolve `*.localhost` on macOS; do
+  not edit `/etc/hosts`), port-forwards the ingress controller to 18443, and must never send a
+  request with an unknown Host: the local cluster has another Ingress with host `*` that would
+  answer it.
+- What only the route test caught: `git clone` through several replicas failed ("Unable to
+  find <object>"), because git read `info/refs` from one pod and objects from another that had
+  no mirror yet. `GitMirrors.read_file` now refreshes the mirror from the system folder when an
+  object is missing (only when mirrors are shared). Keep a multi-replica git clone in the tests.
 - Traps met while writing the tests: a previous run's namespace still `Terminating` breaks the
   next install (the script waits for it); background port-forwards must be `kubectl` itself,
   not a shell function, or the trap cannot kill them; zsh does not split `$VAR` into words, so
